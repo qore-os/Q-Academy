@@ -459,6 +459,7 @@ jobs:
             --env ACME_EMAIL=ops@ci.q-academy.de \
             --env CADDY_SITE_ADDRESSES=academy.ci.q-academy.de \
             --env CADDY_TLS_ASK_SECRET="$CADDY_TLS_ASK_SECRET" \
+            --entrypoint /usr/bin/caddy \
             "$caddy_image" validate --config /etc/caddy/Caddyfile --adapter caddyfile
           cleanup_caddy_smoke
           trap - EXIT

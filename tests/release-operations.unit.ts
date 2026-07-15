@@ -1313,7 +1313,10 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     /--network none --user 10001:10001 --read-only \\\s+--cap-drop ALL --security-opt no-new-privileges=true/,
   );
   assert.match(continuousIntegration, /caddy-volume-v1/);
-  assert.match(continuousIntegration, /validate --config \/etc\/caddy\/Caddyfile --adapter caddyfile/);
+  assert.match(
+    continuousIntegration,
+    /--entrypoint \/usr\/bin\/caddy \\\s+"\$caddy_image" validate --config \/etc\/caddy\/Caddyfile --adapter caddyfile/,
+  );
 });
 
 test("database bootstrap, ownership, and runtime privileges stay separated", () => {
