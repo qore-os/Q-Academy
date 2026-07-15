@@ -21,6 +21,7 @@
     "ai:course-provider:preflight": "node --conditions=react-server --import tsx scripts/ai-course-provider-preflight.ts",
     "media:s3:preflight": "tsx scripts/s3-provider-preflight.ts",
     "media:s3:app-principal-preflight": "tsx scripts/s3-app-principal-preflight.ts",
+    "media:s3:strato-privacy-sweep": "tsx scripts/strato-privacy-export-sweeper.ts",
     "media:clamav:preflight": "tsx scripts/clamav-preflight.ts",
     "media:processing:preflight": "node --conditions=react-server --import tsx scripts/media-processing-preflight.ts",
     "test:unit": "tsx --test tests/*.unit.ts",
@@ -103,6 +104,7 @@
     "server-only": "^0.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
+    "tsx": "^4.23.1",
     "web-push": "^3.6.7",
     "yauzl": "^3.4.0",
     "zod": "^4.4.3"
@@ -124,7 +126,6 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
-    "tsx": "^4.23.1",
     "typescript": "^5"
   },
   "overrides": {

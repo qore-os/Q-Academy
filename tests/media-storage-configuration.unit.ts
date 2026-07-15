@@ -54,6 +54,7 @@ test("media storage resolves explicit production S3 and scanner settings", () =>
   assert.equal(configuration.region, "eu-central-1");
   assert.equal(configuration.bucket, "q-academy-media-prod");
   assert.equal(configuration.forcePathStyle, true);
+  assert.equal(configuration.compatibilityMode, "versioned");
   assert.equal(configuration.limits.maxUploadBytes, 1_500_000_000);
   assert.equal(configuration.limits.tenantQuotaBytes, 50 * 1024 * 1024 * 1024);
   assert.equal(configuration.limits.signedUploadTtlSeconds, 300);
@@ -63,6 +64,41 @@ test("media storage resolves explicit production S3 and scanner settings", () =>
     port: 3310,
     required: true,
   });
+});
+
+test("media storage accepts STRATO only through the explicit reduced contract", () => {
+  const configuration = resolveMediaStorageConfiguration({
+    ...productionEnvironment(),
+    MEDIA_S3_ENDPOINT: "https://s3.hidrive.strato.com",
+    MEDIA_S3_REGION: "eu-central-1",
+    MEDIA_S3_FORCE_PATH_STYLE: "true",
+    MEDIA_S3_COMPATIBILITY_MODE: "strato-hidrive",
+    MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "true",
+  });
+
+  assert.equal(configuration.driver, "s3");
+  assert.equal(configuration.compatibilityMode, "strato-hidrive");
+
+  for (const override of [
+    { MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "false" },
+    { MEDIA_S3_ENDPOINT: "https://objects.q-academy.de" },
+    { MEDIA_S3_REGION: "us-east-1" },
+    { MEDIA_S3_FORCE_PATH_STYLE: "false" },
+  ]) {
+    assert.throws(
+      () =>
+        resolveMediaStorageConfiguration({
+          ...productionEnvironment(),
+          MEDIA_S3_ENDPOINT: "https://s3.hidrive.strato.com",
+          MEDIA_S3_REGION: "eu-central-1",
+          MEDIA_S3_FORCE_PATH_STYLE: "true",
+          MEDIA_S3_COMPATIBILITY_MODE: "strato-hidrive",
+          MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "true",
+          ...override,
+        }),
+      /STRATO HiDrive|STRATO HiDrive mode/,
+    );
+  }
 });
 
 test("media storage enforces filesystem outside production and S3 in production", () => {

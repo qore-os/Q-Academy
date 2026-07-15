@@ -46,6 +46,8 @@ const publishReleaseImages = readFileSync(
 const continuousIntegration = readFileSync(".github/workflows/ci.yml", "utf8");
 const packageManifest = JSON.parse(readFileSync("package.json", "utf8")) as {
   packageManager?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
 };
 const zapierPackageManifest = JSON.parse(
   readFileSync("integrations/automation-connectors/zapier/package.json", "utf8"),
@@ -126,7 +128,24 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   );
   assert.match(deploy, /persist_app_image_tag "\$env_file" "\$release_tag"/);
   assert.match(deploy, /verify_media_work_mount "\$env_file"/);
+  assert.match(deploy, /configure_media_s3_release_services "\$env_file"/);
+  assert.match(
+    deploy,
+    /compose=\(docker compose --env-file "\$env_file" -f "\$compose_file" "\$\{MEDIA_S3_COMPOSE_PROFILE_ARGS\[@\]\}"\)/,
+  );
+  assert.match(
+    deploy,
+    /strato_compose=\(docker compose --env-file "\$env_file" -f "\$compose_file" --profile strato\)/,
+  );
+  assert.match(
+    deploy,
+    /--wait-timeout "\$STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS" \\\s+"\$\{MEDIA_S3_RELEASE_SERVICES\[@\]\}"/,
+  );
   assert.match(deploy, /stop -t 30 "\$\{DATABASE_WRITER_SERVICES\[@\]\}"/);
+  assert.match(
+    deploy,
+    /run "\$\{strato_compose\[@\]\}" rm --force --stop "\$STRATO_PRIVACY_SWEEPER_SERVICE"/,
+  );
   assert.match(deploy, /run .*database-config-preflight/);
   assert.match(deploy, /run .*database-role/);
   assert.match(deploy, /run .*migrate/);
@@ -138,7 +157,10 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
     deploy,
     /up -d --no-deps --wait \\\s+--wait-timeout "\$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS" \\\s+"\$\{DATABASE_DISPATCHER_SERVICES\[@\]\}"/,
   );
-  assert.match(deploy, /All application and media writers remain stopped/);
+  assert.match(
+    deploy,
+    /All application, media, and STRATO deletion writers remain stopped/,
+  );
   assert.match(deploy, /CURRENT_TAG=/);
   assert.doesNotMatch(deploy, /docker compose down/);
   assert.doesNotMatch(deploy, /db:push/);
@@ -161,6 +183,9 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
     'run "${compose[@]}" run --rm --no-deps database-role',
     writerStop,
   );
+  const stratoSweeperIsolation = deploy.indexOf(
+    'run "${strato_compose[@]}" rm --force --stop "$STRATO_PRIVACY_SWEEPER_SERVICE"',
+  );
   const appPrincipalPreflight = deploy.indexOf(
     'run_with_timeout "$S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS"',
   );
@@ -174,6 +199,8 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.ok(backupLock < inheritedBackupContract);
   assert.ok(inheritedBackupContract < backupRun);
   assert.ok(backupRun < writerStop);
+  assert.ok(stratoSweeperIsolation > writerStop);
+  assert.ok(stratoSweeperIsolation < roleReconciliation);
   assert.ok(roleReconciliation > writerStop);
   const dispatcherHealthGate = deploy.indexOf(
     '--wait-timeout "$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS"',
@@ -181,12 +208,17 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   const releasePersistence = deploy.indexOf(
     'persist_app_image_tag "$env_file" "$release_tag"',
   );
+  const stratoSweeperHealthGate = deploy.indexOf(
+    '--wait-timeout "$STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS"',
+  );
   const releaseCompletion = deploy.indexOf(
     "release_completed=true",
     releasePersistence,
   );
   assert.ok(dispatcherHealthGate > writerStop);
   assert.ok(dispatcherHealthGate < releasePersistence);
+  assert.ok(stratoSweeperHealthGate > dispatcherHealthGate);
+  assert.ok(stratoSweeperHealthGate < releasePersistence);
   assert.ok(releasePersistence < releaseCompletion);
   const prematureBackupLockClose = deploy.indexOf("exec 8>&-");
   assert.ok(
@@ -260,6 +292,60 @@ test("pre-deployment backup decision executes fail closed", () => {
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "skip-empty-initial|required|required");
+});
+
+test("release S3 mode selects the STRATO profile and sweeper fail closed", () => {
+  assert.match(
+    common,
+    /STRATO_PRIVACY_SWEEPER_SERVICE=strato-privacy-sweeper/,
+  );
+  const contractScript = [
+    "set -Eeuo pipefail",
+    "source scripts/ops/release-common.sh",
+    'test_root="/tmp/q-academy-s3-release-contract-$$"',
+    'mkdir -p -- "$test_root"',
+    'trap \'rm -rf -- "$test_root"\' EXIT',
+    'env_file="$test_root/production.env"',
+    "write_environment() {",
+    "  printf '%s\\n' \"$@\" >\"$env_file\"",
+    "}",
+    "print_selection() {",
+    "  local profiles services",
+    "  profiles=\"$(IFS=,; printf '%s' \"${MEDIA_S3_COMPOSE_PROFILE_ARGS[*]}\")\"",
+    "  services=\"$(IFS=,; printf '%s' \"${MEDIA_S3_RELEASE_SERVICES[*]}\")\"",
+    "  printf '%s|%s|%s|%s\\n' \"$profiles\" \"$services\" \"$MEDIA_S3_COMPATIBILITY_MODE\" \"$MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED\"",
+    "}",
+    "export MEDIA_S3_COMPATIBILITY_MODE=untrusted-shell-override",
+    "export MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=untrusted-shell-override",
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=versioned" "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=false"',
+    'configure_media_s3_release_services "$env_file"',
+    "print_selection",
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive" "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=true"',
+    'configure_media_s3_release_services "$env_file"',
+    "print_selection",
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive" "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=false"',
+    'if configure_media_s3_release_services "$env_file" 2>/dev/null; then exit 20; fi',
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=unknown" "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=true"',
+    'if configure_media_s3_release_services "$env_file" 2>/dev/null; then exit 21; fi',
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive" "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=True"',
+    'if configure_media_s3_release_services "$env_file" 2>/dev/null; then exit 22; fi',
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive"',
+    'if configure_media_s3_release_services "$env_file" 2>/dev/null; then exit 23; fi',
+    'marker="$test_root/must-not-exist"',
+    'write_environment "MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive;touch $marker" "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=true"',
+    'if configure_media_s3_release_services "$env_file" 2>/dev/null; then exit 24; fi',
+    '[[ ! -e "$marker" ]]',
+  ].join("\n");
+  const result = spawnSync("bash", ["-s"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: contractScript,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "||versioned|false\n--profile,strato|strato-privacy-sweeper|strato-hidrive|true\n",
+  );
 });
 
 test("child backup validates the inherited deployment lock without self-deadlock", () => {
@@ -379,10 +465,34 @@ test("app rollback requires explicit compatibility and never mutates the databas
     rollback,
     /up -d --no-deps --wait \\\s+--wait-timeout "\$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS" \\\s+"\$\{DATABASE_DISPATCHER_SERVICES\[@\]\}"/,
   );
-  assert.match(rollback, /All application and media writers remain stopped/);
+  assert.match(
+    rollback,
+    /All application, media, and STRATO deletion writers remain stopped/,
+  );
   assert.match(rollback, /release state and production APP_IMAGE_TAG disagree/);
   assert.match(rollback, /persist_app_image_tag "\$env_file" "\$target_tag"/);
   assert.match(rollback, /verify_media_work_mount "\$env_file"/);
+  assert.match(rollback, /configure_media_s3_release_services "\$env_file"/);
+  assert.match(
+    rollback,
+    /target STRATO privacy sweeper image is not present locally/,
+  );
+  assert.match(
+    rollback,
+    /compose=\(docker compose --env-file "\$env_file" -f "\$compose_file" "\$\{MEDIA_S3_COMPOSE_PROFILE_ARGS\[@\]\}"\)/,
+  );
+  assert.match(
+    rollback,
+    /strato_compose=\(docker compose --env-file "\$env_file" -f "\$compose_file" --profile strato\)/,
+  );
+  assert.match(
+    rollback,
+    /run "\$\{strato_compose\[@\]\}" rm --force --stop "\$STRATO_PRIVACY_SWEEPER_SERVICE"/,
+  );
+  assert.match(
+    rollback,
+    /"\$\{strato_compose\[@\]\}" stop -t 30 "\$STRATO_PRIVACY_SWEEPER_SERVICE"/,
+  );
   assert.match(rollback, /Database was not changed/);
   assert.doesNotMatch(rollback, /\bmigrate\b/);
   assert.doesNotMatch(rollback, /postgres-restore/);
@@ -394,7 +504,12 @@ test("app rollback requires explicit compatibility and never mutates the databas
   const releasePersistence = rollback.indexOf(
     'persist_app_image_tag "$env_file" "$target_tag"',
   );
+  const stratoSweeperHealthGate = rollback.indexOf(
+    '--wait-timeout "$STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS"',
+  );
   assert.ok(dispatcherHealthGate >= 0 && dispatcherHealthGate < releasePersistence);
+  assert.ok(stratoSweeperHealthGate > dispatcherHealthGate);
+  assert.ok(stratoSweeperHealthGate < releasePersistence);
 });
 
 test("release state and upstream image references fail closed", () => {
@@ -458,7 +573,7 @@ test("release state and upstream image references fail closed", () => {
 });
 
 test("production migration and release verification images contain their runtime inputs", () => {
-  const migratorStage = /^FROM base AS migrator\r?\n[\s\S]*?(?=^FROM )/m.exec(
+  const migratorStage = /^FROM runtime-base AS migrator\r?\n[\s\S]*?(?=^FROM )/m.exec(
     dockerfile,
   )?.[0];
   assert.ok(migratorStage, "Missing production migrator stage");
@@ -477,19 +592,20 @@ test("production migration and release verification images contain their runtime
     assert.match(migratorStage, new RegExp(path.replaceAll("/", "\\/")));
   }
   assert.match(dockerfile, /^FROM dependencies AS release-verifier$/m);
-  assert.match(dockerfile, /^FROM dependencies AS media-preflight$/m);
-  assert.match(dockerfile, /^FROM dependencies AS s3-app-principal-preflight$/m);
+  assert.match(dockerfile, /^FROM runtime-base AS media-preflight$/m);
+  assert.match(dockerfile, /^FROM runtime-base AS s3-app-principal-preflight$/m);
   assert.equal(
     dockerfile.match(/src\/lib\/media\/s3-privacy-export-lifecycle\.ts/g)
       ?.length,
     2,
   );
-  assert.match(dockerfile, /ARG DEBIAN_SNAPSHOT=\d{8}T\d{6}Z/);
+  assert.match(dockerfile, /ARG DEBIAN_SNAPSHOT=20260714T202849Z/);
   assert.match(
     dockerfile,
     /ARG CA_CERTIFICATES_VERSION=20230311\+deb12u1/,
   );
   assert.match(dockerfile, /ARG FFMPEG_VERSION=7:5\.1\.9-0\+deb12u1/);
+  assert.match(dockerfile, /ARG MESA_VERSION=22\.3\.6-1\+deb12u2/);
   assert.match(dockerfile, /snapshot\.debian\.org\/archive\/debian-security/);
   assert.equal(
     dockerfile.match(/"ca-certificates=\$\{CA_CERTIFICATES_VERSION\}"/g)
@@ -500,6 +616,20 @@ test("production migration and release verification images contain their runtime
     dockerfile.match(/"ffmpeg=\$\{FFMPEG_VERSION\}"/g)?.length,
     2,
   );
+  for (const packageName of [
+    "libgbm1",
+    "libgl1-mesa-dri",
+    "libglapi-mesa",
+    "libglx-mesa0",
+  ]) {
+    assert.equal(
+      dockerfile.match(
+        new RegExp(`"${packageName}=\\$\\{MESA_VERSION\\}"`, "g"),
+      )?.length,
+      2,
+      packageName,
+    );
+  }
   assert.equal(
     dockerfile.match(
       /s\|http:\/\/snapshot\.debian\.org\|https:\/\/snapshot\.debian\.org\|g/g,
@@ -528,6 +658,44 @@ test("production migration and release verification images contain their runtime
     dockerfile,
     /Verify-Peer|allow-insecure|trusted=(?:yes|true)/i,
   );
+});
+
+test("production runtime images omit package managers and development dependencies", () => {
+  assert.equal(packageManifest.dependencies?.tsx, "^4.23.1");
+  assert.equal(packageManifest.devDependencies?.tsx, undefined);
+
+  const stageMatches = [
+    ...dockerfile.matchAll(/^FROM .+ AS ([a-z0-9-]+)\r?$/gm),
+  ];
+  const stageSource = (name: string) => {
+    const index = stageMatches.findIndex((match) => match[1] === name);
+    assert.notEqual(index, -1, `Missing Docker stage ${name}`);
+    const start = stageMatches[index].index;
+    const end = stageMatches[index + 1]?.index ?? dockerfile.length;
+    return dockerfile.slice(start, end);
+  };
+
+  const runtimeBase = stageSource("runtime-base");
+  assert.match(runtimeBase, /rm -rf --[\s\S]*\/usr\/local\/lib\/node_modules\/npm/);
+  for (const command of ["npm", "npx", "corepack", "yarn", "yarnpkg"]) {
+    assert.match(runtimeBase, new RegExp(`! command -v ${command}\\b`));
+  }
+
+  for (const name of [
+    "migrator",
+    "key-rotation",
+    "tenant-ops",
+    "s3-preflight",
+    "s3-app-principal-preflight",
+    "media-preflight",
+    "runner",
+  ]) {
+    const stage = stageSource(name);
+    assert.match(stage, new RegExp(`^FROM runtime-base AS ${name}$`, "m"));
+    assert.match(stage, /COPY --from=production-dependencies[^\n]+\/app\/node_modules/);
+    assert.doesNotMatch(stage, /COPY --from=dependencies/);
+  }
+  assert.match(dockerfile, /^FROM runner AS media-runner$/m);
 });
 
 test("CI packages, scans, publishes, and attests the exact smoke-tested images", () => {
@@ -568,11 +736,36 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /CI_CA_CERTIFICATES_VERSION: 20230311\+deb12u1/,
   );
+  assert.match(continuousIntegration, /CI_DEBIAN_SNAPSHOT: 20260714T202849Z/);
+  assert.match(continuousIntegration, /CI_MESA_VERSION: 22\.3\.6-1\+deb12u2/);
+  const pinnedNodeImage =
+    "node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
+  assert.equal(continuousIntegration.split(pinnedNodeImage).length - 1, 2);
+  assert.match(dockerfile, new RegExp(`ARG NODE_IMAGE=${pinnedNodeImage}`));
   assert.equal(
     continuousIntegration.match(
       /--build-arg CA_CERTIFICATES_VERSION="\$CI_CA_CERTIFICATES_VERSION"/g,
     )?.length,
     2,
+  );
+  assert.equal(
+    continuousIntegration.match(
+      /--build-arg MESA_VERSION="\$CI_MESA_VERSION"/g,
+    )?.length,
+    2,
+  );
+  assert.match(
+    continuousIntegration,
+    /test ! -e \/usr\/local\/lib\/node_modules\/npm/,
+  );
+  assert.match(continuousIntegration, /test ! -e \/app\/node_modules\/drizzle-kit/);
+  assert.match(
+    continuousIntegration,
+    /tsx_image_components=\(migrator key-rotation tenant-ops media-preflight s3-app-principal-preflight\)/,
+  );
+  assert.match(
+    continuousIntegration,
+    /dpkg-query -W -f='\$\{Version\}' "\$package"/,
   );
   assert.match(
     continuousIntegration,
@@ -609,6 +802,8 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(createReleaseArtifact, /s3-app-principal-preflight/);
   assert.match(createReleaseArtifact, /CI_CA_CERTIFICATES_VERSION/);
   assert.match(createReleaseArtifact, /Q_ACADEMY_CA_CERTIFICATES_VERSION/);
+  assert.match(createReleaseArtifact, /CI_MESA_VERSION/);
+  assert.match(createReleaseArtifact, /Q_ACADEMY_MESA_VERSION/);
   assert.match(createReleaseArtifact, /SHA256SUMS/);
   assert.match(publishReleaseImages, /sha256sum --check --strict/);
   assert.match(publishReleaseImages, /docker push/);

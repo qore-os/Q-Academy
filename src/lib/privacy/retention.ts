@@ -26,7 +26,10 @@ import { deletePrivacyExport } from "@/lib/privacy/export-storage";
 import { privacyActorReference } from "@/lib/privacy/subject-reference";
 import { boundedPrivacyRetentionBatchSize } from "@/lib/privacy/retention-policy";
 import { logServerError } from "@/lib/server-error-logging";
-import { getDatabaseUrl } from "@/lib/server-environment";
+import {
+  getDatabaseUrl,
+  getMediaStorageConfiguration,
+} from "@/lib/server-environment";
 
 export const PRIVACY_FAILED_EXPORT_CLEANUP_GRACE_MS = 5 * 60_000;
 export const PRIVACY_RETENTION_ADVISORY_LOCK_KEY =
@@ -306,10 +309,26 @@ export async function recoverExpiredPrivacyProcessing(
   return recoverExpiredPrivacyProcessingWithDatabase(db, options);
 }
 
-function deletableArtifactCondition(now: Date) {
+function deletableArtifactCondition(
+  now: Date,
+  allowIncompleteStratoIdentity: boolean,
+) {
   const failedBefore = new Date(
     now.getTime() - PRIVACY_FAILED_EXPORT_CLEANUP_GRACE_MS,
   );
+  const completeS3Identity = and(
+    isNotNull(privacyExportArtifacts.storageVersionId),
+    isNotNull(privacyExportArtifacts.storageEtag),
+  );
+  const deletableS3Identity = allowIncompleteStratoIdentity
+    ? or(
+        completeS3Identity,
+        and(
+          isNull(privacyExportArtifacts.storageVersionId),
+          isNull(privacyExportArtifacts.storageEtag),
+        ),
+      )
+    : completeS3Identity;
   return and(
     isNull(privacyExportArtifacts.deletedAt),
     or(
@@ -329,8 +348,7 @@ function deletableArtifactCondition(now: Date) {
           ),
           and(
             eq(privacyExportArtifacts.storageDriver, "s3"),
-            isNotNull(privacyExportArtifacts.storageVersionId),
-            isNotNull(privacyExportArtifacts.storageEtag),
+            deletableS3Identity,
           ),
         ),
       ),
@@ -341,6 +359,7 @@ function deletableArtifactCondition(now: Date) {
 function isDeletableArtifact(
   artifact: typeof privacyExportArtifacts.$inferSelect,
   now: Date,
+  allowIncompleteStratoIdentity: boolean,
 ) {
   if (artifact.deletedAt) return false;
   if (artifact.status === "ready") {
@@ -357,9 +376,14 @@ function isDeletableArtifact(
   ) {
     return false;
   }
-  return artifact.storageDriver === "filesystem"
-    ? artifact.storageVersionId === null && artifact.storageEtag === null
-    : Boolean(artifact.storageVersionId && artifact.storageEtag);
+  const identityIsEmpty =
+    artifact.storageVersionId === null && artifact.storageEtag === null;
+  if (artifact.storageDriver === "filesystem") return identityIsEmpty;
+  const identityIsComplete = Boolean(
+    artifact.storageVersionId && artifact.storageEtag,
+  );
+  return identityIsComplete ||
+    (allowIncompleteStratoIdentity && identityIsEmpty);
 }
 
 export async function cleanupExpiredPrivacyExports(options: {
@@ -393,6 +417,10 @@ export async function cleanupExpiredPrivacyExports(options: {
       "Privacy retention delete timeout must fit inside the work budget.",
     );
   }
+  const storageConfiguration = getMediaStorageConfiguration();
+  const allowIncompleteStratoIdentity =
+    storageConfiguration.driver === "s3" &&
+    storageConfiguration.compatibilityMode === "strato-hidrive";
 
   const deadlineAt = performance.now() + timeBudgetMs;
   if (privacyRetentionLocalState.active) {
@@ -493,7 +521,10 @@ export async function cleanupExpiredPrivacyExports(options: {
       session,
       },
     );
-    const deletable = deletableArtifactCondition(now);
+    const deletable = deletableArtifactCondition(
+      now,
+      allowIncompleteStratoIdentity,
+    );
     if (options.dryRun) {
       if (recovery.budgetExhausted || performance.now() >= deadlineAt) {
         return {
@@ -602,7 +633,16 @@ export async function cleanupExpiredPrivacyExports(options: {
             )
             .limit(1)
             .for("update");
-          if (!current || !isDeletableArtifact(current, now)) return false;
+          if (
+            !current ||
+            !isDeletableArtifact(
+              current,
+              now,
+              allowIncompleteStratoIdentity,
+            )
+          ) {
+            return false;
+          }
           const deleteBudgetMs =
             deadlineAt -
             performance.now() -
@@ -707,7 +747,11 @@ export async function cleanupExpiredPrivacyExports(options: {
               .for("update");
             if (
               !current ||
-              !isDeletableArtifact(current, now) ||
+              !isDeletableArtifact(
+                current,
+                now,
+                allowIncompleteStratoIdentity,
+              ) ||
               current.status !== artifact.status ||
               current.storageDriver !== artifact.storageDriver ||
               current.storageKey !== artifact.storageKey ||

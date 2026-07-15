@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,22 @@ test("processing preflight rejects unsafe roots and ambiguous transcript provide
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_PROCESSING_WORK_ROOT: "/" }), /unsafe/);
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY: "/tmp/vtt" }), /not allowed|exactly one/);
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, Q_ACADEMY_RUNTIME_ROLE: "app" }), /media-worker/);
+});
+
+test("processing preflight dispatches STRATO without weakening the strict provider contract", () => {
+  const source = readFileSync(
+    new URL("../scripts/media-processing-preflight.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /runStratoS3CompatibilityPreflight/);
+  assert.match(
+    source,
+    /if \(storage\.compatibilityMode === "strato-hidrive"\) \{[\s\S]*runStratoS3CompatibilityPreflight\(\{[\s\S]*configuration: storage,[\s\S]*confirmBucket: bucket,[\s\S]*expectedOrigin: browserOrigin\(\),[\s\S]*return;/,
+  );
+  assert.match(
+    source,
+    /const adapter = createAwsS3ProviderContractAdapter\(storage\);[\s\S]*runS3ProviderContractPreflight\(\{ adapter, confirmBucket: bucket \}\)[\s\S]*adapter\.destroy\(\)/,
+  );
 });
 
 test("processing preflight stderr exposes only a stable stage and never child stderr", () => {

@@ -6,13 +6,18 @@ import path from "node:path";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { createS3NodeHttpHandler } from "@/lib/media/s3-operation-timeout";
+import type { S3MediaStorageConfiguration } from "@/lib/media/storage-configuration";
 import {
   normalizeS3Etag,
   requireS3VersionId,
+  requireStratoEtagRevision,
+  s3ObjectLocator,
+  stratoEtagRevision,
 } from "@/lib/media/s3-object-integrity";
 import { S3_PRIVACY_EXPORT_LIFECYCLE_TAGGING } from "@/lib/media/s3-privacy-export-lifecycle";
 import { decryptPayload, encryptPayload } from "@/lib/api/crypto";
@@ -217,6 +222,7 @@ function s3Client(configuration: Extract<
       configuration.accessKeyId,
       configuration.secretAccessKey,
       String(configuration.forcePathStyle),
+      configuration.compatibilityMode,
     ].join("\0"),
   );
   const cached = s3Clients.get(fingerprint);
@@ -277,15 +283,21 @@ async function writeS3Object(storageKey: string, bytes: Buffer) {
         Body: bytes,
         ContentLength: bytes.byteLength,
         ContentType: "application/vnd.q-academy.encrypted+json",
-        Tagging: S3_PRIVACY_EXPORT_LIFECYCLE_TAGGING,
+        ...(configuration.compatibilityMode === "versioned"
+          ? { Tagging: S3_PRIVACY_EXPORT_LIFECYCLE_TAGGING }
+          : {}),
         IfNoneMatch: "*",
       }),
       { abortSignal: AbortSignal.timeout(30_000) },
     );
+    const etag = normalizeS3Etag(response.ETag);
     return {
       driver: "s3" as const,
-      storageVersionId: requireS3VersionId(response.VersionId),
-      storageEtag: normalizeS3Etag(response.ETag),
+      storageVersionId:
+        configuration.compatibilityMode === "strato-hidrive"
+          ? stratoEtagRevision(storageKey, etag)
+          : requireS3VersionId(response.VersionId),
+      storageEtag: etag,
     };
   } catch (error) {
     storageFailure(error);
@@ -428,8 +440,12 @@ async function readStoredBytes(input: {
       s3Client(configuration).send(
         new GetObjectCommand({
           Bucket: configuration.bucket,
-          Key: input.storageKey,
-          VersionId: input.storageVersionId,
+          ...s3ObjectLocator(
+            configuration.compatibilityMode,
+            input.storageKey,
+            input.storageVersionId,
+            input.storageEtag,
+          ),
           IfMatch: quotedEtag(input.storageEtag),
         }),
         { abortSignal: abortController.signal },
@@ -437,6 +453,12 @@ async function readStoredBytes(input: {
       deadlineAt,
     );
     responseBody = response.Body;
+    if (normalizeS3Etag(response.ETag) !== input.storageEtag) {
+      throw new PrivacyExportStorageError(
+        "object_mismatch",
+        "The privacy export object ETag changed.",
+      );
+    }
     const contentLength = response.ContentLength;
     if (
       !responseBody ||
@@ -540,6 +562,63 @@ export async function readPrivacyExport(input: {
   return plaintext;
 }
 
+async function deleteStratoPrivacyExport(input: {
+  configuration: S3MediaStorageConfiguration;
+  storageKey: string;
+  storageVersionId: string | null;
+  storageEtag: string | null;
+  timeoutMs: number;
+}) {
+  if (input.storageVersionId && input.storageEtag) {
+    requireStratoEtagRevision(
+      input.storageKey,
+      input.storageEtag,
+      input.storageVersionId,
+    );
+    const head = await s3Client(input.configuration).send(
+      new HeadObjectCommand({
+        Bucket: input.configuration.bucket,
+        Key: input.storageKey,
+        IfMatch: quotedEtag(input.storageEtag),
+      }),
+      { abortSignal: AbortSignal.timeout(input.timeoutMs) },
+    );
+    if (normalizeS3Etag(head.ETag) !== input.storageEtag) {
+      throw new PrivacyExportStorageError(
+        "object_mismatch",
+        "The privacy export object changed before deletion.",
+      );
+    }
+  }
+  await s3Client(input.configuration).send(
+    new DeleteObjectCommand({
+      Bucket: input.configuration.bucket,
+      Key: input.storageKey,
+    }),
+    { abortSignal: AbortSignal.timeout(input.timeoutMs) },
+  );
+  try {
+    await s3Client(input.configuration).send(
+      new HeadObjectCommand({
+        Bucket: input.configuration.bucket,
+        Key: input.storageKey,
+      }),
+      { abortSignal: AbortSignal.timeout(input.timeoutMs) },
+    );
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "$metadata" in error
+        ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
+        : undefined;
+    if (status === 404) return;
+    throw error;
+  }
+  throw new PrivacyExportStorageError(
+    "object_mismatch",
+    "The privacy export object remained after deletion.",
+  );
+}
+
 export async function deletePrivacyExport(input: {
   organizationId: string;
   requestId: string;
@@ -577,10 +656,19 @@ export async function deletePrivacyExport(input: {
   }
 
   const configuration = getMediaStorageConfiguration();
+  if (configuration.driver !== "s3") {
+    throw new PrivacyExportStorageError(
+      "object_mismatch",
+      "The immutable S3 export identity is incomplete.",
+    );
+  }
+  const hasVersionId = input.storageVersionId !== null;
+  const hasEtag = input.storageEtag !== null;
   if (
-    configuration.driver !== "s3" ||
-    !input.storageVersionId ||
-    !input.storageEtag
+    (configuration.compatibilityMode === "versioned" &&
+      (!hasVersionId || !hasEtag)) ||
+    (configuration.compatibilityMode === "strato-hidrive" &&
+      hasVersionId !== hasEtag)
   ) {
     throw new PrivacyExportStorageError(
       "object_mismatch",
@@ -588,6 +676,22 @@ export async function deletePrivacyExport(input: {
     );
   }
   try {
+    if (configuration.compatibilityMode === "strato-hidrive") {
+      await deleteStratoPrivacyExport({
+        configuration,
+        storageKey: input.storageKey,
+        storageVersionId: input.storageVersionId,
+        storageEtag: input.storageEtag,
+        timeoutMs,
+      });
+      return;
+    }
+    if (!input.storageVersionId || !input.storageEtag) {
+      throw new PrivacyExportStorageError(
+        "object_mismatch",
+        "The immutable S3 export identity is incomplete.",
+      );
+    }
     await s3Client(configuration).send(
       new DeleteObjectCommand({
         Bucket: configuration.bucket,

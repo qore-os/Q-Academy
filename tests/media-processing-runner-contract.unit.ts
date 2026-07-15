@@ -22,14 +22,118 @@ test("S3 processing runner binds exact source versions and verifies output uploa
   assert.match(storage, /VersionId: uploadedVersionId/);
 });
 
+test("derivative cleanup is exact for versioned S3 and claim-fenced for unversioned storage", () => {
+  const worker = source("src/lib/media/processing-worker.ts");
+  const storage = source("src/lib/media/s3-storage.ts");
+  const cleanupStart = worker.indexOf(
+    "async function deleteFailedDerivativeWhileClaimOwned",
+  );
+  const cleanupEnd = worker.indexOf(
+    "async function completeDerivative",
+    cleanupStart,
+  );
+  const cleanup = worker.slice(cleanupStart, cleanupEnd);
+  assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart);
+  assert.match(cleanup, /eq\(mediaProcessingJobs\.status, "processing"\)/);
+  assert.match(
+    cleanup,
+    /eq\(mediaProcessingJobs\.claimToken, job\.claimToken!\)/,
+  );
+  assert.match(cleanup, /\.for\("update"\)/);
+  assert.match(
+    cleanup,
+    /eq\(mediaAssetDerivatives\.processingJobId, job\.id\)/,
+  );
+  const claimLock = cleanup.indexOf('.for("update")');
+  const derivativeAbsenceCheck = cleanup.indexOf(
+    "mediaAssetDerivatives.processingJobId",
+  );
+  const deleteObject = cleanup.indexOf("await deleteStoredMediaObject(identity)");
+  assert.ok(claimLock >= 0 && claimLock < derivativeAbsenceCheck);
+  assert.ok(
+    derivativeAbsenceCheck < deleteObject,
+    "The unversioned delete must remain inside the claim-locked transaction and after the derivative check.",
+  );
+
+  const completeEnd = worker.indexOf("async function readFilePrefix", cleanupEnd);
+  const complete = worker.slice(cleanupEnd, completeEnd);
+  assert.match(
+    complete,
+    /compatibilityMode === "strato-hidrive"[\s\S]*deleteFailedDerivativeWhileClaimOwned\(job, identity\)/,
+  );
+  assert.match(
+    complete,
+    /STRATO derivative cleanup could not be verified/,
+  );
+  assert.doesNotMatch(
+    complete,
+    /deleteFailedDerivativeWhileClaimOwned\(job, identity\)\.catch/,
+  );
+  assert.match(
+    complete,
+    /compatibilityMode === "versioned"[\s\S]*stored\?\.versionId[\s\S]*deleteStoredMediaObjectRevision\(identity, stored\.versionId\)/,
+  );
+  assert.match(complete, /\.for\("update"\)/);
+  assert.ok(
+    complete.indexOf('.for("update")') <
+      complete.indexOf("mediaTenantQuotaLockQuery"),
+    "A stale claim must fail before quota accounting or derivative insertion.",
+  );
+  assert.doesNotMatch(
+    complete,
+    /catch \(error\) \{\s*await deleteStoredMediaObject\(identity\)/,
+  );
+
+  const uploadWrapper = storage.slice(
+    storage.indexOf("export async function putS3ProcessedObject"),
+    storage.indexOf("export async function deleteS3Object"),
+  );
+  assert.match(
+    uploadWrapper,
+    /try \{[\s\S]*await putS3ProcessedObjectOnce\(configuration, input\)[\s\S]*finally \{[\s\S]*input\.body\.destroy\(\)/,
+  );
+  assert.match(storage, /VersionId: stableVersionId/);
+});
+
+test("processing jobs renew their owned lease and abort work after claim loss", () => {
+  const worker = source("src/lib/media/processing-worker.ts");
+  const leaseStart = worker.indexOf("async function withMediaProcessingLease");
+  const leaseEnd = worker.indexOf("async function hashFile", leaseStart);
+  const lease = worker.slice(leaseStart, leaseEnd);
+  assert.ok(leaseStart >= 0 && leaseEnd > leaseStart);
+  assert.match(lease, /PROCESSING_LEASE_HEARTBEAT_MS/);
+  assert.match(lease, /eq\(mediaProcessingJobs\.status, "processing"\)/);
+  assert.match(lease, /eq\(mediaProcessingJobs\.claimToken, job\.claimToken!\)/);
+  assert.match(lease, /leaseExpiresAt: new Date\(now\.getTime\(\) \+ PROCESSING_LEASE_MS\)/);
+  assert.match(lease, /leaseController\.abort/);
+  assert.match(worker, /withMediaProcessingLease\(job, \(signal\) =>/);
+  assert.match(worker, /processClaimedJob\(job, signal\)/);
+  const dispatchRoute = source(
+    "src/app/api/internal/jobs/media/dispatch/route.ts",
+  );
+  assert.match(dispatchRoute, /export const maxDuration = 14_400/);
+});
+
 test("production runner uses FFmpeg and a bounded disk-backed work root", () => {
   const dockerfile = source("Dockerfile");
   const compose = source("compose.production.yml");
   assert.match(dockerfile, /FROM runner AS media-runner/);
   assert.match(
     dockerfile,
-    /install --yes --no-install-recommends "ffmpeg=\$\{FFMPEG_VERSION\}"/,
+    /install --yes --no-install-recommends[\s\S]*"ffmpeg=\$\{FFMPEG_VERSION\}"/,
   );
+  assert.match(dockerfile, /ARG MESA_VERSION=22\.3\.6-1\+deb12u2/);
+  for (const packageName of [
+    "libgbm1",
+    "libgl1-mesa-dri",
+    "libglapi-mesa",
+    "libglx-mesa0",
+  ]) {
+    assert.match(
+      dockerfile,
+      new RegExp(`"${packageName}=\\$\\{MESA_VERSION\\}"`),
+    );
+  }
   assert.match(dockerfile, /snapshot\.debian\.org\/archive\/debian/);
   assert.match(compose, /target: media-runner/);
   assert.match(

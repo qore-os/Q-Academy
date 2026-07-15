@@ -31,6 +31,7 @@ validated_origin=""
 validated_project_name=""
 validated_bucket=""
 validated_storage_endpoint=""
+validated_storage_compatibility_mode=""
 started_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 ended_at=""
 failure_code="validation_failed"
@@ -99,6 +100,8 @@ download_file=""
 download_headers_file=""
 download_config_file=""
 download_error_file=""
+download_range_file=""
+download_range_headers_file=""
 delete_response_file=""
 preflight_output_file=""
 declare -a compose=()
@@ -182,7 +185,7 @@ json_status_or_null() {
 
 write_report() {
   local final_status="$1"
-  printf '{"schemaVersion":1,"drill":"staging_storage_pipeline_outage","status":"%s","failureCode":' \
+  printf '{"schemaVersion":2,"drill":"staging_storage_pipeline_outage","status":"%s","failureCode":' \
     "${final_status}"
   if [[ "${final_status}" == "passed" ]]; then
     printf 'null'
@@ -193,6 +196,8 @@ write_report() {
   json_string_or_null "${validated_origin}"
   printf ',"composeProject":'
   json_string_or_null "${validated_project_name}"
+  printf ',"storageCompatibilityMode":'
+  json_string_or_null "${validated_storage_compatibility_mode}"
   printf ',"startedAt":"%s","endedAt":"%s"' "${started_at}" "${ended_at}"
   printf ',"checks":{"baseline":{"live":'
   json_status_or_null "${baseline_live_status}"
@@ -383,13 +388,14 @@ verify_service_containers() {
   done <<<"${ids}"
 }
 
-readonly STORAGE_PROBE_SCRIPT='const expectedEndpoint=process.argv[1];const expectedBucket=process.argv[2];const raw=process.env.MEDIA_S3_ENDPOINT;let endpoint;try{endpoint=new URL(raw)}catch{process.exit(2)}if(raw!==expectedEndpoint||process.env.MEDIA_S3_BUCKET!==expectedBucket||endpoint.protocol!=="https:"||endpoint.username||endpoint.password||endpoint.pathname!=="/"||endpoint.search||endpoint.hash)process.exit(3);fetch(endpoint,{method:"HEAD",redirect:"manual",signal:AbortSignal.timeout(10000)}).then((response)=>{if(response.status<100||response.status>599)process.exit(4);process.stdout.write("reachable")}).catch(()=>process.exit(5))'
+readonly STORAGE_PROBE_SCRIPT='const expectedEndpoint=process.argv[1];const expectedBucket=process.argv[2];const expectedMode=process.argv[3];const raw=process.env.MEDIA_S3_ENDPOINT;let endpoint;try{endpoint=new URL(raw)}catch{process.exit(2)}if(raw!==expectedEndpoint||process.env.MEDIA_S3_BUCKET!==expectedBucket||process.env.MEDIA_S3_COMPATIBILITY_MODE!==expectedMode||!new Set(["versioned","strato-hidrive"]).has(expectedMode)||endpoint.protocol!=="https:"||endpoint.username||endpoint.password||endpoint.pathname!=="/"||endpoint.search||endpoint.hash)process.exit(3);fetch(endpoint,{method:"HEAD",redirect:"manual",signal:AbortSignal.timeout(10000)}).then((response)=>{if(response.status<100||response.status>599)process.exit(4);process.stdout.write("reachable")}).catch(()=>process.exit(5))'
 
 storage_endpoint_reachable() {
   local result=""
   result="$(
     run_compose_with_timeout exec -T media-runner node -e \
-      "${STORAGE_PROBE_SCRIPT}" "${validated_storage_endpoint}" "${validated_bucket}"
+      "${STORAGE_PROBE_SCRIPT}" "${validated_storage_endpoint}" \
+      "${validated_bucket}" "${validated_storage_compatibility_mode}"
   )" || return 1
   [[ "${result}" == "reachable" ]]
 }
@@ -398,7 +404,8 @@ app_storage_endpoint_reachable() {
   local result=""
   result="$(
     run_compose_with_timeout exec -T app node -e \
-      "${STORAGE_PROBE_SCRIPT}" "${validated_storage_endpoint}" "${validated_bucket}"
+      "${STORAGE_PROBE_SCRIPT}" "${validated_storage_endpoint}" \
+      "${validated_bucket}" "${validated_storage_compatibility_mode}"
   )" || return 1
   [[ "${result}" == "reachable" ]]
 }
@@ -806,6 +813,7 @@ validated_origin="${Q_ACADEMY_STAGING_ORIGIN}"
 validated_project_name="${Q_ACADEMY_STAGING_PROJECT_NAME}"
 validated_bucket="${Q_ACADEMY_STAGING_MEDIA_S3_BUCKET}"
 validated_storage_endpoint="${Q_ACADEMY_STAGING_MEDIA_S3_ENDPOINT}"
+validated_storage_compatibility_mode="${Q_ACADEMY_STAGING_MEDIA_S3_COMPATIBILITY_MODE}"
 
 for required_command in curl date docker id mktemp node sha256sum sleep stat timeout; do
   command -v "${required_command}" >/dev/null 2>&1 ||
@@ -862,6 +870,8 @@ download_file="${work_directory}/downloaded-canary.txt"
 download_headers_file="${work_directory}/download-headers.txt"
 download_config_file="${work_directory}/download.curl"
 download_error_file="${work_directory}/download-error.log"
+download_range_file="${work_directory}/downloaded-canary-range.txt"
+download_range_headers_file="${work_directory}/download-range-headers.txt"
 delete_response_file="${work_directory}/delete-response.json"
 preflight_output_file="${work_directory}/media-preflight.log"
 sensitive_files=(
@@ -870,6 +880,7 @@ sensitive_files=(
   "${complete_response_file}" "${asset_response_file}"
   "${dispatch_response_file}" "${download_file}" "${download_headers_file}"
   "${download_config_file}" "${download_error_file}" "${delete_response_file}"
+  "${download_range_file}" "${download_range_headers_file}"
   "${preflight_output_file}"
 )
 for sensitive_file in "${sensitive_files[@]}"; do
@@ -1039,12 +1050,16 @@ if ! node "${JSON_HELPER}" write-upload-config \
   "${create_response_file}" "${session_response_file}" "${asset_id}" \
   "${canary_file}" \
   "${upload_config_file}" "${validated_storage_endpoint}" \
-  "${validated_bucket}" >/dev/null 2>&1; then
+  "${validated_bucket}" "${validated_storage_compatibility_mode}" \
+  >/dev/null 2>&1; then
   fail "test_asset_create_failed" "The upload authorization contract was invalid."
 fi
 upload_status="$(curl --config "${upload_config_file}" 2>"${upload_error_file}")" ||
   fail "test_asset_upload_failed" "The disposable object upload failed."
-if [[ "${upload_status}" != "200" ]]; then
+if [[ ( "${validated_storage_compatibility_mode}" == "versioned" &&
+        "${upload_status}" != "200" ) ||
+      ( "${validated_storage_compatibility_mode}" == "strato-hidrive" &&
+        "${upload_status}" != "201" ) ]]; then
   fail "test_asset_upload_failed" "The storage provider rejected the disposable object upload."
 fi
 : >"${complete_response_file}"
@@ -1124,39 +1139,90 @@ if [[ "${recovery_queue_depth}" != "0" || "${recovery_failed_jobs}" != "0" ||
   fail "queue_drain_failed" "The media scan and processing queues did not return to the clean baseline."
 fi
 
-log "Verifying the immutable recovered download without exposing its signed URL..."
-download_redirect_status="$(
-  curl --silent --show-error \
-    --output /dev/null \
-    --dump-header "${download_headers_file}" \
-    --write-out '%{http_code}' \
-    --connect-timeout "${REQUEST_TIMEOUT_SECONDS}" \
-    --max-time "${REQUEST_TIMEOUT_SECONDS}" \
-    --noproxy '*' \
-    --proto '=https' \
-    --tlsv1.2 \
-    --cookie "${session_cookie_file}" \
-    --header 'Accept: text/plain' \
-    --header 'Cache-Control: no-cache' \
-    --header 'User-Agent: q-academy-staging-storage-drill/1.0' \
-    "${validated_origin}/api/media-assets/${asset_id}/download"
-)" || fail "download_verification_failed" "The recovered canary download failed."
-if [[ "${download_redirect_status}" != "307" ]]; then
-  fail "download_verification_failed" "The recovered canary did not return the private S3 download contract."
-fi
-: >"${download_file}"
-if ! node "${JSON_HELPER}" write-download-config \
-  "${download_headers_file}" "${session_response_file}" "${asset_id}" \
-  "${download_config_file}" "${download_file}" \
-  "${validated_storage_endpoint}" "${validated_bucket}" >/dev/null 2>&1; then
-  fail "download_verification_failed" "The recovered download authorization targeted an unconfirmed storage location."
+log "Verifying the immutable recovered download without exposing authorization material..."
+declare -a session_download_request=(
+  curl --silent --show-error
+  --dump-header "${download_headers_file}"
+  --write-out '%{http_code}'
+  --connect-timeout "${REQUEST_TIMEOUT_SECONDS}"
+  --max-time "${REQUEST_TIMEOUT_SECONDS}"
+  --noproxy '*'
+  --proto '=https'
+  --tlsv1.2
+  --cookie "${session_cookie_file}"
+  --header 'Accept: text/plain'
+  --header 'Cache-Control: no-cache'
+  --header 'User-Agent: q-academy-staging-storage-drill/1.0'
+)
+if [[ "${validated_storage_compatibility_mode}" == "versioned" ]]; then
+  session_download_request+=(--output /dev/null)
+else
+  : >"${download_file}"
+  session_download_request+=(--output "${download_file}")
 fi
 download_status="$(
-  curl --config "${download_config_file}" 2>"${download_error_file}"
-)" || fail "download_verification_failed" "The confirmed storage download failed."
-if [[ "${download_status}" != "200" ]]; then
-  fail "download_verification_failed" "The recovered canary download did not return HTTP 200."
-fi
+  "${session_download_request[@]}" \
+    "${validated_origin}/api/media-assets/${asset_id}/download"
+)" || fail "download_verification_failed" "The recovered canary download failed."
+
+case "${validated_storage_compatibility_mode}" in
+  versioned)
+    if [[ "${download_status}" != "307" ]]; then
+      fail "download_verification_failed" "The recovered canary did not return the versioned S3 redirect contract."
+    fi
+    : >"${download_file}"
+    if ! node "${JSON_HELPER}" write-download-config \
+      "${download_headers_file}" "${session_response_file}" "${asset_id}" \
+      "${download_config_file}" "${download_file}" \
+      "${validated_storage_endpoint}" "${validated_bucket}" \
+      "${validated_storage_compatibility_mode}" >/dev/null 2>&1; then
+      fail "download_verification_failed" "The recovered download authorization targeted an unconfirmed storage location."
+    fi
+    download_status="$(
+      curl --config "${download_config_file}" 2>"${download_error_file}"
+    )" || fail "download_verification_failed" "The confirmed storage download failed."
+    if [[ "${download_status}" != "200" ]]; then
+      fail "download_verification_failed" "The recovered versioned S3 object did not return HTTP 200."
+    fi
+    ;;
+  strato-hidrive)
+    if [[ "${download_status}" != "200" ]] ||
+       ! node "${JSON_HELPER}" validate-proxy-download \
+         "${download_headers_file}" "${download_file}" "${canary_file}" \
+         full "${validated_storage_compatibility_mode}" >/dev/null 2>&1; then
+      fail "download_verification_failed" "The recovered STRATO object did not return the exact application proxy contract."
+    fi
+    : >"${download_range_file}"
+    : >"${download_range_headers_file}"
+    download_range_status="$(
+      curl --silent --show-error \
+        --output "${download_range_file}" \
+        --dump-header "${download_range_headers_file}" \
+        --write-out '%{http_code}' \
+        --connect-timeout "${REQUEST_TIMEOUT_SECONDS}" \
+        --max-time "${REQUEST_TIMEOUT_SECONDS}" \
+        --noproxy '*' \
+        --proto '=https' \
+        --tlsv1.2 \
+        --cookie "${session_cookie_file}" \
+        --header 'Accept: text/plain' \
+        --header 'Cache-Control: no-cache' \
+        --header 'Range: bytes=0-0' \
+        --header 'User-Agent: q-academy-staging-storage-drill/1.0' \
+        "${validated_origin}/api/media-assets/${asset_id}/download"
+    )" || fail "download_verification_failed" "The recovered STRATO range download failed."
+    if [[ "${download_range_status}" != "206" ]] ||
+       ! node "${JSON_HELPER}" validate-proxy-download \
+         "${download_range_headers_file}" "${download_range_file}" \
+         "${canary_file}" range "${validated_storage_compatibility_mode}" \
+         >/dev/null 2>&1; then
+      fail "download_verification_failed" "The recovered STRATO object did not return the exact byte-range proxy contract."
+    fi
+    ;;
+  *)
+    fail "download_verification_failed" "The confirmed storage mode became invalid."
+    ;;
+esac
 read -r canary_hash _ < <(sha256sum -- "${canary_file}")
 read -r download_hash _ < <(sha256sum -- "${download_file}")
 if [[ ! "${canary_hash}" =~ ^[a-f0-9]{64}$ ||

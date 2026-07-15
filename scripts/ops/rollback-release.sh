@@ -31,7 +31,8 @@ cleanup_failed_rollback() {
   trap - EXIT
   if [[ "$exit_code" -ne 0 && "$writers_stopped" == "true" && "$rollback_completed" != "true" ]]; then
     "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}" >/dev/null 2>&1 || true
-    printf 'Rollback failed. All application and media writers remain stopped for investigation.\n' >&2
+    "${strato_compose[@]}" stop -t 30 "$STRATO_PRIVACY_SWEEPER_SERVICE" >/dev/null 2>&1 || true
+    printf 'Rollback failed. All application, media, and STRATO deletion writers remain stopped for investigation.\n' >&2
   fi
   exit "$exit_code"
 }
@@ -51,6 +52,7 @@ fi
 assert_release_environment_writable "$env_file" || fail "production environment cannot be updated atomically"
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
+configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 configured_tag="$(production_env_value "$env_file" APP_IMAGE_TAG)" || fail "APP_IMAGE_TAG is invalid"
 [[ "$configured_tag" == "$current_tag" ]] || fail "release state and production APP_IMAGE_TAG disagree"
 
@@ -63,14 +65,19 @@ flock -n 9 || fail "another release operation is active"
 
 docker image inspect "q-academy-app:$target_tag" >/dev/null 2>&1 || fail "target app image is not present locally"
 docker image inspect "q-academy-media-runner:$target_tag" >/dev/null 2>&1 || fail "target media runner image is not present locally"
+if (( ${#MEDIA_S3_RELEASE_SERVICES[@]} > 0 )); then
+  docker image inspect "q-academy-s3-app-principal-preflight:$target_tag" >/dev/null 2>&1 || fail "target STRATO privacy sweeper image is not present locally"
+fi
 export APP_IMAGE_TAG="$target_tag"
-compose=(docker compose --env-file "$env_file" -f "$compose_file")
+compose=(docker compose --env-file "$env_file" -f "$compose_file" "${MEDIA_S3_COMPOSE_PROFILE_ARGS[@]}")
+strato_compose=(docker compose --env-file "$env_file" -f "$compose_file" --profile strato)
 run "${compose[@]}" config --quiet
 run "${compose[@]}" run --rm --no-deps database-config-preflight
-run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"
 if [[ "$dry_run" != "true" ]]; then
   writers_stopped=true
 fi
+run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"
+run "${strato_compose[@]}" rm --force --stop "$STRATO_PRIVACY_SWEEPER_SERVICE"
 run "${compose[@]}" up -d --no-deps --wait --wait-timeout 300 "${DATABASE_RUNTIME_SERVICES[@]}"
 for runtime_service in "${DATABASE_RUNTIME_SERVICES[@]}"; do
   run "${compose[@]}" exec -T \
@@ -83,6 +90,11 @@ run curl --fail --show-error --silent --retry 12 --retry-delay 5 \
 run "${compose[@]}" up -d --no-deps --wait \
   --wait-timeout "$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS" \
   "${DATABASE_DISPATCHER_SERVICES[@]}"
+if (( ${#MEDIA_S3_RELEASE_SERVICES[@]} > 0 )); then
+  run "${compose[@]}" up -d --no-deps --wait \
+    --wait-timeout "$STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS" \
+    "${MEDIA_S3_RELEASE_SERVICES[@]}"
+fi
 
 if [[ "$dry_run" != "true" ]]; then
   persist_app_image_tag "$env_file" "$target_tag" || fail "could not persist APP_IMAGE_TAG"

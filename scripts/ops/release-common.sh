@@ -31,6 +31,10 @@ DATABASE_DISPATCHER_SERVICES=(scheduler media-worker media-maintenance)
 DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS=1800
 S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS=1200
 MEDIA_PROCESSING_PREFLIGHT_TIMEOUT_SECONDS=1800
+STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS=1800
+STRATO_PRIVACY_SWEEPER_SERVICE=strato-privacy-sweeper
+MEDIA_S3_COMPOSE_PROFILE_ARGS=()
+MEDIA_S3_RELEASE_SERVICES=()
 
 predeploy_backup_decision() {
   local initial_install="$1"
@@ -65,6 +69,42 @@ production_env_value() {
   value="$(sed -n "s/^${name}=//p" "$env_file")"
   value="${value%$'\r'}"
   printf '%s' "$value"
+}
+
+configure_media_s3_release_services() {
+  local env_file="$1"
+  local compatibility_mode limitations_accepted
+
+  MEDIA_S3_COMPOSE_PROFILE_ARGS=()
+  MEDIA_S3_RELEASE_SERVICES=()
+
+  compatibility_mode="$(production_env_value "$env_file" MEDIA_S3_COMPATIBILITY_MODE)" || return 1
+  limitations_accepted="$(production_env_value "$env_file" MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED)" || return 1
+  [[ "$limitations_accepted" == "true" || "$limitations_accepted" == "false" ]] || {
+    printf 'MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED must be exactly true or false.\n' >&2
+    return 1
+  }
+
+  case "$compatibility_mode" in
+    versioned)
+      ;;
+    strato-hidrive)
+      [[ "$limitations_accepted" == "true" ]] || {
+        printf 'MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED must be exactly true in strato-hidrive mode.\n' >&2
+        return 1
+      }
+      MEDIA_S3_COMPOSE_PROFILE_ARGS=(--profile strato)
+      MEDIA_S3_RELEASE_SERVICES=(strato-privacy-sweeper)
+      ;;
+    *)
+      printf 'MEDIA_S3_COMPATIBILITY_MODE must be exactly versioned or strato-hidrive.\n' >&2
+      return 1
+      ;;
+  esac
+
+  printf -v MEDIA_S3_COMPATIBILITY_MODE '%s' "$compatibility_mode"
+  printf -v MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED '%s' "$limitations_accepted"
+  export MEDIA_S3_COMPATIBILITY_MODE MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED
 }
 
 verify_and_export_pinned_images() {

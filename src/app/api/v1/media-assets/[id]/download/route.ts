@@ -8,10 +8,9 @@ import {
 import { apiScopeIsGranted } from "@/lib/api/scopes";
 import {
   mediaAssetForTenant,
-  mediaAssetIdentity,
 } from "@/lib/media/asset-service";
+import { mediaDownloadResponse } from "@/lib/media/download-response";
 import { handleMediaRawResponse } from "@/lib/media/raw-api";
-import { createMediaDownloadAuthorization } from "@/lib/media/storage";
 
 export const dynamic = "force-dynamic";
 export const OPTIONS = apiOptions;
@@ -44,24 +43,11 @@ export async function GET(request: Request, { params }: Context) {
         new URL(request.url).searchParams.get("disposition") === "inline"
           ? "inline"
           : "attachment";
-      const authorization = await createMediaDownloadAuthorization({
-        identity: mediaAssetIdentity(asset, "ready"),
-        safeFileName: asset.safeFileName,
+      return mediaDownloadResponse({
+        request,
+        asset,
         disposition,
-        storageVersionId: asset.storageVersionId,
-        expectedEtag: asset.etag,
-        expectedSha256: asset.contentSha256,
-        expectedSizeBytes: asset.actualSizeBytes,
-        expectedMimeType:
-          asset.detectedMimeType ?? asset.declaredMimeType,
-      });
-      return new Response(null, {
-        status: 307,
-        headers: {
-          "Cache-Control": "private, no-store",
-          Location: authorization.url,
-          "X-Content-Type-Options": "nosniff",
-        },
+        cacheControl: "private, no-store",
       });
     },
   );

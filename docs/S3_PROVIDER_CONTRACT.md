@@ -8,11 +8,68 @@ ausschliesslich zwei Objekte unter einem zufaelligen Praefix der Form
 `q-academy-provider-contract-canary/v1/<uuid>/`. Die Produktpraefixe
 `incoming/` und `tenants/` werden weder gelesen noch veraendert.
 
+## Vertragsmodi
+
+`MEDIA_S3_COMPATIBILITY_MODE=versioned` ist der vollstaendige Vertrag. Fuer ihn
+gelten alle nachfolgenden Anforderungen an Versionierung, Lifecycle,
+Objekt-Tags, konditionale Mutationen und getrennte Principals unveraendert.
+
+STRATO HiDrive Object Storage darf nur ueber den expliziten, anbieterspezifischen
+Modus aktiviert werden:
+
+```dotenv
+MEDIA_S3_ENDPOINT=https://s3.hidrive.strato.com
+MEDIA_S3_REGION=eu-central-1
+MEDIA_S3_FORCE_PATH_STYLE=true
+MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive
+MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=true
+```
+
+Das Acceptance-Flag ist eine dokumentierte Risikoannahme und kein Ersatz fuer
+eine Provider-Faehigkeit. Der gegen STRATO verifizierte Vertrag ist gegenueber
+`versioned` reduziert:
+
+- Es gibt keine belastbare Objekt-`VersionId`; native Bucket-Versionierung und
+  Lifecycle-Abfragen sind nicht verfuegbar. Ueberschriebene oder geloeschte
+  Objekte koennen deshalb nicht ueber Q-Academy auf eine alte Provider-Version
+  zurueckgesetzt werden.
+- Objekt-Tags sowie ein nativer Acht-Tage-Lifecycle fuer Datenschutzexporte
+  sind nicht verfuegbar. Der App-Scheduler loescht nach sieben Tagen; ein davon
+  unabhaengiger, begrenzter STRATO-Sweeper muss alle passenden Exportobjekte
+  spaetestens nach acht Tagen entfernen und seine Abwesenheitspruefung
+  protokollieren. Ohne diesen Sweeper ist der Modus nicht produktionsreif.
+  Der Compose-Service `strato-privacy-sweeper` laeuft mit dem Profil `strato`
+  alle 15 Minuten, verwendet eine Stunde Sicherheitsabstand zur Acht-Tage-Grenze
+  und wird nur nach einem verifizierten Sweep gesund.
+- STRATO erzwingt weder `If-None-Match: *` beim Schreiben noch `If-Match` beim
+  Loeschen verlaesslich. Q-Academy verwendet deshalb nicht wiederverwendete,
+  vollstaendige UUID-Keys, prueft Zielabwesenheit, bindet Reads und Copy an den
+  ETag und verifiziert nach einem exakten unversionierten Delete die
+  Abwesenheit per HEAD.
+- Die verwendeten HiDrive-Zugangsschluessel liefern keinen nachgewiesenen
+  Prefix-IAM-/Least-Privilege-Vertrag. Getrennte `MEDIA_S3_APP_*`- und
+  Worker-Werte stellen dort allein keine Rechteisolation her. Fuer einen
+  begrenzten Schadensradius soll der gesamte HiDrive-Objektspeichervertrag nur
+  Q-Academy dienen; Schluessel werden als accountweite Secrets behandelt und
+  gemeinsam rotiert.
+- Direkte Browser-PUTs scheitern an der fehlenden OPTIONS-CORS-Antwort. Der
+  STRATO-Modus verwendet einen signierten Multipart-POST ohne eigene
+  Request-Header; Upload-Fortschritt ist dabei nur als Start/Abschluss bekannt.
+
+Der Modus liefert damit bewusst keine Paritaet zum strikten versionierten
+Vertrag. Positive STRATO-Canaries muessen PUT/POST, HEAD/GET mit Metadaten und
+ETag, ETag-gebundenes Copy, exaktes Delete und vollstaendigen Cleanup belegen;
+nicht verfuegbare Versionierungs-, Lifecycle-, Tagging-, Conditional-Write- und
+Least-Privilege-Eigenschaften muessen in der Abnahme sichtbar `false` bleiben.
+
 ## Voraussetzungen
 
 - `MEDIA_S3_ENDPOINT`, `MEDIA_S3_REGION`, `MEDIA_S3_BUCKET`,
   `MEDIA_S3_ACCESS_KEY_ID`, `MEDIA_S3_SECRET_ACCESS_KEY` und optional
   `MEDIA_S3_FORCE_PATH_STYLE` zeigen auf die abzunehmende Umgebung.
+  `MEDIA_S3_COMPATIBILITY_MODE` und
+  `MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED` muessen ebenfalls an den Preflight
+  weitergereicht werden. Ohne Modus gilt der strikte `versioned`-Vertrag.
 - Der Bucket-Name wird dem Befehl ein zweites Mal und exakt mit
   `--confirm-bucket` uebergeben. Bei einer Abweichung findet kein
   Provider-Zugriff statt.
@@ -46,8 +103,9 @@ ausschliesslich zwei Objekte unter einem zufaelligen Praefix der Form
 Auf dem Rootserver wird ein separates, kurzlebiges Operator-Image gebaut. Der
 Container darf nicht die vollstaendige Produktionsumgebung mit Datenbank-,
 Session-, Mail-, Webhook- oder KI-Secrets erhalten. Stattdessen filtert `awk`
-ohne `source`, Shell-Evaluation oder Ausgabe der Werte ausschliesslich die sechs
-S3-Einstellungen in eine temporaere Datei mit Modus `0600`. Ein Trap entfernt
+ohne `source`, Shell-Evaluation oder Ausgabe der Werte ausschliesslich die acht
+S3-Einstellungen und den oeffentlichen HTTPS-Origin in eine temporaere Datei
+mit Modus `0600`. Ein Trap entfernt
 Datei und Operator-Image auch bei Abbruch:
 
 ```bash
@@ -78,7 +136,10 @@ export NODE_IMAGE="$(sed -n 's/^NODE_IMAGE=//p' "$Q_ACADEMY_ENV_FILE")"
     $1 == "MEDIA_S3_BUCKET" ||
     $1 == "MEDIA_S3_ACCESS_KEY_ID" ||
     $1 == "MEDIA_S3_SECRET_ACCESS_KEY" ||
-    $1 == "MEDIA_S3_FORCE_PATH_STYLE" { print }
+    $1 == "MEDIA_S3_FORCE_PATH_STYLE" ||
+    $1 == "MEDIA_S3_COMPATIBILITY_MODE" ||
+    $1 == "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED" ||
+    $1 == "NEXT_PUBLIC_APP_URL" { print }
   ' "$Q_ACADEMY_ENV_FILE" >"$PREFLIGHT_ENV"
   chmod 0600 "$PREFLIGHT_ENV"
 
@@ -95,7 +156,8 @@ unset NODE_IMAGE
 
 In einer vorbereiteten Operator-Arbeitskopie oder CI-Umgebung ist derselbe Test
 als NPM-Script verfuegbar. Der Prozess darf auch dort nur die oben genannten
-S3-Variablen erhalten; die Produktionsdatei wird weder geladen noch evaluiert:
+S3-Variablen und `NEXT_PUBLIC_APP_URL` erhalten; die Produktionsdatei wird
+weder geladen noch evaluiert:
 
 ```bash
 npm run -- media:s3:preflight -- \

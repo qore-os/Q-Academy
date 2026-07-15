@@ -34,9 +34,10 @@ type UploadIntent = BrowserSessionMediaAsset & {
   completeUrl: string | null;
   upload: {
     transport: "s3" | "application";
-    method: "PUT";
+    method: "PUT" | "POST";
     url: string;
-    headers: Record<string, string>;
+    headers?: Record<string, string>;
+    fields?: Record<string, string>;
   } | null;
 };
 
@@ -69,23 +70,47 @@ function uploadFile(
       return;
     }
     xhr.open(authorization.method, target.href);
-    for (const [name, value] of Object.entries(
-      browserUploadHeaders(authorization.headers),
-    )) {
-      xhr.setRequestHeader(name, value);
-    }
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    if (authorization.method === "PUT") {
+      for (const [name, value] of Object.entries(
+        browserUploadHeaders(authorization.headers ?? {}),
+      )) {
+        xhr.setRequestHeader(name, value);
       }
-    };
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable && event.total > 0) {
+          onProgress(
+            Math.min(100, Math.round((event.loaded / event.total) * 100)),
+          );
+        }
+      };
+    }
     xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress(100);
+        resolve();
+      }
       else reject(new Error("Der Datei-Upload wurde vom Speicher abgelehnt."));
     };
     xhr.onerror = () => reject(new Error("Der Datei-Upload ist fehlgeschlagen."));
     xhr.onabort = () => reject(new DOMException("Upload aborted", "AbortError"));
     signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    if (authorization.method === "POST") {
+      if (!authorization.fields) {
+        reject(new Error("Die Upload-Felder fehlen."));
+        return;
+      }
+      const form = new FormData();
+      for (const [name, value] of Object.entries(authorization.fields)) {
+        form.append(name, value);
+      }
+      form.append("file", file);
+      onProgress(0);
+      // Do not attach an upload-progress listener or custom request headers:
+      // either would turn this multipart POST into a CORS-preflight request,
+      // which STRATO HiDrive Object Storage does not answer correctly.
+      xhr.send(form);
+      return;
+    }
     xhr.send(file);
   });
 }

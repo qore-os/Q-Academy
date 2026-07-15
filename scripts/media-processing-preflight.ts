@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { runClamAvPreflight } from "../src/lib/media/clamav-preflight";
 import { createAwsS3ProviderContractAdapter } from "../src/lib/media/s3-provider-contract-aws";
 import { runS3ProviderContractPreflight } from "../src/lib/media/s3-provider-contract";
+import { runStratoS3CompatibilityPreflight } from "../src/lib/media/s3-strato-compatibility-preflight";
 import { resolveMediaProcessingPreflightConfiguration } from "../src/lib/media/processing-preflight";
 import { runBoundedMediaCommand } from "../src/lib/media/processing-provider";
 import { resolveMediaStorageConfiguration } from "../src/lib/media/storage-configuration";
@@ -29,6 +30,11 @@ type MediaPreflightStage =
   | "clamav"
   | "s3_provider";
 let currentStage: MediaPreflightStage = "configuration";
+
+function browserOrigin() {
+  return process.env.NEXT_PUBLIC_APP_URL ??
+    (process.env.APP_DOMAIN ? `https://${process.env.APP_DOMAIN}` : "");
+}
 
 async function main() {
   currentStage = "configuration";
@@ -63,6 +69,28 @@ async function main() {
     configuration: storage.clamAv,
   });
   currentStage = "s3_provider";
+  if (storage.compatibilityMode === "strato-hidrive") {
+    const result = await runStratoS3CompatibilityPreflight({
+      configuration: storage,
+      confirmBucket: bucket,
+      expectedOrigin: browserOrigin(),
+    });
+    console.log(JSON.stringify({
+      ok: true,
+      bucket: result.bucket,
+      cleanup: "verified",
+      storageMode: result.mode,
+      nativeVersioning: result.nativeVersioning,
+      nativeLifecycle: result.nativeLifecycle,
+      principalIsolationVerified: result.principalIsolationVerified,
+      clamAv,
+      ffmpeg: true,
+      ffprobe: true,
+      transcript: configuration.transcript.mode,
+      workRoot: configuration.workRoot,
+    }));
+    return;
+  }
   const adapter = createAwsS3ProviderContractAdapter(storage);
   try {
     const result = await runS3ProviderContractPreflight({ adapter, confirmBucket: bucket });

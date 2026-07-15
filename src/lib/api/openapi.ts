@@ -953,6 +953,127 @@ const webhookDeliveryAttemptRequired = [
 
 const schemas: Record<string, OpenApiMap> = {
   ...requestSchemas,
+  MediaAssetUploadAuthorization: {
+    description:
+      "Provider-dependent upload authorization. PUT uploads send the file as the raw request body and honor the returned header contract; browser user agents supply the forbidden Content-Length header from the exact body size. POST uploads send every returned field plus the file in one multipart/form-data request and must not add custom request headers.",
+    oneOf: [
+      {
+        title: "Raw PUT upload",
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "transport",
+          "method",
+          "url",
+          "headers",
+          "expiresInSeconds",
+        ],
+        properties: {
+          transport: { type: "string", enum: ["s3", "application"] },
+          method: { type: "string", const: "PUT" },
+          url: { type: "string", format: "uri" },
+          headers: {
+            type: "object",
+            description:
+              "Exact signed or application upload headers to apply to the raw file request.",
+            required: ["Content-Length", "Content-Type", "If-None-Match"],
+            properties: {
+              "Content-Length": { type: "string", pattern: "^[1-9][0-9]*$" },
+              "Content-Type": { type: "string", minLength: 3, maxLength: 180 },
+              "If-None-Match": { type: "string", const: "*" },
+            },
+            additionalProperties: { type: "string" },
+          },
+          expiresInSeconds: {
+            anyOf: [
+              { type: "integer", minimum: 1 },
+              { type: "null" },
+            ],
+          },
+        },
+      },
+      {
+        title: "Signed multipart POST upload",
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "transport",
+          "method",
+          "url",
+          "fields",
+          "expiresInSeconds",
+        ],
+        properties: {
+          transport: { type: "string", const: "s3" },
+          method: { type: "string", const: "POST" },
+          url: { type: "string", format: "uri" },
+          fields: {
+            type: "object",
+            minProperties: 1,
+            description:
+              "Exact signed form fields. Append all fields before one file part named `file`; do not convert them into HTTP headers.",
+            additionalProperties: { type: "string" },
+          },
+          expiresInSeconds: { type: "integer", minimum: 1 },
+        },
+      },
+    ],
+  },
+  MediaAssetCreated: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "id",
+      "uploadedById",
+      "ownerUserId",
+      "purpose",
+      "kind",
+      "status",
+      "originalFileName",
+      "safeFileName",
+      "declaredMimeType",
+      "detectedMimeType",
+      "declaredSizeBytes",
+      "actualSizeBytes",
+      "durationMilliseconds",
+      "uploadExpiresAt",
+      "uploadedAt",
+      "scanAttempt",
+      "scanCompletedAt",
+      "scanFailureCode",
+      "deletedAt",
+      "createdAt",
+      "updatedAt",
+      "upload",
+    ],
+    properties: {
+      id: uuidSchema,
+      uploadedById: uuidSchema,
+      ownerUserId: nullableUuidSchema,
+      purpose: { type: "string", enum: [...MEDIA_PURPOSES] },
+      kind: {
+        type: "string",
+        enum: ["image", "audio", "video", "document"],
+      },
+      status: { type: "string", const: "pending" },
+      originalFileName: { type: "string", minLength: 1, maxLength: 255 },
+      safeFileName: { type: "string", minLength: 1, maxLength: 255 },
+      declaredMimeType: { type: "string", minLength: 3, maxLength: 180 },
+      detectedMimeType: { type: "null" },
+      declaredSizeBytes: { type: "integer", minimum: 1 },
+      actualSizeBytes: { type: "null" },
+      durationMilliseconds: { type: "null" },
+      uploadExpiresAt: dateTimeSchema,
+      uploadedAt: { type: "null" },
+      scanAttempt: { type: "integer", const: 0 },
+      scanCompletedAt: { type: "null" },
+      scanFailureCode: { type: "null" },
+      deletedAt: { type: "null" },
+      createdAt: dateTimeSchema,
+      updatedAt: dateTimeSchema,
+      upload: schemaRef("MediaAssetUploadAuthorization"),
+    },
+  },
   AutomationConnectorStatus: {
     type: "object",
     additionalProperties: false,
@@ -7416,9 +7537,10 @@ paths["/media-assets"] = {
     operationId: "createMediaAsset",
     scopes: [],
     requestSchema: "MediaAssetCreate",
+    responseSchema: "MediaAssetCreated",
     status: "201",
     idempotent: true,
-    description: `${mediaScopeDescription} The returned required headers bind content type, exact byte length, and write-once semantics.`,
+    description: `${mediaScopeDescription} The provider-dependent upload authorization is either a raw PUT with required headers or a multipart POST with signed form fields. The reduced STRATO transport does not provide a native write-once guarantee: Q-Academy uses a unique staging key and verifies exact length, metadata, ETag, and content digest before promotion.`,
   }),
 };
 
@@ -7566,7 +7688,7 @@ paths["/media-assets/{id}/download"] = {
     tags: ["Media Assets"],
     summary: "Authorize ready media download",
     description:
-      "Redirects only ready assets to a short-lived final-object authorization or the authenticated development content route. Required scopes depend on purpose. For avatar assets, members:read permits the normal privileged path; community:read alone permits only an active same-tenant member's exact current avatar when avatar is configured as a public community-profile field. Documents always download as attachments.",
+      "Returns only ready assets. Strict versioned S3 responds with a 307 redirect to a short-lived version-bound authorization; application storage and the ETag-bound STRATO proxy stream the binary body with 200 or 206 and support byte ranges. Required scopes depend on purpose. For avatar assets, members:read permits the normal privileged path; community:read alone permits only an active same-tenant member's exact current avatar when avatar is configured as a public community-profile field. Documents always download as attachments.",
     operationId: "downloadMediaAsset",
     security: [{ BearerApiKey: [] }],
     "x-required-scopes": [],
@@ -7577,15 +7699,59 @@ paths["/media-assets/{id}/download"] = {
         "inline",
         "attachment",
       ]),
+      {
+        name: "Range",
+        in: "header",
+        required: false,
+        description:
+          "One or more HTTP byte ranges. Streaming transports return the first satisfiable range and do not produce multipart/byteranges.",
+        schema: { type: "string", pattern: "^bytes=.+$" },
+      },
     ],
     responses: {
+      "200": {
+        description:
+          "Complete ready-media body from an application streaming transport.",
+        headers: mediaByteRangeHeaders,
+        content: mediaContentResponse,
+      },
+      "206": {
+        description:
+          "First satisfiable byte range from an application streaming transport.",
+        headers: {
+          ...mediaByteRangeHeaders,
+          "Content-Range": {
+            description: "Inclusive byte range and immutable total size.",
+            schema: {
+              type: "string",
+              pattern: "^bytes [0-9]+-[0-9]+/[0-9]+$",
+            },
+          },
+        },
+        content: mediaContentResponse,
+      },
       "307": {
-        description: "Temporary download authorization redirect.",
+        description:
+          "Temporary redirect to a strict versioned-S3 download authorization.",
         headers: {
           ...requestIdHeader,
+          ...apiRateHeaders,
           Location: {
-            description: "Authorized ready-object URL.",
+            description: "Short-lived, version-bound ready-object URL.",
             schema: { type: "string", format: "uri" },
+          },
+        },
+      },
+      "416": {
+        description:
+          "No requested byte range is satisfiable for a streaming transport.",
+        headers: {
+          ...requestIdHeader,
+          ...apiRateHeaders,
+          "Accept-Ranges": mediaByteRangeHeaders["Accept-Ranges"],
+          "Content-Range": {
+            description: "Immutable total size for retrying the request.",
+            schema: { type: "string", pattern: "^bytes \\*/[0-9]+$" },
           },
         },
       },

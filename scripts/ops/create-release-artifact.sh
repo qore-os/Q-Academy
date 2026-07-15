@@ -21,10 +21,12 @@ node_image="${CI_NODE_IMAGE:-}"
 debian_snapshot="${CI_DEBIAN_SNAPSHOT:-}"
 ca_certificates_version="${CI_CA_CERTIFICATES_VERSION:-}"
 ffmpeg_version="${CI_FFMPEG_VERSION:-}"
+mesa_version="${CI_MESA_VERSION:-}"
 [[ "$node_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_NODE_IMAGE must be digest-pinned"
 [[ "$debian_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "CI_DEBIAN_SNAPSHOT is invalid"
 [[ "$ca_certificates_version" =~ ^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_CA_CERTIFICATES_VERSION is invalid"
 [[ "$ffmpeg_version" =~ ^[0-9]+:[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_FFMPEG_VERSION is invalid"
+[[ "$mesa_version" =~ ^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_MESA_VERSION is invalid"
 
 image_components=(app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
 image_variables=(
@@ -53,6 +55,7 @@ mkdir -- "$output_directory/evidence"
   printf 'Q_ACADEMY_DEBIAN_SNAPSHOT=%s\n' "$debian_snapshot"
   printf 'Q_ACADEMY_CA_CERTIFICATES_VERSION=%s\n' "$ca_certificates_version"
   printf 'Q_ACADEMY_FFMPEG_VERSION=%s\n' "$ffmpeg_version"
+  printf 'Q_ACADEMY_MESA_VERSION=%s\n' "$mesa_version"
   for index in "${!image_components[@]}"; do
     image="q-academy-${image_components[$index]}:$release_tag"
     image_id="$(docker image inspect --format '{{.Id}}' "$image")" || fail "release image is unavailable: $image"

@@ -9,6 +9,8 @@ import {
 import {
   createMediaDownloadAuthorization,
   getFilesystemMediaObjectForDownload,
+  getS3MediaObjectForDownload,
+  mediaS3DownloadsRequireProxy,
 } from "@/lib/media/storage";
 
 function streamBody(body: AsyncIterable<Uint8Array>) {
@@ -43,6 +45,57 @@ export async function mediaDownloadResponse(input: {
     throw new Error("The ready media asset has no valid content length.");
   }
   if (asset.storageDriver === "s3") {
+    if (mediaS3DownloadsRequireProxy()) {
+      if (!asset.storageVersionId || !asset.etag || !asset.contentSha256) {
+        throw new Error(
+          "The ready STRATO media asset has no immutable scan identity.",
+        );
+      }
+      const expectedSizeBytes = asset.actualSizeBytes!;
+      let range;
+      try {
+        range = parseHttpByteRange(
+          request.headers.get("range"),
+          expectedSizeBytes,
+        );
+      } catch (error) {
+        if (!(error instanceof InvalidHttpByteRangeError)) throw error;
+        return new Response(null, {
+          status: 416,
+          headers: {
+            "Accept-Ranges": "bytes",
+            "Cache-Control": input.cacheControl,
+            "Content-Range": `bytes */${expectedSizeBytes}`,
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
+      const stored = await getS3MediaObjectForDownload({
+        identity: mediaAssetIdentity(asset, "ready"),
+        versionId: asset.storageVersionId,
+        expectedEtag: asset.etag,
+        expectedSha256: asset.contentSha256,
+        expectedSizeBytes,
+        expectedMimeType: asset.detectedMimeType ?? asset.declaredMimeType,
+        range: range ?? undefined,
+      });
+      return new Response(streamBody(stored.body), {
+        status: range ? 206 : 200,
+        headers: {
+          "Accept-Ranges": "bytes",
+          "Cache-Control": input.cacheControl,
+          "Content-Disposition": `${input.disposition}; filename="${asset.safeFileName}"`,
+          "Content-Length": String(stored.responseSize),
+          ...(range
+            ? {
+                "Content-Range": `bytes ${range.start}-${range.end}/${stored.sizeBytes}`,
+              }
+            : {}),
+          "Content-Type": asset.detectedMimeType ?? asset.declaredMimeType,
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    }
     const authorization = await createMediaDownloadAuthorization({
       identity: mediaAssetIdentity(asset, "ready"),
       safeFileName: asset.safeFileName,

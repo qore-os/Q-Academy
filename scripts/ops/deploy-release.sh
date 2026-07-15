@@ -43,7 +43,8 @@ cleanup_failed_release() {
   trap - EXIT
   if [[ "$exit_code" -ne 0 && "$writers_stopped" == "true" && "$release_completed" != "true" ]]; then
     "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}" >/dev/null 2>&1 || true
-    printf 'Release failed. All application and media writers remain stopped for investigation.\n' >&2
+    "${strato_compose[@]}" stop -t 30 "$STRATO_PRIVACY_SWEEPER_SERVICE" >/dev/null 2>&1 || true
+    printf 'Release failed. All application, media, and STRATO deletion writers remain stopped for investigation.\n' >&2
   fi
   exit "$exit_code"
 }
@@ -73,6 +74,7 @@ expected_tag="git-${head_commit}"
 assert_release_environment_writable "$env_file" || fail "production environment cannot be updated atomically"
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
+configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 
 mkdir -p "$(dirname "$lock_file")"
 exec 9>"$lock_file"
@@ -103,7 +105,8 @@ if [[ -z "$previous_tag" && -n "$configured_tag" ]]; then
 fi
 
 export APP_IMAGE_TAG="$release_tag"
-compose=(docker compose --env-file "$env_file" -f "$compose_file")
+compose=(docker compose --env-file "$env_file" -f "$compose_file" "${MEDIA_S3_COMPOSE_PROFILE_ARGS[@]}")
+strato_compose=(docker compose --env-file "$env_file" -f "$compose_file" --profile strato)
 
 run "${compose[@]}" config --quiet
 run docker build --pull --target release-verifier \
@@ -228,10 +231,11 @@ else
   printf 'Fresh database has no application relations; no pre-deployment backup is required.\n'
 fi
 
-run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"
 if [[ "$dry_run" != "true" ]]; then
   writers_stopped=true
 fi
+run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"
+run "${strato_compose[@]}" rm --force --stop "$STRATO_PRIVACY_SWEEPER_SERVICE"
 run "${compose[@]}" up -d --wait --wait-timeout 900 postgres clamav
 run_with_timeout "$MEDIA_PROCESSING_PREFLIGHT_TIMEOUT_SECONDS" \
   "${compose[@]}" run --rm --no-deps media-preflight \
@@ -253,6 +257,11 @@ run curl --fail --show-error --silent --retry 12 --retry-delay 5 \
 run "${compose[@]}" up -d --no-deps --wait \
   --wait-timeout "$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS" \
   "${DATABASE_DISPATCHER_SERVICES[@]}"
+if (( ${#MEDIA_S3_RELEASE_SERVICES[@]} > 0 )); then
+  run "${compose[@]}" up -d --no-deps --wait \
+    --wait-timeout "$STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS" \
+    "${MEDIA_S3_RELEASE_SERVICES[@]}"
+fi
 run "${compose[@]}" ps
 
 if [[ "$dry_run" != "true" ]]; then

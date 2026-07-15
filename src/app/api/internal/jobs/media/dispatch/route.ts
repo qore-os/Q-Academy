@@ -14,8 +14,10 @@ import {
 import { recordOperationalWorkerSuccess } from "@/lib/operational-heartbeats";
 
 export const dynamic = "force-dynamic";
-// One request can run one 10-minute malware scan and one 10-minute processor.
-export const maxDuration = 1_260;
+// A composition can materialize multiple immutable S3 sources before the
+// bounded malware scan and processor complete. Keep the HTTP envelope aligned
+// with the production dispatcher's hard four-hour transport timeout.
+export const maxDuration = 14_400;
 
 export async function POST(request: Request) {
   const requestId = randomUUID();

@@ -19,7 +19,11 @@ test("tenant operations image contains only fixed release-bound entrypoints", ()
   const dockerfile = source("Dockerfile");
   const entrypoint = source("scripts/ops/tenant-ops-entrypoint.sh");
 
-  assert.match(dockerfile, /^FROM dependencies AS tenant-ops$/m);
+  assert.match(dockerfile, /^FROM runtime-base AS tenant-ops$/m);
+  assert.match(
+    dockerfile,
+    /COPY --from=production-dependencies --chown=nextjs:nodejs \/app\/node_modules \.\/node_modules/,
+  );
   assert.match(dockerfile, /COPY --chown=nextjs:nodejs src\/db \.\/src\/db/);
   assert.match(dockerfile, /COPY --chown=nextjs:nodejs src\/lib \.\/src\/lib/);
   for (const script of [

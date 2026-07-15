@@ -4,7 +4,7 @@ This checked inventory lists production npm packages resolved by `package-lock.j
 The exact container contents are additionally recorded in the release CycloneDX SBOMs.
 Package distributions in the release image contain their authoritative license texts.
 
-Lockfile SHA-256: `fd45b248bfbf5e10244422139cc1a3600e00079255b55b316d491b225d24e7ba`
+Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d4af`
 
 | Package | Version | Declared license |
 | --- | --- | --- |
@@ -39,6 +39,32 @@ Lockfile SHA-256: `fd45b248bfbf5e10244422139cc1a3600e00079255b55b316d491b225d24e
 | [@dnd-kit/sortable](https://www.npmjs.com/package/%40dnd-kit%2Fsortable) | 10.0.0 | MIT |
 | [@dnd-kit/utilities](https://www.npmjs.com/package/%40dnd-kit%2Futilities) | 3.2.2 | MIT |
 | [@emnapi/runtime](https://www.npmjs.com/package/%40emnapi%2Fruntime) | 1.11.2 | MIT |
+| [@esbuild/aix-ppc64](https://www.npmjs.com/package/%40esbuild%2Faix-ppc64) | 0.28.1 | MIT |
+| [@esbuild/android-arm](https://www.npmjs.com/package/%40esbuild%2Fandroid-arm) | 0.28.1 | MIT |
+| [@esbuild/android-arm64](https://www.npmjs.com/package/%40esbuild%2Fandroid-arm64) | 0.28.1 | MIT |
+| [@esbuild/android-x64](https://www.npmjs.com/package/%40esbuild%2Fandroid-x64) | 0.28.1 | MIT |
+| [@esbuild/darwin-arm64](https://www.npmjs.com/package/%40esbuild%2Fdarwin-arm64) | 0.28.1 | MIT |
+| [@esbuild/darwin-x64](https://www.npmjs.com/package/%40esbuild%2Fdarwin-x64) | 0.28.1 | MIT |
+| [@esbuild/freebsd-arm64](https://www.npmjs.com/package/%40esbuild%2Ffreebsd-arm64) | 0.28.1 | MIT |
+| [@esbuild/freebsd-x64](https://www.npmjs.com/package/%40esbuild%2Ffreebsd-x64) | 0.28.1 | MIT |
+| [@esbuild/linux-arm](https://www.npmjs.com/package/%40esbuild%2Flinux-arm) | 0.28.1 | MIT |
+| [@esbuild/linux-arm64](https://www.npmjs.com/package/%40esbuild%2Flinux-arm64) | 0.28.1 | MIT |
+| [@esbuild/linux-ia32](https://www.npmjs.com/package/%40esbuild%2Flinux-ia32) | 0.28.1 | MIT |
+| [@esbuild/linux-loong64](https://www.npmjs.com/package/%40esbuild%2Flinux-loong64) | 0.28.1 | MIT |
+| [@esbuild/linux-mips64el](https://www.npmjs.com/package/%40esbuild%2Flinux-mips64el) | 0.28.1 | MIT |
+| [@esbuild/linux-ppc64](https://www.npmjs.com/package/%40esbuild%2Flinux-ppc64) | 0.28.1 | MIT |
+| [@esbuild/linux-riscv64](https://www.npmjs.com/package/%40esbuild%2Flinux-riscv64) | 0.28.1 | MIT |
+| [@esbuild/linux-s390x](https://www.npmjs.com/package/%40esbuild%2Flinux-s390x) | 0.28.1 | MIT |
+| [@esbuild/linux-x64](https://www.npmjs.com/package/%40esbuild%2Flinux-x64) | 0.28.1 | MIT |
+| [@esbuild/netbsd-arm64](https://www.npmjs.com/package/%40esbuild%2Fnetbsd-arm64) | 0.28.1 | MIT |
+| [@esbuild/netbsd-x64](https://www.npmjs.com/package/%40esbuild%2Fnetbsd-x64) | 0.28.1 | MIT |
+| [@esbuild/openbsd-arm64](https://www.npmjs.com/package/%40esbuild%2Fopenbsd-arm64) | 0.28.1 | MIT |
+| [@esbuild/openbsd-x64](https://www.npmjs.com/package/%40esbuild%2Fopenbsd-x64) | 0.28.1 | MIT |
+| [@esbuild/openharmony-arm64](https://www.npmjs.com/package/%40esbuild%2Fopenharmony-arm64) | 0.28.1 | MIT |
+| [@esbuild/sunos-x64](https://www.npmjs.com/package/%40esbuild%2Fsunos-x64) | 0.28.1 | MIT |
+| [@esbuild/win32-arm64](https://www.npmjs.com/package/%40esbuild%2Fwin32-arm64) | 0.28.1 | MIT |
+| [@esbuild/win32-ia32](https://www.npmjs.com/package/%40esbuild%2Fwin32-ia32) | 0.28.1 | MIT |
+| [@esbuild/win32-x64](https://www.npmjs.com/package/%40esbuild%2Fwin32-x64) | 0.28.1 | MIT |
 | [@floating-ui/core](https://www.npmjs.com/package/%40floating-ui%2Fcore) | 1.8.0 | MIT |
 | [@floating-ui/dom](https://www.npmjs.com/package/%40floating-ui%2Fdom) | 1.8.0 | MIT |
 | [@floating-ui/react](https://www.npmjs.com/package/%40floating-ui%2Freact) | 0.27.20 | MIT |
@@ -179,9 +205,11 @@ Lockfile SHA-256: `fd45b248bfbf5e10244422139cc1a3600e00079255b55b316d491b225d24e
 | [emoji-regex](https://www.npmjs.com/package/emoji-regex) | 8.0.0 | MIT |
 | [entities](https://www.npmjs.com/package/entities) | 8.0.0 | BSD-2-Clause |
 | [es-toolkit](https://www.npmjs.com/package/es-toolkit) | 1.49.0 | MIT |
+| [esbuild](https://www.npmjs.com/package/esbuild) | 0.28.1 | MIT |
 | [eventemitter3](https://www.npmjs.com/package/eventemitter3) | 5.0.4 | MIT |
 | [file-type](https://www.npmjs.com/package/file-type) | 21.3.4 | MIT |
 | [find-up](https://www.npmjs.com/package/find-up) | 4.1.0 | MIT |
+| [fsevents](https://www.npmjs.com/package/fsevents) | 2.3.3 | MIT |
 | [get-caller-file](https://www.npmjs.com/package/get-caller-file) | 2.0.5 | ISC |
 | [http_ece](https://www.npmjs.com/package/http_ece) | 1.2.0 | MIT |
 | [https-proxy-agent](https://www.npmjs.com/package/https-proxy-agent) | 7.0.6 | MIT |
@@ -265,6 +293,7 @@ Lockfile SHA-256: `fd45b248bfbf5e10244422139cc1a3600e00079255b55b316d491b225d24e
 | [tiny-invariant](https://www.npmjs.com/package/tiny-invariant) | 1.3.3 | MIT |
 | [token-types](https://www.npmjs.com/package/token-types) | 6.1.2 | MIT |
 | [tslib](https://www.npmjs.com/package/tslib) | 2.8.1 | 0BSD |
+| [tsx](https://www.npmjs.com/package/tsx) | 4.23.1 | MIT |
 | [typescript](https://www.npmjs.com/package/typescript) | 5.9.3 | Apache-2.0 |
 | [uint8array-extras](https://www.npmjs.com/package/uint8array-extras) | 1.5.0 | MIT |
 | [use-sync-external-store](https://www.npmjs.com/package/use-sync-external-store) | 1.6.0 | MIT |

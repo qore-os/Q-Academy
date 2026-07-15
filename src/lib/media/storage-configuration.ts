@@ -1,6 +1,12 @@
 export const MEDIA_STORAGE_DRIVERS = ["filesystem", "s3"] as const;
+export const MEDIA_S3_COMPATIBILITY_MODES = [
+  "versioned",
+  "strato-hidrive",
+] as const;
 
 export type MediaStorageDriver = (typeof MEDIA_STORAGE_DRIVERS)[number];
+export type MediaS3CompatibilityMode =
+  (typeof MEDIA_S3_COMPATIBILITY_MODES)[number];
 export type MediaRuntimeEnvironment = "development" | "test" | "production";
 export type MediaStorageEnvironment = Readonly<
   Record<string, string | undefined>
@@ -41,6 +47,7 @@ export type S3MediaStorageConfiguration = MediaStorageConfigurationBase &
     accessKeyId: string;
     secretAccessKey: string;
     forcePathStyle: boolean;
+    compatibilityMode: MediaS3CompatibilityMode;
   }>;
 
 export type MediaStorageConfiguration =
@@ -518,6 +525,69 @@ function s3SecretAccessKey(
   return value;
 }
 
+function s3CompatibilityMode(
+  environment: MediaStorageEnvironment,
+  configuration: Readonly<{
+    endpoint: string;
+    region: string;
+    forcePathStyle: boolean;
+  }>,
+  issues: MediaStorageConfigurationIssue[],
+): MediaS3CompatibilityMode {
+  const raw = valueOf(environment, "MEDIA_S3_COMPATIBILITY_MODE") ||
+    "versioned";
+  const mode = MEDIA_S3_COMPATIBILITY_MODES.includes(
+    raw as MediaS3CompatibilityMode,
+  )
+    ? (raw as MediaS3CompatibilityMode)
+    : "versioned";
+  if (raw !== mode) {
+    issue(
+      issues,
+      "MEDIA_S3_COMPATIBILITY_MODE",
+      "must be either 'versioned' or 'strato-hidrive'.",
+    );
+  }
+
+  const limitationsAccepted = booleanValue(
+    environment,
+    "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED",
+    false,
+    issues,
+  );
+  if (mode !== "strato-hidrive") return mode;
+
+  if (!limitationsAccepted) {
+    issue(
+      issues,
+      "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED",
+      "must be explicitly true for the reduced STRATO HiDrive provider contract.",
+    );
+  }
+  if (configuration.endpoint !== "https://s3.hidrive.strato.com") {
+    issue(
+      issues,
+      "MEDIA_S3_ENDPOINT",
+      "must be 'https://s3.hidrive.strato.com' in STRATO HiDrive mode.",
+    );
+  }
+  if (configuration.region !== "eu-central-1") {
+    issue(
+      issues,
+      "MEDIA_S3_REGION",
+      "must be 'eu-central-1' in STRATO HiDrive mode.",
+    );
+  }
+  if (!configuration.forcePathStyle) {
+    issue(
+      issues,
+      "MEDIA_S3_FORCE_PATH_STYLE",
+      "must be true in STRATO HiDrive mode.",
+    );
+  }
+  return mode;
+}
+
 export function resolveMediaStorageConfiguration(
   environment: MediaStorageEnvironment,
 ): MediaStorageConfiguration {
@@ -550,6 +620,11 @@ export function resolveMediaStorageConfiguration(
     false,
     issues,
   );
+  const compatibilityMode = s3CompatibilityMode(
+    environment,
+    { endpoint, region, forcePathStyle },
+    issues,
+  );
 
   if (issues.length > 0) throw new MediaStorageConfigurationError(issues);
   return {
@@ -561,6 +636,7 @@ export function resolveMediaStorageConfiguration(
     accessKeyId,
     secretAccessKey,
     forcePathStyle,
+    compatibilityMode,
     limits,
     clamAv,
   };

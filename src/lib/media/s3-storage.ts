@@ -15,12 +15,13 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import {
-  immutableS3ObjectLocator,
   normalizeS3Etag,
   requireS3VersionId,
+  s3CopySource,
+  s3ObjectLocator,
   S3ObjectIntegrityError,
+  stratoEtagRevision,
   verifyS3ObjectIntegrity,
-  versionedS3CopySource,
 } from "@/lib/media/s3-object-integrity";
 import {
   createS3NodeHttpHandler,
@@ -32,6 +33,7 @@ import {
   withS3OperationDeadline,
   withS3StreamingOperationDeadline,
 } from "@/lib/media/s3-operation-timeout";
+import { createStratoPresignedPost } from "@/lib/media/s3-presigned-post";
 import { deleteS3ObjectVersionsPagewise } from "@/lib/media/s3-version-cleanup";
 import type { S3MediaStorageConfiguration } from "@/lib/media/storage-configuration";
 import {
@@ -84,6 +86,7 @@ function configurationFingerprint(configuration: S3MediaStorageConfiguration) {
         configuration.accessKeyId,
         configuration.secretAccessKey,
         String(configuration.forcePathStyle),
+        configuration.compatibilityMode,
       ].join("\0"),
     )
     .digest("hex");
@@ -138,6 +141,133 @@ function quotedEtag(etag: string) {
   return /^"[^"]+"$/.test(etag) ? etag : `"${etag}"`;
 }
 
+function objectRevision(
+  configuration: S3MediaStorageConfiguration,
+  key: string,
+  etag: string,
+  providerVersionId: string | undefined,
+) {
+  return configuration.compatibilityMode === "strato-hidrive"
+    ? stratoEtagRevision(key, etag)
+    : requireS3VersionId(providerVersionId);
+}
+
+async function verifiedExistingStratoTarget(
+  configuration: S3MediaStorageConfiguration,
+  input: {
+    key: string;
+    sizeBytes: number;
+    mimeType: string;
+    sha256: string;
+    metadata: Readonly<Record<string, string>>;
+  },
+  signal: AbortSignal,
+) {
+  if (configuration.compatibilityMode !== "strato-hidrive") return null;
+  let head;
+  try {
+    head = await s3Client(configuration).send(
+      new HeadObjectCommand({
+        Bucket: configuration.bucket,
+        Key: input.key,
+      }),
+      { abortSignal: signal },
+    );
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "$metadata" in error
+        ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
+        : undefined;
+    if (status === 404) return null;
+    throw error;
+  }
+  try {
+    const verified = verifyS3ObjectIntegrity(head, {
+      compatibilityMode: "strato-hidrive",
+      key: input.key,
+      sizeBytes: input.sizeBytes,
+      mimeType: input.mimeType,
+      metadata: input.metadata,
+    });
+    await verifyStratoObjectContent(
+      configuration,
+      {
+        key: input.key,
+        etag: verified.etag,
+        sizeBytes: verified.sizeBytes,
+        sha256: input.sha256,
+      },
+      signal,
+    );
+    return verified;
+  } catch (error) {
+    throwIfIntegrityMismatch(
+      error,
+      "The existing STRATO target does not match the idempotent operation.",
+    );
+    if (error instanceof MediaStorageError) throw error;
+    throw error;
+  }
+}
+
+async function verifyStratoObjectContent(
+  configuration: S3MediaStorageConfiguration,
+  input: {
+    key: string;
+    etag: string;
+    sizeBytes: number;
+    sha256: string;
+  },
+  signal: AbortSignal,
+) {
+  if (configuration.compatibilityMode !== "strato-hidrive") return;
+  const result = await s3Client(configuration).send(
+    new GetObjectCommand({
+      Bucket: configuration.bucket,
+      Key: input.key,
+      IfMatch: quotedEtag(input.etag),
+    }),
+    { abortSignal: signal },
+  );
+  const body = s3StreamBody(result.Body);
+  let received = 0;
+  let complete = false;
+  const hash = createHash("sha256");
+  try {
+    if (
+      normalizeS3Etag(result.ETag) !== input.etag ||
+      result.ContentLength !== input.sizeBytes
+    ) {
+      throw new MediaStorageError(
+        "object_mismatch",
+        "The copied STRATO object identity changed during verification.",
+      );
+    }
+    for await (const chunk of body) {
+      received += chunk.byteLength;
+      if (received > input.sizeBytes) {
+        throw new MediaStorageError(
+          "object_mismatch",
+          "The copied STRATO object exceeded its verified size.",
+        );
+      }
+      hash.update(chunk);
+    }
+    complete = true;
+  } finally {
+    if (!complete) destroyS3Stream(body);
+  }
+  if (
+    received !== input.sizeBytes ||
+    hash.digest("hex") !== input.sha256
+  ) {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "The copied STRATO object does not match the scanned content digest.",
+    );
+  }
+}
+
 function throwIfIntegrityMismatch(error: unknown, message: string) {
   if (error instanceof S3ObjectIntegrityError) {
     throw new MediaStorageError("object_mismatch", message, {
@@ -175,6 +305,21 @@ export async function createS3UploadAuthorization(
   input: UploadAuthorizationInput,
 ) {
   assertObjectIdentity(input);
+  if (configuration.compatibilityMode === "strato-hidrive") {
+    try {
+      return createStratoPresignedPost(configuration, {
+        key: input.key,
+        mimeType: input.mimeType,
+        sizeBytes: input.sizeBytes,
+        metadata: {
+          "asset-id": input.assetId,
+          "organization-id": input.organizationId,
+        },
+      });
+    } catch (error) {
+      safeStorageFailure(error);
+    }
+  }
   try {
     const url = await getSignedUrl(
       s3Client(configuration),
@@ -231,6 +376,8 @@ export async function inspectS3Object(
         ),
     );
     const verified = verifyS3ObjectIntegrity(result, {
+      compatibilityMode: configuration.compatibilityMode,
+      key: identity.key,
       metadata: {
         "asset-id": identity.assetId,
         "organization-id": identity.organizationId,
@@ -277,6 +424,12 @@ export async function createS3DownloadAuthorization(
     }>,
 ) {
   assertObjectIdentity(identity);
+  if (configuration.compatibilityMode === "strato-hidrive") {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "STRATO downloads must use the ETag-bound application proxy.",
+    );
+  }
   if (!isSafeMediaFileName(identity.safeFileName)) {
     throw new MediaStorageError(
       "invalid_storage_key",
@@ -284,19 +437,26 @@ export async function createS3DownloadAuthorization(
     );
   }
   try {
-    const versionId = requireS3VersionId(identity.versionId);
+    const versionId = identity.versionId;
     const head = await withS3OperationDeadline(
       S3_METADATA_DEADLINE_MS,
       (abortSignal) =>
         s3Client(configuration).send(
           new HeadObjectCommand({
             Bucket: configuration.bucket,
-            ...immutableS3ObjectLocator(identity.key, versionId),
+            ...s3ObjectLocator(
+              configuration.compatibilityMode,
+              identity.key,
+              versionId,
+              identity.expectedEtag,
+            ),
           }),
           { abortSignal },
         ),
     );
     verifyS3ObjectIntegrity(head, {
+      compatibilityMode: configuration.compatibilityMode,
+      key: identity.key,
       versionId,
       etag: identity.expectedEtag,
       sizeBytes: identity.expectedSizeBytes,
@@ -311,7 +471,12 @@ export async function createS3DownloadAuthorization(
       s3Client(configuration),
       new GetObjectCommand({
         Bucket: configuration.bucket,
-        ...immutableS3ObjectLocator(identity.key, versionId),
+        ...s3ObjectLocator(
+          configuration.compatibilityMode,
+          identity.key,
+          versionId,
+          identity.expectedEtag,
+        ),
         ResponseContentDisposition: `${identity.disposition}; filename="${identity.safeFileName}"`,
         ResponseCacheControl: "private, no-store",
       }),
@@ -330,6 +495,112 @@ export async function createS3DownloadAuthorization(
   }
 }
 
+export async function getS3ObjectForDownload(
+  configuration: S3MediaStorageConfiguration,
+  identity: MediaObjectIdentity &
+    Readonly<{
+      versionId: string;
+      expectedEtag: string;
+      expectedSha256: string;
+      expectedSizeBytes: number;
+      expectedMimeType: string;
+      range?: Readonly<{ start: number; end: number }>;
+    }>,
+) {
+  assertObjectIdentity(identity);
+  if (
+    configuration.compatibilityMode !== "strato-hidrive" ||
+    !/^[0-9a-f]{64}$/.test(identity.expectedSha256) ||
+    !Number.isSafeInteger(identity.expectedSizeBytes) ||
+    identity.expectedSizeBytes <= 0 ||
+    (identity.range !== undefined &&
+      (!Number.isSafeInteger(identity.range.start) ||
+        !Number.isSafeInteger(identity.range.end) ||
+        identity.range.start < 0 ||
+        identity.range.end < identity.range.start ||
+        identity.range.end >= identity.expectedSizeBytes))
+  ) {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "The STRATO download identity is invalid.",
+    );
+  }
+  try {
+    return await withS3StreamingOperationDeadline(
+      S3_SCAN_STREAM_DEADLINE_MS,
+      async (abortSignal) => {
+        const result = await s3Client(configuration).send(
+          new GetObjectCommand({
+            Bucket: configuration.bucket,
+            ...s3ObjectLocator(
+              configuration.compatibilityMode,
+              identity.key,
+              identity.versionId,
+              identity.expectedEtag,
+            ),
+            IfMatch: quotedEtag(identity.expectedEtag),
+            ...(identity.range
+              ? { Range: `bytes=${identity.range.start}-${identity.range.end}` }
+              : {}),
+          }),
+          { abortSignal },
+        );
+        if (!result.Body) {
+          throw new MediaStorageError(
+            "object_mismatch",
+            "The STRATO download body is missing.",
+          );
+        }
+        const body = s3StreamBody(result.Body);
+        const responseSize = identity.range
+          ? identity.range.end - identity.range.start + 1
+          : identity.expectedSizeBytes;
+        const expectedContentRange = identity.range
+          ? `bytes ${identity.range.start}-${identity.range.end}/${identity.expectedSizeBytes}`
+          : undefined;
+        const metadata = result.Metadata ?? {};
+        if (
+          normalizeS3Etag(result.ETag) !== identity.expectedEtag ||
+          result.ContentLength !== responseSize ||
+          result.ContentType !== identity.expectedMimeType ||
+          result.ContentRange !== expectedContentRange ||
+          metadata["asset-id"] !== identity.assetId ||
+          metadata["organization-id"] !== identity.organizationId ||
+          metadata.sha256 !== identity.expectedSha256
+        ) {
+          destroyS3Stream(body);
+          throw new MediaStorageError(
+            "object_mismatch",
+            "The STRATO download object changed after it was verified.",
+          );
+        }
+        return {
+          body,
+          sizeBytes: identity.expectedSizeBytes,
+          responseSize,
+        };
+      },
+    );
+  } catch (error) {
+    throwIfIntegrityMismatch(
+      error,
+      "The STRATO download identity does not match the stored object.",
+    );
+    if (error instanceof MediaStorageError) throw error;
+    const status =
+      error && typeof error === "object" && "$metadata" in error
+        ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
+        : undefined;
+    if (status === 412) {
+      throw new MediaStorageError(
+        "object_mismatch",
+        "The STRATO download object changed before it was opened.",
+      );
+    }
+    safeStorageFailure(error);
+  }
+}
+
 export async function getS3ObjectForScanning(
   configuration: S3MediaStorageConfiguration,
   identity: MediaObjectIdentity &
@@ -343,9 +614,11 @@ export async function getS3ObjectForScanning(
         const result = await s3Client(configuration).send(
           new GetObjectCommand({
             Bucket: configuration.bucket,
-            ...immutableS3ObjectLocator(
+            ...s3ObjectLocator(
+              configuration.compatibilityMode,
               identity.key,
               identity.expectedVersionId,
+              identity.expectedEtag,
             ),
             IfMatch: quotedEtag(identity.expectedEtag),
           }),
@@ -360,6 +633,8 @@ export async function getS3ObjectForScanning(
         const body = s3StreamBody(result.Body);
         try {
           const verified = verifyS3ObjectIntegrity(result, {
+            compatibilityMode: configuration.compatibilityMode,
+            key: identity.key,
             versionId: identity.expectedVersionId,
             etag: identity.expectedEtag,
             metadata: {
@@ -427,38 +702,71 @@ export async function promoteS3Object(
     return await withS3OperationDeadline(
       S3_COPY_DEADLINE_MS,
       async (abortSignal) => {
+        const targetMetadata = {
+          "asset-id": input.target.assetId,
+          "organization-id": input.target.organizationId,
+          "scanned-source-etag": input.expectedEtag,
+          "scanned-source-version-id": input.expectedSourceVersionId,
+          sha256: input.expectedSha256,
+        };
+        const existing = await verifiedExistingStratoTarget(
+          configuration,
+          {
+            key: input.target.key,
+            sizeBytes: input.expectedSizeBytes,
+            mimeType: input.mimeType,
+            sha256: input.expectedSha256,
+            metadata: targetMetadata,
+          },
+          abortSignal,
+        );
+        if (existing) {
+          return {
+            etag: existing.etag,
+            versionId: existing.versionId,
+            sha256: input.expectedSha256,
+            sizeBytes: existing.sizeBytes,
+            stagingDeleted: false,
+          };
+        }
         const copied = await s3Client(configuration).send(
           new CopyObjectCommand({
             Bucket: configuration.bucket,
             Key: input.target.key,
-            CopySource: versionedS3CopySource(
+            CopySource: s3CopySource(
+              configuration.compatibilityMode,
               configuration.bucket,
               input.source.key,
               input.expectedSourceVersionId,
+              input.expectedEtag,
             ),
             CopySourceIfMatch: quotedEtag(input.expectedEtag),
             ContentType: input.mimeType,
             CacheControl: "private, no-store",
             MetadataDirective: "REPLACE",
-            Metadata: {
-              "asset-id": input.target.assetId,
-              "organization-id": input.target.organizationId,
-              "scanned-source-etag": input.expectedEtag,
-              "scanned-source-version-id": input.expectedSourceVersionId,
-              sha256: input.expectedSha256,
-            },
+            Metadata: targetMetadata,
           }),
           { abortSignal },
         );
         const etag = normalizeS3Etag(copied.CopyObjectResult?.ETag);
-        const versionId = requireS3VersionId(copied.VersionId);
+        const versionId = objectRevision(
+          configuration,
+          input.target.key,
+          etag,
+          copied.VersionId,
+        );
         const finalObject = await withS3OperationDeadline(
           S3_METADATA_DEADLINE_MS,
           (metadataAbortSignal) =>
             s3Client(configuration).send(
               new HeadObjectCommand({
                 Bucket: configuration.bucket,
-                ...immutableS3ObjectLocator(input.target.key, versionId),
+                ...s3ObjectLocator(
+                  configuration.compatibilityMode,
+                  input.target.key,
+                  versionId,
+                  etag,
+                ),
               }),
               {
                 abortSignal: combinedAbortSignal(
@@ -469,18 +777,24 @@ export async function promoteS3Object(
             ),
         );
         const verified = verifyS3ObjectIntegrity(finalObject, {
+          compatibilityMode: configuration.compatibilityMode,
+          key: input.target.key,
           versionId,
           etag,
           sizeBytes: input.expectedSizeBytes,
           mimeType: input.mimeType,
-          metadata: {
-            "asset-id": input.target.assetId,
-            "organization-id": input.target.organizationId,
-            "scanned-source-etag": input.expectedEtag,
-            "scanned-source-version-id": input.expectedSourceVersionId,
+          metadata: targetMetadata,
+        });
+        await verifyStratoObjectContent(
+          configuration,
+          {
+            key: input.target.key,
+            etag: verified.etag,
+            sizeBytes: verified.sizeBytes,
             sha256: input.expectedSha256,
           },
-        });
+          abortSignal,
+        );
 
         return {
           etag: verified.etag,
@@ -539,36 +853,68 @@ export async function copyS3MediaObject(
     return await withS3OperationDeadline(
       S3_COPY_DEADLINE_MS,
       async (abortSignal) => {
+        const targetMetadata = {
+          "asset-id": input.target.assetId,
+          "organization-id": input.target.organizationId,
+          sha256: input.expectedSha256,
+        };
+        const existing = await verifiedExistingStratoTarget(
+          configuration,
+          {
+            key: input.target.key,
+            sizeBytes: input.expectedSizeBytes,
+            mimeType: input.mimeType,
+            sha256: input.expectedSha256,
+            metadata: targetMetadata,
+          },
+          abortSignal,
+        );
+        if (existing) {
+          return {
+            etag: existing.etag,
+            versionId: existing.versionId,
+            sha256: input.expectedSha256,
+            sizeBytes: existing.sizeBytes,
+          };
+        }
         const copied = await s3Client(configuration).send(
           new CopyObjectCommand({
             Bucket: configuration.bucket,
             Key: input.target.key,
-            CopySource: versionedS3CopySource(
+            CopySource: s3CopySource(
+              configuration.compatibilityMode,
               configuration.bucket,
               input.source.key,
               input.expectedSourceVersionId,
+              input.expectedEtag,
             ),
             CopySourceIfMatch: quotedEtag(input.expectedEtag),
             ContentType: input.mimeType,
             CacheControl: "private, no-store",
             MetadataDirective: "REPLACE",
-            Metadata: {
-              "asset-id": input.target.assetId,
-              "organization-id": input.target.organizationId,
-              sha256: input.expectedSha256,
-            },
+            Metadata: targetMetadata,
           }),
           { abortSignal },
         );
         const etag = normalizeS3Etag(copied.CopyObjectResult?.ETag);
-        const versionId = requireS3VersionId(copied.VersionId);
+        const versionId = objectRevision(
+          configuration,
+          input.target.key,
+          etag,
+          copied.VersionId,
+        );
         const finalObject = await withS3OperationDeadline(
           S3_METADATA_DEADLINE_MS,
           (metadataAbortSignal) =>
             s3Client(configuration).send(
               new HeadObjectCommand({
                 Bucket: configuration.bucket,
-                ...immutableS3ObjectLocator(input.target.key, versionId),
+                ...s3ObjectLocator(
+                  configuration.compatibilityMode,
+                  input.target.key,
+                  versionId,
+                  etag,
+                ),
               }),
               {
                 abortSignal: combinedAbortSignal(
@@ -579,16 +925,24 @@ export async function copyS3MediaObject(
             ),
         );
         const verified = verifyS3ObjectIntegrity(finalObject, {
+          compatibilityMode: configuration.compatibilityMode,
+          key: input.target.key,
           versionId,
           etag,
           sizeBytes: input.expectedSizeBytes,
           mimeType: input.mimeType,
-          metadata: {
-            "asset-id": input.target.assetId,
-            "organization-id": input.target.organizationId,
+          metadata: targetMetadata,
+        });
+        await verifyStratoObjectContent(
+          configuration,
+          {
+            key: input.target.key,
+            etag: verified.etag,
+            sizeBytes: verified.sizeBytes,
             sha256: input.expectedSha256,
           },
-        });
+          abortSignal,
+        );
         return {
           etag: verified.etag,
           versionId: verified.versionId,
@@ -617,16 +971,18 @@ export async function copyS3MediaObject(
   }
 }
 
-export async function putS3ProcessedObject(
+type S3ProcessedObjectInput = MediaObjectIdentity & {
+  body: Readable;
+  mimeType: string;
+  sizeBytes: number;
+  contentSha256: string;
+  sourceSha256: string;
+  processingJobId: string;
+};
+
+async function putS3ProcessedObjectOnce(
   configuration: S3MediaStorageConfiguration,
-  input: MediaObjectIdentity & {
-    body: Readable;
-    mimeType: string;
-    sizeBytes: number;
-    contentSha256: string;
-    sourceSha256: string;
-    processingJobId: string;
-  },
+  input: S3ProcessedObjectInput,
 ) {
   assertObjectIdentity(input);
   if (
@@ -642,10 +998,31 @@ export async function putS3ProcessedObject(
   }
   let uploadedVersionId: string | null = null;
   try {
-    const uploaded = await withS3OperationDeadline(
+    const targetMetadata = {
+      "asset-id": input.assetId,
+      "organization-id": input.organizationId,
+      "processing-job-id": input.processingJobId,
+      "source-sha256": input.sourceSha256,
+      sha256: input.contentSha256,
+    };
+    const writeResult = await withS3OperationDeadline(
       S3_COPY_DEADLINE_MS,
-      (abortSignal) =>
-        s3Client(configuration).send(
+      async (abortSignal) => {
+        const existing = await verifiedExistingStratoTarget(
+          configuration,
+          {
+            key: input.key,
+            sizeBytes: input.sizeBytes,
+            mimeType: input.mimeType,
+            sha256: input.contentSha256,
+            metadata: targetMetadata,
+          },
+          abortSignal,
+        );
+        if (existing) {
+          return { kind: "existing" as const, verified: existing };
+        }
+        const uploaded = await s3Client(configuration).send(
           new PutObjectCommand({
             Bucket: configuration.bucket,
             Key: input.key,
@@ -654,43 +1031,68 @@ export async function putS3ProcessedObject(
             ContentLength: input.sizeBytes,
             CacheControl: "private, no-store",
             IfNoneMatch: "*",
-            Metadata: {
-              "asset-id": input.assetId,
-              "organization-id": input.organizationId,
-              "processing-job-id": input.processingJobId,
-              "source-sha256": input.sourceSha256,
-              sha256: input.contentSha256,
-            },
+            Metadata: targetMetadata,
           }),
           { abortSignal },
-        ),
+        );
+        return { kind: "uploaded" as const, uploaded };
+      },
     );
+    if (writeResult.kind === "existing") {
+      return {
+        etag: writeResult.verified.etag,
+        versionId: writeResult.verified.versionId,
+        sizeBytes: writeResult.verified.sizeBytes,
+        sha256: input.contentSha256,
+      };
+    }
+    const uploaded = writeResult.uploaded;
     const etag = normalizeS3Etag(uploaded.ETag);
-    uploadedVersionId = requireS3VersionId(uploaded.VersionId);
+    uploadedVersionId = objectRevision(
+      configuration,
+      input.key,
+      etag,
+      uploaded.VersionId,
+    );
     const head = await withS3OperationDeadline(
       S3_METADATA_DEADLINE_MS,
       (abortSignal) =>
         s3Client(configuration).send(
           new HeadObjectCommand({
             Bucket: configuration.bucket,
-            ...immutableS3ObjectLocator(input.key, uploadedVersionId!),
+            ...s3ObjectLocator(
+              configuration.compatibilityMode,
+              input.key,
+              uploadedVersionId!,
+              etag,
+            ),
           }),
           { abortSignal },
         ),
     );
     const verified = verifyS3ObjectIntegrity(head, {
+      compatibilityMode: configuration.compatibilityMode,
+      key: input.key,
       versionId: uploadedVersionId,
       etag,
       sizeBytes: input.sizeBytes,
       mimeType: input.mimeType,
-      metadata: {
-        "asset-id": input.assetId,
-        "organization-id": input.organizationId,
-        "processing-job-id": input.processingJobId,
-        "source-sha256": input.sourceSha256,
-        sha256: input.contentSha256,
-      },
+      metadata: targetMetadata,
     });
+    await withS3OperationDeadline(
+      S3_COPY_DEADLINE_MS,
+      (abortSignal) =>
+        verifyStratoObjectContent(
+          configuration,
+          {
+            key: input.key,
+            etag: verified.etag,
+            sizeBytes: verified.sizeBytes,
+            sha256: input.contentSha256,
+          },
+          abortSignal,
+        ),
+    );
     return {
       etag: verified.etag,
       versionId: verified.versionId,
@@ -698,13 +1100,18 @@ export async function putS3ProcessedObject(
       sha256: input.contentSha256,
     };
   } catch (error) {
-    if (uploadedVersionId) {
+    if (
+      uploadedVersionId &&
+      configuration.compatibilityMode === "versioned"
+    ) {
       await s3Client(configuration)
         .send(
           new DeleteObjectCommand({
             Bucket: configuration.bucket,
             Key: input.key,
-            VersionId: uploadedVersionId,
+            ...(configuration.compatibilityMode === "versioned"
+              ? { VersionId: uploadedVersionId }
+              : {}),
           }),
         )
         .catch(() => undefined);
@@ -713,6 +1120,76 @@ export async function putS3ProcessedObject(
       error,
       "The processed media upload could not be verified.",
     );
+    if (error instanceof MediaStorageError) throw error;
+    safeStorageFailure(error);
+  }
+}
+
+export async function putS3ProcessedObject(
+  configuration: S3MediaStorageConfiguration,
+  input: S3ProcessedObjectInput,
+) {
+  try {
+    return await putS3ProcessedObjectOnce(configuration, input);
+  } finally {
+    // The caller transfers ownership of the file stream. In particular, the
+    // STRATO idempotency HEAD path may return without ever consuming the body.
+    input.body.destroy();
+  }
+}
+
+export async function deleteS3ObjectRevision(
+  configuration: S3MediaStorageConfiguration,
+  identity: MediaObjectIdentity,
+  versionId: string,
+) {
+  assertObjectIdentity(identity);
+  if (configuration.compatibilityMode !== "versioned") {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "Exact provider-version deletion requires versioned S3 mode.",
+    );
+  }
+  const stableVersionId = requireS3VersionId(versionId);
+  try {
+    await withS3OperationDeadline(
+      S3_CLEANUP_COMMAND_DEADLINE_MS,
+      (abortSignal) =>
+        s3Client(configuration).send(
+          new DeleteObjectCommand({
+            Bucket: configuration.bucket,
+            Key: identity.key,
+            VersionId: stableVersionId,
+          }),
+          { abortSignal },
+        ),
+    );
+    try {
+      await withS3OperationDeadline(
+        S3_CLEANUP_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          s3Client(configuration).send(
+            new HeadObjectCommand({
+              Bucket: configuration.bucket,
+              Key: identity.key,
+              VersionId: stableVersionId,
+            }),
+            { abortSignal },
+          ),
+      );
+    } catch (error) {
+      const status =
+        error && typeof error === "object" && "$metadata" in error
+          ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
+          : undefined;
+      if (status === 404) return;
+      throw error;
+    }
+    throw new MediaStorageError(
+      "object_mismatch",
+      "The exact S3 object version remained after deletion.",
+    );
+  } catch (error) {
     if (error instanceof MediaStorageError) throw error;
     safeStorageFailure(error);
   }
@@ -732,6 +1209,54 @@ export async function deleteS3Object(
         const abortSignal = signal
           ? combinedAbortSignal(deadlineAbortSignal, signal)
           : deadlineAbortSignal;
+        if (configuration.compatibilityMode === "strato-hidrive") {
+          await withS3OperationDeadline(
+            S3_CLEANUP_COMMAND_DEADLINE_MS,
+            (commandAbortSignal) =>
+              s3Client(configuration).send(
+                new DeleteObjectCommand({
+                  Bucket: configuration.bucket,
+                  Key: identity.key,
+                }),
+                {
+                  abortSignal: combinedAbortSignal(
+                    abortSignal,
+                    commandAbortSignal,
+                  ),
+                },
+              ),
+          );
+          try {
+            await withS3OperationDeadline(
+              S3_CLEANUP_COMMAND_DEADLINE_MS,
+              (commandAbortSignal) =>
+                s3Client(configuration).send(
+                  new HeadObjectCommand({
+                    Bucket: configuration.bucket,
+                    Key: identity.key,
+                  }),
+                  {
+                    abortSignal: combinedAbortSignal(
+                      abortSignal,
+                      commandAbortSignal,
+                    ),
+                  },
+                ),
+            );
+          } catch (error) {
+            const status =
+              error && typeof error === "object" && "$metadata" in error
+                ? (error.$metadata as { httpStatusCode?: number })
+                    .httpStatusCode
+                : undefined;
+            if (status === 404) return;
+            throw error;
+          }
+          throw new MediaStorageError(
+            "object_mismatch",
+            "The STRATO media object remained after deletion.",
+          );
+        }
         await withS3OperationDeadline(
           S3_CLEANUP_COMMAND_DEADLINE_MS,
           (commandAbortSignal) =>

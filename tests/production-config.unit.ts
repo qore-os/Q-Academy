@@ -90,6 +90,8 @@ function validMediaWorkerEnvironment(): EnvironmentSource {
     MEDIA_S3_SECRET_ACCESS_KEY:
       "M3diaKey-9QwE5rT1yU7iO3pA8sD4fG6hJ0kLzXcV",
     MEDIA_S3_FORCE_PATH_STYLE: "false",
+    MEDIA_S3_COMPATIBILITY_MODE: "versioned",
+    MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "false",
     MEDIA_CLAMAV_HOST: "clamav.internal.q-academy.de",
     MEDIA_CLAMAV_PORT: "3310",
   };
@@ -145,6 +147,8 @@ function validProductionEnvironment(): EnvironmentSource {
     MEDIA_S3_SECRET_ACCESS_KEY:
       "M3diaKey-9QwE5rT1yU7iO3pA8sD4fG6hJ0kLzXcV",
     MEDIA_S3_FORCE_PATH_STYLE: "false",
+    MEDIA_S3_COMPATIBILITY_MODE: "versioned",
+    MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "false",
     MEDIA_CLAMAV_HOST: "clamav.internal.q-academy.de",
     MEDIA_CLAMAV_PORT: "3310",
   };
@@ -162,6 +166,7 @@ test("production environment accepts explicit secure and distinct values", () =>
   assert.deepEqual(result.mfaRecoveryPreviousPeppers, {});
   assert.equal(result.mediaStorage.driver, "s3");
   assert.equal(result.mediaStorage.bucket, "q-academy-prod-media");
+  assert.equal(result.mediaStorage.compatibilityMode, "versioned");
   assert.equal(
     result.emailDeliveryWebhookUrl,
     "https://mailer.q-academy.de/hooks/transactional-email",
@@ -243,6 +248,7 @@ test("production media worker accepts only its database, job and storage secrets
   const result = validateProductionMediaWorkerEnvironment(environment);
   assert.ok(result);
   assert.equal(result.mediaStorage.bucket, "q-academy-prod-media");
+  assert.equal(result.mediaStorage.compatibilityMode, "versioned");
 
   for (const [name, value] of [
     ["MFA_RECOVERY_PEPPER", "MfaWorkerLeak-1QwE7rT3yU9iO5pA2sD8fG4hJ0kLzXcV"],
@@ -275,6 +281,93 @@ test("production media worker accepts only its database, job and storage secrets
   assert.throws(
     () => validateProductionServerEnvironment(validMediaWorkerEnvironment()),
     /Q_ACADEMY_RUNTIME_ROLE must be 'app'/,
+  );
+});
+
+test("production app and media worker require explicit STRATO limitation acceptance", () => {
+  for (const environment of [
+    validProductionEnvironment(),
+    validMediaWorkerEnvironment(),
+  ]) {
+    environment.MEDIA_S3_ENDPOINT = "https://s3.hidrive.strato.com";
+    environment.MEDIA_S3_REGION = "eu-central-1";
+    environment.MEDIA_S3_FORCE_PATH_STYLE = "true";
+    environment.MEDIA_S3_COMPATIBILITY_MODE = "strato-hidrive";
+    environment.MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED = "false";
+
+    const validate =
+      environment.Q_ACADEMY_RUNTIME_ROLE === "media-worker"
+        ? validateProductionMediaWorkerEnvironment
+        : validateProductionServerEnvironment;
+    assert.throws(
+      () => validate(environment),
+      /MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED/,
+    );
+
+    environment.MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED = "true";
+    const result = validate(environment);
+    assert.ok(result);
+    assert.equal(result.mediaStorage.compatibilityMode, "strato-hidrive");
+  }
+});
+
+test("production forwards the S3 compatibility contract to every storage runtime", () => {
+  for (const serviceName of [
+    "tenant-erasure-ops",
+    "app",
+    "media-runner",
+    "s3-app-principal-preflight",
+    "strato-privacy-sweeper",
+    "media-preflight",
+  ]) {
+    const service = composeServiceBlock(serviceName);
+    assert.match(
+      service,
+      /MEDIA_S3_COMPATIBILITY_MODE: \$\{MEDIA_S3_COMPATIBILITY_MODE:-versioned\}/,
+      serviceName,
+    );
+    assert.match(
+      service,
+      /MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: \$\{MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false\}/,
+      serviceName,
+    );
+  }
+
+  for (const example of [
+    localEnvironmentExample,
+    productionEnvironmentExample,
+  ]) {
+    assert.match(example, /^MEDIA_S3_COMPATIBILITY_MODE=versioned$/m);
+    assert.match(example, /^MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=false$/m);
+  }
+  assert.match(
+    composeServiceBlock("media-preflight"),
+    /NEXT_PUBLIC_APP_URL: https:\/\/\$\{APP_DOMAIN:\?Set APP_DOMAIN in the production env file\}/,
+  );
+});
+
+test("STRATO privacy exports have an isolated continuous retention sweeper", () => {
+  const sweeper = composeServiceBlock("strato-privacy-sweeper");
+  assert.match(sweeper, /profiles: \["strato"\]/);
+  assert.match(sweeper, /scripts\/strato-privacy-export-sweeper[.]ts/);
+  assert.match(sweeper, /--interval-seconds\s+- "900"/);
+  assert.match(sweeper, /--max-deletes\s+- "500"/);
+  assert.match(
+    sweeper,
+    /strato_sweeper_state:\/var\/lib\/q-academy-strato-sweeper/,
+  );
+  assert.match(sweeper, /\/tmp\/strato-privacy-sweeper[.]last-success/);
+  assert.match(sweeper, /start_period: 25m/);
+  assert.match(
+    dockerfile,
+    /install -d -o nextjs -g nodejs -m 0700 \/var\/lib\/q-academy-strato-sweeper/,
+  );
+  assert.match(sweeper, /^      - egress$/m);
+  assert.match(sweeper, /read_only: true/);
+  assert.match(sweeper, /no-new-privileges:true/);
+  assert.doesNotMatch(
+    sweeper,
+    /DATABASE_URL|SESSION_SECRET|CRON_SECRET|MEDIA_S3_APP_SECRET_ACCESS_KEY/,
   );
 });
 
@@ -371,6 +464,11 @@ test("production isolates media scans from the public app runtime", () => {
   assert.doesNotMatch(mediaWorker, /^      - proxy$/m);
   assert.doesNotMatch(mediaWorker, /http:\/\/app:3000\/api\/internal\/jobs\/media/);
   assert.doesNotMatch(mediaWorker, /\/media\/maintenance/);
+  assert.match(mediaWorker, /--max-time 14400/);
+  assert.match(mediaWorker, /MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-15000/);
+  assert.match(mediaWorker, /MEDIA_WORKER_POLL_SECONDS \+ 14400 \+ 60/);
+  assert.match(mediaWorker, /\/tmp\/media-worker[.]in-progress/);
+  assert.match(mediaWorker, /test "\$\$\(\(now - in_progress\)\)" -le 120/);
 
   assert.match(mediaMaintenance, /deploy:\s+replicas: 1/);
   assert.match(mediaMaintenance, /CRON_SECRET: \$\{MEDIA_CRON_SECRET:/);
@@ -617,7 +715,7 @@ test("MFA rotation secrets are documented and packaged for the correct runtimes"
     productionEnvironmentExample,
     /Recovery hashes cannot be rewritten without the original code/,
   );
-  assert.match(dockerfile, /^FROM base AS key-rotation$/m);
+  assert.match(dockerfile, /^FROM runtime-base AS key-rotation$/m);
   assert.match(
     dockerfile,
     /COPY --chown=nextjs:nodejs scripts\/rotate-encryption-keys\.ts \.\/scripts\//,

@@ -1,6 +1,6 @@
 # Readiness und Provider-Preflights
 
-Stand: 2026-07-14.
+Stand: 2026-07-15.
 
 ## Verträge
 
@@ -18,6 +18,15 @@ Degradationsueberwachung bewusst voneinander:
 | Medien-Preflight | ClamAV, S3, FFmpeg, FFprobe, STT und Arbeitsfilesystem | Medienfreigabe blockieren | Release |
 | interne Metriken | Runtime, Queue-Alter/-Tiefe/-Fehler und Worker-Heartbeats | Alarmieren, nicht automatisch routen | fortlaufend |
 
+Die S3-Zeilen beschreiben im Modus `versioned` den vollstaendigen Vertrag. Im
+expliziten Modus `strato-hidrive` bleiben nicht verfuegbare Provider-Garantien
+(Versionierung, Lifecycle, Tagging, konditionales Write/Delete und
+Prefix-Least-Privilege) in der Preflight-Ausgabe bewusst `false`. Eine
+erfolgreiche STRATO-Abnahme darf nur die positiv geprueften POST/PUT-,
+HEAD/GET-, ETag-Copy-, Delete- und Cleanup-Garantien bestaetigen und setzt den
+separaten Acht-Tage-Export-Sweeper voraus. Details und die ausdrueckliche
+Risikoannahme stehen in [S3_PROVIDER_CONTRACT.md](./S3_PROVIDER_CONTRACT.md).
+
 `/ready` bleibt absichtlich auf App und Datenbank begrenzt. Die Web-App ist
 nicht mit dem internen ClamAV-Netz verbunden; Scanner und S3-Schreibworkflow
 gehoeren dem isolierten Medienrunner. Ein kurzzeitiger Scanner-, S3- oder
@@ -29,6 +38,10 @@ Plattformausfall. Externe Provider werden deshalb nicht pro Readiness-Abruf
 beschrieben, gelistet oder mit Schreibcanaries belastet.
 
 ## App-S3-Principal
+
+Dieser Abschnitt beschreibt den strikten Modus `versioned`. Im
+`strato-hidrive`-Modus ist die fehlende Principal-Isolation Teil der oben
+genannten, explizit reduzierten Abnahme.
 
 Der App-Principal und der Medienrunner muessen unterschiedliche Credentials
 verwenden. Der Abnahmetest verwendet beide in einem kurzlebigen Operatorprozess:
@@ -88,8 +101,9 @@ npm run -- media:s3:app-principal-preflight -- \
 Der Prozess benoetigt nur `MEDIA_S3_ENDPOINT`, `MEDIA_S3_REGION`,
 `MEDIA_S3_BUCKET`, `MEDIA_S3_FORCE_PATH_STYLE`, die beiden
 `MEDIA_S3_APP_*`-Werte und die beiden Worker-Werte `MEDIA_S3_ACCESS_KEY_ID` /
-`MEDIA_S3_SECRET_ACCESS_KEY`. Datenbank-, Session-, Mail-, KI- und Job-Secrets
-duerfen nicht injiziert werden. Fuer einen kurzlebigen Rootserver-Container
+`MEDIA_S3_SECRET_ACCESS_KEY` sowie `MEDIA_S3_COMPATIBILITY_MODE` und
+`MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED`. Datenbank-, Session-, Mail-, KI- und
+Job-Secrets duerfen nicht injiziert werden. Fuer einen kurzlebigen Rootserver-Container
 steht das Docker-Ziel `s3-app-principal-preflight` bereit. Der Bucket muss mit
 `--confirm-bucket` ein zweites Mal exakt bestaetigt werden; bei Abweichung
 erfolgt kein Providerzugriff.

@@ -313,6 +313,8 @@ services:
       MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
       MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
       MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_S3_COMPATIBILITY_MODE: ${MEDIA_S3_COMPATIBILITY_MODE:-versioned}
+      MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: ${MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false}
       MEDIA_CLAMAV_HOST: clamav
     depends_on:
       database-permissions:
@@ -450,6 +452,8 @@ services:
       MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_APP_ACCESS_KEY_ID:?Set MEDIA_S3_APP_ACCESS_KEY_ID in the production env file}
       MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_APP_SECRET_ACCESS_KEY:?Set MEDIA_S3_APP_SECRET_ACCESS_KEY in the production env file}
       MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_S3_COMPATIBILITY_MODE: ${MEDIA_S3_COMPATIBILITY_MODE:-versioned}
+      MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: ${MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false}
       MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
       MEDIA_TENANT_QUOTA_BYTES: ${MEDIA_TENANT_QUOTA_BYTES:-536870912000}
       MEDIA_SIGNED_UPLOAD_TTL_SECONDS: ${MEDIA_SIGNED_UPLOAD_TTL_SECONDS:-900}
@@ -532,6 +536,8 @@ services:
       MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
       MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
       MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_S3_COMPATIBILITY_MODE: ${MEDIA_S3_COMPATIBILITY_MODE:-versioned}
+      MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: ${MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false}
       MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
       MEDIA_TENANT_QUOTA_BYTES: ${MEDIA_TENANT_QUOTA_BYTES:-536870912000}
       MEDIA_SIGNED_UPLOAD_TTL_SECONDS: ${MEDIA_SIGNED_UPLOAD_TTL_SECONDS:-900}
@@ -588,6 +594,7 @@ services:
       args:
         NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
     environment:
+      NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
       NODE_ENV: production
       MEDIA_STORAGE_DRIVER: "s3"
       MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
@@ -598,6 +605,8 @@ services:
       MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
       MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
       MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_S3_COMPATIBILITY_MODE: ${MEDIA_S3_COMPATIBILITY_MODE:-versioned}
+      MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: ${MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false}
     networks:
       - egress
     read_only: true
@@ -607,6 +616,62 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging: *default-logging
+
+  strato-privacy-sweeper:
+    profiles: ["strato"]
+    image: q-academy-s3-app-principal-preflight:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    entrypoint:
+      - ./node_modules/.bin/tsx
+      - scripts/strato-privacy-export-sweeper.ts
+    command:
+      - --confirm-bucket
+      - ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      - --interval-seconds
+      - "900"
+      - --max-deletes
+      - "500"
+    environment:
+      NODE_ENV: production
+      MEDIA_STORAGE_DRIVER: "s3"
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:?Set MEDIA_S3_REGION in the production env file}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_S3_COMPATIBILITY_MODE: ${MEDIA_S3_COMPATIBILITY_MODE:-versioned}
+      MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: ${MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false}
+    networks:
+      - egress
+    read_only: true
+    volumes:
+      - strato_sweeper_state:/var/lib/q-academy-strato-sweeper
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /tmp/strato-privacy-sweeper.last-success &&
+          last_success=$$(cat /tmp/strato-privacy-sweeper.last-success) &&
+          now=$$(date +%s) &&
+          test "$${last_success}" -le "$${now}" &&
+          test "$$((now - last_success))" -le 2400
+      interval: 60s
+      timeout: 5s
+      retries: 5
+      start_period: 25m
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
     logging: *default-logging
 
   media-preflight:
@@ -621,6 +686,7 @@ services:
     environment:
       NODE_ENV: production
       Q_ACADEMY_RUNTIME_ROLE: media-worker
+      NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
       DATABASE_URL: postgresql://${MEDIA_POSTGRES_USER:-q_academy_media}:${MEDIA_POSTGRES_PASSWORD:?Set MEDIA_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
       CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
       METRICS_SECRET: ${MEDIA_METRICS_SECRET:?Set MEDIA_METRICS_SECRET in the production env file}
@@ -631,6 +697,8 @@ services:
       MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
       MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
       MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_S3_COMPATIBILITY_MODE: ${MEDIA_S3_COMPATIBILITY_MODE:-versioned}
+      MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: ${MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED:-false}
       MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
       MEDIA_TENANT_QUOTA_BYTES: ${MEDIA_TENANT_QUOTA_BYTES:-536870912000}
       MEDIA_SIGNED_UPLOAD_TTL_SECONDS: ${MEDIA_SIGNED_UPLOAD_TTL_SECONDS:-900}
@@ -859,7 +927,7 @@ services:
       CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
       MEDIA_WORKER_POLL_SECONDS: ${MEDIA_WORKER_POLL_SECONDS:-10}
       WORKER_MAX_CONSECUTIVE_FAILURES: ${MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES:-3}
-      WORKER_HEARTBEAT_STALE_SECONDS: ${MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-1500}
+      WORKER_HEARTBEAT_STALE_SECONDS: ${MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-15000}
     command:
       - /bin/sh
       - -ec
@@ -876,10 +944,10 @@ services:
         if [ "$${#WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 2 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -lt 1 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 20 ]; then
           printf 'Media worker failure limit must be between 1 and 20.\n' >&2; exit 1
         fi
-        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 1400 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
-          printf 'Media worker heartbeat age must be between 1400 and 86400 seconds.\n' >&2; exit 1
+        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 14470 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
+          printf 'Media worker heartbeat age must be between 14470 and 86400 seconds.\n' >&2; exit 1
         fi
-        minimum_heartbeat_age="$$((MEDIA_WORKER_POLL_SECONDS + 1300 + 60))"
+        minimum_heartbeat_age="$$((MEDIA_WORKER_POLL_SECONDS + 14400 + 60))"
         if [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt "$${minimum_heartbeat_age}" ]; then
           printf 'Media worker heartbeat age is shorter than one scan cycle.\n' >&2; exit 1
         fi
@@ -893,12 +961,28 @@ services:
         unset CRON_SECRET
         consecutive_failures=0
         success_marker=/tmp/media-worker.last-success
+        in_progress_marker=/tmp/media-worker.in-progress
         while true; do
           response_file=/tmp/media-dispatch.json
+          now="$$(date +%s)"
+          printf '%s\n' "$${now}" > "$${in_progress_marker}.tmp"
+          mv "$${in_progress_marker}.tmp" "$${in_progress_marker}"
+          (
+            while true; do
+              sleep 30
+              now="$$(date +%s)"
+              printf '%s\n' "$${now}" > "$${in_progress_marker}.tmp"
+              mv "$${in_progress_marker}.tmp" "$${in_progress_marker}"
+            done
+          ) &
+          in_progress_pid=$$!
           if status="$$(
             printf 'header = "%s"\n' "$${authorization_header}" |
-              curl --config - --silent --show-error --output "$${response_file}" --write-out '%{http_code}' --max-time 1300 --request POST 'http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1'
+              curl --config - --silent --show-error --output "$${response_file}" --write-out '%{http_code}' --max-time 14400 --request POST 'http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1'
           )"; then :; else status=000; fi
+          if kill "$${in_progress_pid}" 2>/dev/null; then :; fi
+          if wait "$${in_progress_pid}" 2>/dev/null; then :; fi
+          rm -f "$${in_progress_marker}" "$${in_progress_marker}.tmp"
           body=""
           if [ -f "$${response_file}" ]; then body="$$(cat "$${response_file}")"; fi
           rm -f "$${response_file}"
@@ -937,10 +1021,18 @@ services:
       - no-new-privileges:true
     healthcheck:
       test:
-        [
-          "CMD-SHELL",
-          "test -s /tmp/media-worker.last-success && last_success=$$(cat /tmp/media-worker.last-success) && now=$$(date +%s) && test \"$${last_success}\" -le \"$${now}\" && test \"$$((now - last_success))\" -le \"$${WORKER_HEARTBEAT_STALE_SECONDS}\"",
-        ]
+        - CMD-SHELL
+        - >-
+          now=$$(date +%s);
+          if test -s /tmp/media-worker.last-success; then
+            last_success=$$(cat /tmp/media-worker.last-success);
+            if test "$${last_success}" -le "$${now}" &&
+              test "$$((now - last_success))" -le "$${WORKER_HEARTBEAT_STALE_SECONDS}"; then exit 0; fi;
+          fi;
+          test -s /tmp/media-worker.in-progress &&
+          in_progress=$$(cat /tmp/media-worker.in-progress) &&
+          test "$${in_progress}" -le "$${now}" &&
+          test "$$((now - in_progress))" -le 120
       interval: 30s
       timeout: 5s
       retries: 2
@@ -1188,3 +1280,4 @@ volumes:
   caddy_config:
   clamav_signatures:
   prometheus_data:
+  strato_sweeper_state:

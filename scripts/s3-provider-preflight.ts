@@ -7,6 +7,10 @@ import {
   MediaStorageConfigurationError,
   resolveMediaStorageConfiguration,
 } from "../src/lib/media/storage-configuration";
+import {
+  runStratoS3CompatibilityPreflight,
+  StratoS3CompatibilityError,
+} from "../src/lib/media/s3-strato-compatibility-preflight";
 import { loadProjectEnvironment } from "./load-environment";
 
 const HELP = `Q-Academy S3-Provider-Contract-Preflight
@@ -71,18 +75,27 @@ function productionS3Configuration() {
   return configuration;
 }
 
+function browserOrigin() {
+  return (
+    process.env.NEXT_PUBLIC_APP_URL ??
+    (process.env.APP_DOMAIN ? `https://${process.env.APP_DOMAIN}` : "")
+  );
+}
+
 function printFailure(error: unknown, json: boolean) {
   const contractError =
-    error instanceof S3ProviderContractError ? error : null;
-  const code = contractError?.code ??
+    error instanceof S3ProviderContractError ||
+    error instanceof StratoS3CompatibilityError
+      ? error
+      : null;
+  const code =
+    contractError?.code ??
     (error instanceof MediaStorageConfigurationError
       ? "invalid_configuration"
       : "preflight_failed");
   const canaryPrefix = contractError?.canaryPrefix ?? null;
   if (json) {
-    console.error(
-      JSON.stringify({ ok: false, code, canaryPrefix }),
-    );
+    console.error(JSON.stringify({ ok: false, code, canaryPrefix }));
   } else {
     console.error(
       `S3 provider contract failed: code=${code}${
@@ -108,6 +121,26 @@ async function main() {
   try {
     loadProjectEnvironment();
     const configuration = productionS3Configuration();
+    if (configuration.compatibilityMode === "strato-hidrive") {
+      const result = await runStratoS3CompatibilityPreflight({
+        configuration,
+        confirmBucket: parsed.confirmBucket,
+        expectedOrigin: browserOrigin(),
+      });
+      if (parsed.json) {
+        console.log(JSON.stringify({ ok: true, ...result }));
+      } else {
+        console.log(
+          `STRATO compatibility contract passed for bucket=${result.bucket}; ` +
+            `canaryPrefix=${result.canaryPrefix}; browserPostCors=verified; ` +
+            `browserPostPolicy=verified; anonymousAccess=blocked; ` +
+            `etagAndDigest=verified; copySourceIfMatch=enforced; ` +
+            `cleanup=verified; nativeVersioning=false; nativeLifecycle=false; ` +
+            `principalIsolation=false`,
+        );
+      }
+      return;
+    }
     const adapter = createAwsS3ProviderContractAdapter(configuration);
     const result = await runS3ProviderContractPreflight({
       adapter,

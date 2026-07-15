@@ -9,6 +9,8 @@ import { getSessionMediaDownload } from "@/lib/media/session-service";
 import {
   createMediaDownloadAuthorization,
   getFilesystemMediaObjectForDownload,
+  getS3MediaObjectForDownload,
+  mediaS3DownloadsRequireProxy,
 } from "@/lib/media/storage";
 import { getCourseLearningAccess } from "@/lib/learning-access";
 import {
@@ -142,24 +144,6 @@ export async function GET(request: Request, { params }: Context) {
         }
       }
       const record = derivative.derivative;
-      if (record.storageDriver === "s3") {
-        const authorization = await createMediaDownloadAuthorization({
-          identity: {
-            organizationId: record.organizationId,
-            assetId: record.sourceAssetId,
-            key: record.storageKey,
-          },
-          safeFileName:
-            record.kind === "thumbnail" ? "thumbnail.jpg" : "video.mp4",
-          disposition: "inline",
-          storageVersionId: record.storageVersionId,
-          expectedEtag: record.storageEtag,
-          expectedSha256: record.contentSha256,
-          expectedSizeBytes: record.sizeBytes,
-          expectedMimeType: record.mimeType,
-        });
-        return Response.redirect(authorization.url, 307);
-      }
       let range;
       try {
         range = parseHttpByteRange(
@@ -178,20 +162,55 @@ export async function GET(request: Request, { params }: Context) {
           },
         });
       }
-      const stored = await getFilesystemMediaObjectForDownload(
-        {
-          organizationId: record.organizationId,
-          assetId: record.sourceAssetId,
-          key: record.storageKey,
-        },
-        range ?? undefined,
-      );
+      const identity = {
+        organizationId: record.organizationId,
+        assetId: record.sourceAssetId,
+        key: record.storageKey,
+      };
+      if (record.storageDriver === "s3" && !mediaS3DownloadsRequireProxy()) {
+        const authorization = await createMediaDownloadAuthorization({
+          identity,
+          safeFileName:
+            record.kind === "thumbnail" ? "thumbnail.jpg" : "video.mp4",
+          disposition: "inline",
+          storageVersionId: record.storageVersionId,
+          expectedEtag: record.storageEtag,
+          expectedSha256: record.contentSha256,
+          expectedSizeBytes: record.sizeBytes,
+          expectedMimeType: record.mimeType,
+        });
+        return Response.redirect(authorization.url, 307);
+      }
+      let stored;
+      if (record.storageDriver === "s3") {
+        if (!record.storageVersionId || !record.storageEtag) {
+          throw new Error(
+            "Stored STRATO derivative has no immutable object identity.",
+          );
+        }
+        stored = await getS3MediaObjectForDownload({
+            identity,
+            versionId: record.storageVersionId,
+            expectedEtag: record.storageEtag,
+            expectedSha256: record.contentSha256,
+            expectedSizeBytes: record.sizeBytes,
+            expectedMimeType: record.mimeType,
+            range: range ?? undefined,
+          });
+      } else {
+        stored = await getFilesystemMediaObjectForDownload(
+          identity,
+          range ?? undefined,
+        );
+      }
       if (stored.sizeBytes !== record.sizeBytes) {
         throw new Error("Stored derivative does not match its immutable record.");
       }
-      const responseSize = range
-        ? range.end - range.start + 1
-        : record.sizeBytes;
+      const responseSize = "responseSize" in stored
+        ? stored.responseSize
+        : range
+          ? range.end - range.start + 1
+          : record.sizeBytes;
       return new Response(streamBody(stored.body), {
         status: range ? 206 : 200,
         headers: {

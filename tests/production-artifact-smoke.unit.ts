@@ -284,7 +284,7 @@ test("production builds retain type checks with a bounded four-GiB heap", () => 
   const productionDependenciesStart = dockerfile.indexOf(
     "FROM base AS production-dependencies",
   );
-  const runnerStart = dockerfile.indexOf("FROM base AS runner");
+  const runnerStart = dockerfile.indexOf("FROM runtime-base AS runner");
   const mediaRunnerStart = dockerfile.indexOf("FROM runner AS media-runner");
   assert.ok(
     builderStart >= 0 &&
@@ -308,7 +308,7 @@ test("production builds retain type checks with a bounded four-GiB heap", () => 
 test("next start runner packages local next.config dependencies", () => {
   const dockerfile = source("Dockerfile");
   const nextConfig = source("next.config.ts");
-  const runnerStart = dockerfile.indexOf("FROM base AS runner");
+  const runnerStart = dockerfile.indexOf("FROM runtime-base AS runner");
   const mediaRunnerStart = dockerfile.indexOf("FROM runner AS media-runner");
 
   assert.ok(runnerStart >= 0 && mediaRunnerStart > runnerStart);

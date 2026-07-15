@@ -5,6 +5,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rm, stat } from "node:fs/promises";
 import { parse, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { parseFile } from "music-metadata";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/media/processing-provider";
 import {
   deleteStoredMediaObject,
+  deleteStoredMediaObjectRevision,
   getStoredMediaObjectForScanning,
   writeProcessedMediaObject,
 } from "@/lib/media/storage";
@@ -47,6 +49,7 @@ import {
 } from "@/lib/media/video-composition";
 
 const PROCESSING_LEASE_MS = 30 * 60_000;
+const PROCESSING_LEASE_HEARTBEAT_MS = 5 * 60_000;
 const MAX_OUTPUT_BYTES = 2_000_000_000;
 const MAX_FAILURE_DETAIL = 2_000;
 const UUID_PATTERN =
@@ -397,13 +400,74 @@ async function claimNextJob(now: Date) {
   });
 }
 
-async function hashFile(path: string) {
+async function withMediaProcessingLease<T>(
+  job: NonNullable<Awaited<ReturnType<typeof claimNextJob>>>,
+  operation: (signal: AbortSignal) => Promise<T>,
+) {
+  if (!job.claimToken) {
+    throw new Error("Media processing job has no claim token.");
+  }
+  const leaseController = new AbortController();
+  const stopController = new AbortController();
+  const heartbeat = (async () => {
+    while (!stopController.signal.aborted) {
+      try {
+        await delay(PROCESSING_LEASE_HEARTBEAT_MS, undefined, {
+          signal: stopController.signal,
+        });
+      } catch (error) {
+        if (stopController.signal.aborted) return;
+        leaseController.abort(error);
+        return;
+      }
+      try {
+        const now = new Date();
+        const [extended] = await db
+          .update(mediaProcessingJobs)
+          .set({
+            leaseExpiresAt: new Date(now.getTime() + PROCESSING_LEASE_MS),
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(mediaProcessingJobs.id, job.id),
+              eq(mediaProcessingJobs.organizationId, job.organizationId),
+              eq(mediaProcessingJobs.status, "processing"),
+              eq(mediaProcessingJobs.claimToken, job.claimToken!),
+            ),
+          )
+          .returning({ id: mediaProcessingJobs.id });
+        if (!extended) {
+          leaseController.abort(
+            new Error("Media processing claim was lost during execution."),
+          );
+          return;
+        }
+      } catch {
+        leaseController.abort(
+          new Error("Media processing lease heartbeat failed."),
+        );
+        return;
+      }
+    }
+  })();
+  try {
+    return await operation(leaseController.signal);
+  } finally {
+    stopController.abort();
+    await heartbeat;
+  }
+}
+
+async function hashFile(path: string, signal?: AbortSignal) {
   const hash = createHash("sha256");
   for await (const chunk of createReadStream(
     /* turbopackIgnore: true */ path,
   )) {
+    signal?.throwIfAborted();
     hash.update(chunk);
   }
+  signal?.throwIfAborted();
   return hash.digest("hex");
 }
 
@@ -463,6 +527,7 @@ async function completeTranscript(
   job: NonNullable<Awaited<ReturnType<typeof claimNextJob>>>,
   inputPath: string,
   workDirectory: string,
+  signal: AbortSignal,
 ) {
   const provider = configuredTranscriptProvider();
   const language =
@@ -478,7 +543,9 @@ async function completeTranscript(
     ),
     language,
     sourceSha256: job.sourceContentSha256,
+    signal,
   });
+  signal.throwIfAborted();
   return db.transaction(async (tx) => {
     const [transcript] = await tx
       .insert(mediaAssetTranscripts)
@@ -517,13 +584,60 @@ async function completeTranscript(
   });
 }
 
+async function deleteFailedDerivativeWhileClaimOwned(
+  job: NonNullable<Awaited<ReturnType<typeof claimNextJob>>>,
+  identity: Readonly<{
+    organizationId: string;
+    assetId: string;
+    key: string;
+  }>,
+) {
+  if (!job.claimToken) return false;
+  return db.transaction(async (tx) => {
+    const [ownedClaim] = await tx
+      .select({ id: mediaProcessingJobs.id })
+      .from(mediaProcessingJobs)
+      .where(
+        and(
+          eq(mediaProcessingJobs.id, job.id),
+          eq(mediaProcessingJobs.organizationId, job.organizationId),
+          eq(mediaProcessingJobs.sourceAssetId, job.sourceAssetId),
+          eq(mediaProcessingJobs.status, "processing"),
+          eq(mediaProcessingJobs.claimToken, job.claimToken!),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!ownedClaim) return false;
+
+    const [derivative] = await tx
+      .select({ id: mediaAssetDerivatives.id })
+      .from(mediaAssetDerivatives)
+      .where(
+        and(
+          eq(mediaAssetDerivatives.processingJobId, job.id),
+          eq(mediaAssetDerivatives.organizationId, job.organizationId),
+        ),
+      )
+      .limit(1);
+    if (derivative) return false;
+
+    // Keep the claim row locked across the unversioned delete. A reclaimer must
+    // not be able to publish the same job key between authorization and cleanup.
+    await deleteStoredMediaObject(identity);
+    return true;
+  });
+}
+
 async function completeDerivative(
   job: NonNullable<Awaited<ReturnType<typeof claimNextJob>>>,
   inputPath: string,
   workDirectory: string,
   sourceDurationMilliseconds: number | null,
   compositionInputPaths: readonly string[],
+  signal: AbortSignal,
 ) {
+  signal.throwIfAborted();
   const ffmpeg = process.env.MEDIA_FFMPEG_PATH?.trim() || "ffmpeg";
   const thumbnail = job.type === "thumbnail";
   if (!thumbnail && videoProcessingOptionsConflict(job.options)) {
@@ -595,6 +709,7 @@ async function completeDerivative(
       ],
       captureStdoutBytes: 1_024,
       timeoutMs: 30_000,
+      signal,
     });
     compositionGraph = buildVideoCompositionFfmpegGraph({
       composition,
@@ -725,7 +840,12 @@ async function completeDerivative(
             "-y",
             outputPath,
           ];
-  await runBoundedMediaCommand({ executable: ffmpeg, arguments: args });
+  await runBoundedMediaCommand({
+    executable: ffmpeg,
+    arguments: args,
+    signal,
+  });
+  signal.throwIfAborted();
   const details = await stat(/* turbopackIgnore: true */ outputPath);
   if (
     !details.isFile() ||
@@ -740,7 +860,7 @@ async function completeDerivative(
   const prefix = await readFilePrefix(outputPath, 512);
   const mimeType = thumbnail ? "image/jpeg" : "video/mp4";
   assertMediaContentSignature(mimeType, prefix);
-  const digest = await hashFile(outputPath);
+  const digest = await hashFile(outputPath, signal);
   let width: number | null = null;
   let height: number | null = null;
   let durationMilliseconds: number | null = null;
@@ -786,23 +906,44 @@ async function completeDerivative(
       );
     }
   }
-  const storageKey = `tenants/${job.organizationId}/assets/${job.sourceAssetId}/${thumbnail ? "thumbnail" : "transcode"}-${job.id.slice(0, 8)}.${extension}`;
+  signal.throwIfAborted();
+  const storageKey = `tenants/${job.organizationId}/assets/${job.sourceAssetId}/${thumbnail ? "thumbnail" : "transcode"}-${job.id}.${extension}`;
   const identity = {
     organizationId: job.organizationId,
     assetId: job.sourceAssetId,
     key: storageKey,
   };
-  const stored = await writeProcessedMediaObject({
-    identity,
-    body: createReadStream(/* turbopackIgnore: true */ outputPath),
-    mimeType,
-    expectedSizeBytes: details.size,
-    contentSha256: digest,
-    sourceSha256: job.sourceContentSha256,
-    processingJobId: job.id,
-  });
+  const storageConfiguration = getMediaStorageConfiguration();
+  let stored: Awaited<ReturnType<typeof writeProcessedMediaObject>> | null =
+    null;
   try {
+    const storedObject = await writeProcessedMediaObject({
+      identity,
+      body: createReadStream(/* turbopackIgnore: true */ outputPath),
+      mimeType,
+      expectedSizeBytes: details.size,
+      contentSha256: digest,
+      sourceSha256: job.sourceContentSha256,
+      processingJobId: job.id,
+    });
+    stored = storedObject;
+    signal.throwIfAborted();
     return await db.transaction(async (tx) => {
+      const [ownedClaim] = await tx
+        .select({ id: mediaProcessingJobs.id })
+        .from(mediaProcessingJobs)
+        .where(
+          and(
+            eq(mediaProcessingJobs.id, job.id),
+            eq(mediaProcessingJobs.organizationId, job.organizationId),
+            eq(mediaProcessingJobs.status, "processing"),
+            eq(mediaProcessingJobs.claimToken, job.claimToken!),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!ownedClaim) throw new Error("Media processing claim was lost.");
+
       await tx.execute(mediaTenantQuotaLockQuery(job.organizationId));
       const [organization] = await tx
         .select({ id: organizations.id })
@@ -821,7 +962,7 @@ async function completeDerivative(
         })
         .from(mediaAssetDerivatives)
         .where(eq(mediaAssetDerivatives.organizationId, job.organizationId));
-      const quota = getMediaStorageConfiguration().limits.tenantQuotaBytes;
+      const quota = storageConfiguration.limits.tenantQuotaBytes;
       if (Number(usage?.bytes ?? 0) + details.size > quota) {
         throw new MediaProcessingProviderError(
           "invalid_output",
@@ -835,10 +976,10 @@ async function completeDerivative(
           sourceAssetId: job.sourceAssetId,
           processingJobId: job.id,
           kind: thumbnail ? "thumbnail" : "transcode",
-          storageDriver: getMediaStorageConfiguration().driver,
+          storageDriver: storageConfiguration.driver,
           storageKey,
-          storageVersionId: stored.versionId,
-          storageEtag: stored.etag,
+          storageVersionId: storedObject.versionId,
+          storageEtag: storedObject.etag,
           mimeType,
           sizeBytes: details.size,
           contentSha256: digest,
@@ -871,7 +1012,34 @@ async function completeDerivative(
       return { id: job.id, type: job.type, status: "succeeded" as const };
     });
   } catch (error) {
-    await deleteStoredMediaObject(identity).catch(() => undefined);
+    if (storageConfiguration.driver === "filesystem" && stored) {
+      try {
+        await deleteFailedDerivativeWhileClaimOwned(job, identity);
+      } catch {
+        throw new Error("Filesystem derivative cleanup could not be verified.");
+      }
+    } else if (
+      storageConfiguration.driver === "s3" &&
+      storageConfiguration.compatibilityMode === "versioned" &&
+      stored?.versionId
+    ) {
+      try {
+        await deleteStoredMediaObjectRevision(identity, stored.versionId);
+      } catch {
+        throw new Error("Versioned S3 derivative cleanup could not be verified.");
+      }
+    } else if (
+      storageConfiguration.driver === "s3" &&
+      storageConfiguration.compatibilityMode === "strato-hidrive"
+    ) {
+      try {
+        await deleteFailedDerivativeWhileClaimOwned(job, identity);
+      } catch {
+        // Do not finalize a quota or provider failure while an untracked STRATO
+        // object may remain. A generic error keeps cleanup retryable and fenced.
+        throw new Error("STRATO derivative cleanup could not be verified.");
+      }
+    }
     throw error;
   }
 }
@@ -902,7 +1070,9 @@ async function materializeImmutableSource(
   },
   workDirectory: string,
   fileName = "source.bin",
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   if (
     !source.etag ||
     !source.storageVersionId ||
@@ -925,6 +1095,7 @@ async function materializeImmutableSource(
     source.etag,
     source.storageVersionId,
   );
+  signal?.throwIfAborted();
   if (object.sizeBytes !== source.actualSizeBytes) {
     throw new MediaProcessingProviderError(
       "invalid_output",
@@ -941,9 +1112,11 @@ async function materializeImmutableSource(
       flags: "wx",
       mode: 0o600,
     }),
+    { signal },
   );
+  signal?.throwIfAborted();
   const details = await stat(/* turbopackIgnore: true */ inputPath);
-  const digest = await hashFile(inputPath);
+  const digest = await hashFile(inputPath, signal);
   if (
     details.size !== source.actualSizeBytes ||
     digest !== source.contentSha256
@@ -960,7 +1133,9 @@ async function materializeCompositionInputs(
   organizationId: string,
   compositionValue: unknown,
   workDirectory: string,
+  signal: AbortSignal,
 ) {
+  signal.throwIfAborted();
   const composition = sanitizeBoundVideoComposition(compositionValue);
   if (!composition) return [];
   const ids = [
@@ -993,6 +1168,7 @@ async function materializeCompositionInputs(
   const configuration = getMediaStorageConfiguration();
   const paths: string[] = [];
   for (const [index, track] of composition.audioTracks.entries()) {
+    signal.throwIfAborted();
     const row = rowsById.get(track.mediaAssetId);
     const identity = track.source;
     if (
@@ -1027,9 +1203,10 @@ async function materializeCompositionInputs(
             row,
             workDirectory,
             `source-audio-${index + 1}.bin`,
+            signal,
           );
     const details = await stat(/* turbopackIgnore: true */ path);
-    const digest = await hashFile(path);
+    const digest = await hashFile(path, signal);
     if (
       details.size !== identity.sizeBytes ||
       digest !== identity.contentSha256
@@ -1046,7 +1223,9 @@ async function materializeCompositionInputs(
 
 async function processClaimedJob(
   job: NonNullable<Awaited<ReturnType<typeof claimNextJob>>>,
+  signal: AbortSignal,
 ) {
+  signal.throwIfAborted();
   const configuration = getMediaStorageConfiguration();
   const [source] = await db
     .select()
@@ -1066,6 +1245,7 @@ async function processClaimedJob(
       "The immutable source media is no longer available.",
     );
   }
+  signal.throwIfAborted();
   const root = mediaProcessingWorkRoot();
   const workDirectory = resolve(/* turbopackIgnore: true */ root, job.id);
   if (
@@ -1086,22 +1266,30 @@ async function processClaimedJob(
             assetId: source.id,
             key: source.storageKey,
           })
-        : await materializeImmutableSource(source, workDirectory);
+        : await materializeImmutableSource(
+            source,
+            workDirectory,
+            "source.bin",
+            signal,
+          );
     const compositionInputPaths = job.options.videoComposition
       ? await materializeCompositionInputs(
           job.organizationId,
           job.options.videoComposition,
           workDirectory,
+          signal,
         )
       : [];
+    signal.throwIfAborted();
     return job.type === "transcript"
-      ? await completeTranscript(job, inputPath, workDirectory)
+      ? await completeTranscript(job, inputPath, workDirectory, signal)
       : await completeDerivative(
           job,
           inputPath,
           workDirectory,
           source.durationMilliseconds,
           compositionInputPaths,
+          signal,
         );
   } finally {
     await rm(/* turbopackIgnore: true */ workDirectory, {
@@ -1120,7 +1308,11 @@ export async function processMediaProcessingQueue(limit = 1) {
     const job = await claimNextJob(new Date());
     if (!job) break;
     try {
-      results.push(await processClaimedJob(job));
+      results.push(
+        await withMediaProcessingLease(job, (signal) =>
+          processClaimedJob(job, signal),
+        ),
+      );
     } catch (error) {
       results.push(await terminalFailure(job, error));
     }

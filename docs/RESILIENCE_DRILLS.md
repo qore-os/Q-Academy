@@ -12,9 +12,10 @@ and duplicate both the canonical HTTPS origin and explicit Compose project
 name. They must also match `APP_DOMAIN` and `COMPOSE_PROJECT_NAME` in the
 regular, non-symlink env file byte for byte. The storage drill additionally
 requires a duplicated staging-marked bucket that exactly matches
-`MEDIA_S3_BUCKET`, and binds the canonical external HTTPS
-`MEDIA_S3_ENDPOINT`. The env file is parsed as data and never sourced. Only an
-active local Docker Unix socket is accepted; `DOCKER_HOST` and
+`MEDIA_S3_BUCKET`, binds the canonical external HTTPS
+`MEDIA_S3_ENDPOINT`, and requires `MEDIA_S3_COMPATIBILITY_MODE` to be exactly
+`versioned` or `strato-hidrive`. The env file is parsed as data and never
+sourced. Only an active local Docker Unix socket is accepted; `DOCKER_HOST` and
 `DOCKER_CONTEXT` overrides are rejected. Compose runs under `env -i`, retaining
 only the already verified Docker configuration paths plus `PATH`/`HOME`, so a
 poisoned operator-shell variable cannot override values from the confirmed
@@ -202,16 +203,21 @@ cookie jar must represent an active disposable member in a disposable staging
 tenant.
 
 The drill creates one tiny, unbound `community` text asset through the normal
-session API with random per-run content. Its signed upload must target the
-exact confirmed bucket, tenant, asset ID, canonical incoming key, and signed
-asset/tenant metadata; the URL is never written to logs or evidence. It then
+session API with random per-run content. In `versioned` mode its signed PUT URL
+and required headers must target the exact confirmed bucket, tenant, asset ID,
+canonical incoming key, and signed asset/tenant metadata. In `strato-hidrive`
+mode the authorization must instead be an exact multipart POST to the confirmed
+bucket with a policy-bound key, byte length, MIME type, tenant/asset metadata,
+and signature fields. Authorization URLs and fields are never written to logs
+or evidence. It then
 stops both validated media workers and
 disconnects only the validated `media-runner` from the exact project-labeled
 Compose egress network. Both the running app and runner environments must first
-match the confirmed bucket and endpoint. Public live and ready endpoints must
-remain HTTP 200, the runner's S3 probe must fail, the app's independently bound
-storage path and direct upload through the provider contract must still
-succeed, and internal dispatch must report `retrying`. The queue must rise to
+match the confirmed bucket, endpoint, and compatibility mode. Public live and
+ready endpoints must remain HTTP 200, the runner's S3 probe must fail, the
+app's independently bound storage path and the mode-specific direct upload
+through the provider contract
+must still succeed, and internal dispatch must report `retrying`. The queue must rise to
 exactly one pending item without a failed job. The Canary itself must record
 its first scan attempt with `storage_unavailable`; a retry from any other job
 or cause fails the drill. Run only on dedicated, quiescent staging so unrelated
@@ -219,21 +225,26 @@ jobs cannot cause a deliberate fail-closed abort.
 
 Recovery reconnects the runner network before restarting the two workers,
 waits for both to become healthy, and requires the asset to reach `ready` while
-the queue drains to zero. The application download redirect is captured
-privately, must target the exact confirmed ready-object key, and is fetched
-without a session cookie. Its bytes must match the random Canary's SHA-256
-digest. The trap performs the same network-first restoration and worker restart
+the queue drains to zero. In `versioned` mode the private application download
+redirect must target the exact confirmed ready-object key; the provider object
+is then fetched without a session cookie. In `strato-hidrive` mode the
+application must proxy the full object as HTTP 200 and a `bytes=0-0` request as
+HTTP 206 with exact length, range, MIME, disposition, cache, and no-redirect
+headers. The recovered bytes must match the random Canary. The trap performs
+the same network-first restoration and worker restart
 on normal exit, assertion failure, interruption, and termination, then requests
 deletion of the disposable asset. Failure to remove the private signed-URL/API
 files or to prove the named preflight container absent also fails recovery.
 
 The asset DELETE is a logical deletion request. Physical asset cleanup follows
-the product's fixed grace and provider lifecycle and is deliberately not
+the product's fixed grace and either the versioned-provider lifecycle or the
+STRATO retention sweeper, and is deliberately not
 reported as immediate. After pipeline recovery, a separate full
 `media-preflight` provider canary must pass ClamAV clean/malware checks,
-FFmpeg/FFprobe checks, and verified cleanup of every canary object version and
-delete marker. Its output remains in a private temporary directory and is not
-included in the report.
+FFmpeg/FFprobe checks, and mode-specific verified cleanup. The versioned
+contract removes every canary object version and delete marker; the STRATO
+contract verifies its unversioned canary keys absent. Preflight output remains
+in a private temporary directory and is not included in the report.
 
 ### Execute the storage drill
 
@@ -252,8 +263,9 @@ bash scripts/ops/staging-storage-pipeline-outage-drill.sh \
   >resilience-storage-pipeline-outage.json
 ```
 
-The report contains only target identity, status codes, counts, and boolean
-assertions. It excludes the bucket, endpoint, tenant/user/session/asset IDs,
+The schema-version-2 report contains only target identity, the exact validated
+storage compatibility mode, status codes, counts, and boolean assertions. It
+excludes the bucket, endpoint, tenant/user/session/asset IDs,
 cookie material, signed URL, provider response, object key, and content hash.
 Do not proceed when `networkRestored`, `workersRestored`, `recovered`,
 `testDataDeletionRequested`, or `providerCanaryCleanupVerified` is false.

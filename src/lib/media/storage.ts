@@ -15,6 +15,8 @@ import {
   createS3DownloadAuthorization,
   createS3UploadAuthorization,
   deleteS3Object,
+  deleteS3ObjectRevision,
+  getS3ObjectForDownload,
   getS3ObjectForScanning,
   inspectS3Object,
   promoteS3Object,
@@ -181,6 +183,41 @@ export async function getFilesystemMediaObjectForDownload(
   };
 }
 
+export function mediaS3DownloadsRequireProxy() {
+  const configuration = getMediaStorageConfiguration();
+  return (
+    configuration.driver === "s3" &&
+    configuration.compatibilityMode === "strato-hidrive"
+  );
+}
+
+export async function getS3MediaObjectForDownload(input: {
+  identity: MediaObjectIdentity;
+  versionId: string;
+  expectedEtag: string;
+  expectedSha256: string;
+  expectedSizeBytes: number;
+  expectedMimeType: string;
+  range?: Readonly<{ start: number; end: number }>;
+}) {
+  const configuration = getMediaStorageConfiguration();
+  if (
+    configuration.driver !== "s3" ||
+    configuration.compatibilityMode !== "strato-hidrive"
+  ) {
+    throw new Error("Application-proxied S3 downloads require STRATO mode.");
+  }
+  return getS3ObjectForDownload(configuration, {
+    ...input.identity,
+    versionId: input.versionId,
+    expectedEtag: input.expectedEtag,
+    expectedSha256: input.expectedSha256,
+    expectedSizeBytes: input.expectedSizeBytes,
+    expectedMimeType: input.expectedMimeType,
+    range: input.range,
+  });
+}
+
 export async function promoteStoredMediaObject(input: {
   source: MediaObjectIdentity;
   target: MediaObjectIdentity;
@@ -304,4 +341,18 @@ export async function deleteStoredMediaObject(
   return configuration.driver === "s3"
     ? deleteS3Object(configuration, identity, signal)
     : deleteFilesystemMediaObject(configuration, identity, signal);
+}
+
+export async function deleteStoredMediaObjectRevision(
+  identity: MediaObjectIdentity,
+  versionId: string,
+) {
+  const configuration = getMediaStorageConfiguration();
+  if (
+    configuration.driver !== "s3" ||
+    configuration.compatibilityMode !== "versioned"
+  ) {
+    throw new Error("Exact media revision deletion requires versioned S3.");
+  }
+  return deleteS3ObjectRevision(configuration, identity, versionId);
 }

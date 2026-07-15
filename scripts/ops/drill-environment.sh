@@ -282,8 +282,10 @@ validate_q_academy_staging_storage_drill_target() {
   local line=""
   local env_bucket=""
   local env_endpoint=""
+  local env_compatibility_mode=""
   local bucket_seen=false
   local endpoint_seen=false
+  local compatibility_mode_seen=false
   local normalized_bucket=""
   local storage_hostname=""
   local label=""
@@ -291,6 +293,7 @@ validate_q_academy_staging_storage_drill_target() {
 
   Q_ACADEMY_STAGING_MEDIA_S3_BUCKET=""
   Q_ACADEMY_STAGING_MEDIA_S3_ENDPOINT=""
+  Q_ACADEMY_STAGING_MEDIA_S3_COMPATIBILITY_MODE=""
 
   validate_q_academy_staging_drill_target \
     "${environment_file}" "${project_name}" "${confirm_project_name}" \
@@ -337,6 +340,11 @@ validate_q_academy_staging_storage_drill_target() {
         endpoint_seen=true
         env_endpoint="${line#MEDIA_S3_ENDPOINT=}"
         ;;
+      MEDIA_S3_COMPATIBILITY_MODE)
+        [[ "${compatibility_mode_seen}" == "false" ]] || return 1
+        compatibility_mode_seen=true
+        env_compatibility_mode="${line#MEDIA_S3_COMPATIBILITY_MODE=}"
+        ;;
     esac
   done <"${environment_file}"
 
@@ -347,6 +355,12 @@ validate_q_academy_staging_storage_drill_target() {
   if [[ "${endpoint_seen}" != "true" ||
         ! "${env_endpoint}" =~ ^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
     printf 'MEDIA_S3_ENDPOINT must be a canonical external HTTPS DNS origin.\n' >&2
+    return 1
+  fi
+  if [[ "${compatibility_mode_seen}" != "true" ||
+        ( "${env_compatibility_mode}" != "versioned" &&
+          "${env_compatibility_mode}" != "strato-hidrive" ) ]]; then
+    printf 'MEDIA_S3_COMPATIBILITY_MODE must be exactly versioned or strato-hidrive.\n' >&2
     return 1
   fi
   storage_hostname="${env_endpoint#https://}"
@@ -368,6 +382,7 @@ validate_q_academy_staging_storage_drill_target() {
 
   Q_ACADEMY_STAGING_MEDIA_S3_BUCKET="${bucket}"
   Q_ACADEMY_STAGING_MEDIA_S3_ENDPOINT="${env_endpoint}"
+  Q_ACADEMY_STAGING_MEDIA_S3_COMPATIBILITY_MODE="${env_compatibility_mode}"
 }
 
 verify_q_academy_local_docker_socket() {

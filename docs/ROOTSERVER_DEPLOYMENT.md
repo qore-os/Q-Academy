@@ -228,6 +228,30 @@ zu aktivieren; ein S3-kompatibler Anbieter muss einen gleichwertigen Schutz
 bereitstellen. Der Bucket darf weder Website-Hosting noch oeffentliche ACLs oder
 oeffentliche Bucket-Policies verwenden.
 
+Die folgenden Versionierungs-, Lifecycle- und Principal-Anforderungen gelten
+vollstaendig fuer `MEDIA_S3_COMPATIBILITY_MODE=versioned`. STRATO HiDrive wird
+nicht als stillschweigend gleichwertiger S3-Anbieter behandelt. Es muss mit
+`https://s3.hidrive.strato.com`, Region `eu-central-1`, Path-Style,
+`MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive` und der bewussten Freigabe
+`MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=true` konfiguriert werden. Dieser Modus
+hat keine native Versionwiederherstellung, keinen nativen Export-Lifecycle,
+keine Objekt-Tags, keinen nachgewiesenen Prefix-IAM-Vertrag und keine
+verlaesslichen konditionalen Writes/Deletes. Er setzt den separaten
+Acht-Tage-Export-Sweeper und die ETag-/Key-Kompensationen aus
+[S3_PROVIDER_CONTRACT.md](./S3_PROVIDER_CONTRACT.md) voraus; ohne diese
+Kontrollen darf der Release nicht freigegeben werden.
+
+Die gesperrten Deploy- und Rollback-Skripte lesen den Modus ohne das Env-File zu
+sourcen, aktivieren fuer diesen Modus automatisch `--profile strato` und warten
+vor dem Persistieren des Release-State auf den Healthcheck. Dadurch laeuft
+`strato-privacy-sweeper` alle 15 Minuten; sein Healthcheck verlangt einen
+erfolgreichen, verifizierten Vollzyklus innerhalb von 40 Minuten. Ein einzelner
+Traversal-Zyklus darf hoechstens 20 Minuten dauern, damit selbst zwei
+unguenstig verschobene Scanpositionen plus Intervall und Reserve innerhalb der
+einstuendigen Loeschmarge bleiben. Der Healthcheck gewaehrt beim Containerstart
+25 Minuten fuer diesen ersten Vollzyklus. Manuelle
+Compose-Aufrufe muessen das Profil ebenfalls explizit aktivieren.
+
 - `MEDIA_S3_ENDPOINT` muss ein vom Rootserver erreichbarer HTTPS-Ursprung mit
   gueltiger Zertifikatskette sein. Bucket, Region und Path-Style-Einstellung
   muessen zum Anbieter passen.
@@ -322,7 +346,8 @@ mit `GetBucketLifecycleConfiguration` gelesen und der Provider-Preflight
 ausgefuehrt. Der Operator-Principal des Preflights braucht dieses Leserecht;
 der Web-App-Principal nicht.
 
-Direkte signierte Browser-PUTs benoetigen eine restriktive Bucket-CORS-Regel.
+Im Modus `versioned` benoetigen direkte signierte Browser-PUTs eine restriktive
+Bucket-CORS-Regel.
 `AllowedOrigins` muss jeden tatsaechlichen kanonischen HTTPS-Ursprung einzeln
 nennen; Wildcards und `*` sind unzulaessig. Der aktuelle signierte PUT bindet
 `Content-Type`, die vom Browser gesetzte exakte `Content-Length` und
@@ -340,6 +365,12 @@ nennen; Wildcards und `*` sind unzulaessig. Der aktuelle signierte PUT bindet
   }
 ]
 ```
+
+Im Modus `strato-hidrive` gilt dieser PUT-Vertrag nicht. Die Bucket-CORS-Regel
+muss stattdessen `POST` fuer den exakten Produktionsursprung sowie `ETag` als
+Expose-Header erlauben. Der Client sendet den signierten Multipart-POST ohne
+eigene Request-Header und ohne XHR-Upload-Listener, damit kein von STRATO nicht
+beantworteter OPTIONS-Preflight erforderlich wird.
 
 `Content-Length` wird vom Browser kontrolliert und deshalb nicht manuell als
 Request-Header gesetzt. Weitere Header duerfen erst ergaenzt werden, wenn der
@@ -933,26 +964,34 @@ stuendlichen Cleanup-Zeitpunkt.
 
 Filesystem-Exports werden nur unter ihrem validierten, aus Tenant-, Fall- und
 Artefakt-ID abgeleiteten Write-once-Schluessel ohne `VersionId`/ETag geloescht.
-S3-Exports verwenden ausschliesslich den persistierten Schluessel, die konkrete
-`VersionId` und den ETag. Scheitert eine Kompensationsloeschung nach dem PUT,
-bleibt diese Identitaet fuer den Retention-Retry erhalten; die taggebundene
-Acht-Tage-Lifecycle-Regel deckt nur Orphans vor dem Datenbank-Commit ab und
-ersetzt die autoritative Sieben-Tage-Loeschung nicht.
+Im Modus `versioned` verwenden S3-Exports ausschliesslich den persistierten
+Schluessel, die konkrete `VersionId` und den ETag. Scheitert eine
+Kompensationsloeschung nach dem PUT, bleibt diese Identitaet fuer den
+Retention-Retry erhalten; die taggebundene Acht-Tage-Lifecycle-Regel deckt nur
+Orphans vor dem Datenbank-Commit ab. Im Modus `strato-hidrive` bindet Q-Academy
+stattdessen den eindeutigen Schluessel an den ETag, verifiziert den exakten
+unversionierten Delete per HEAD und ueberlaesst das Orphan-Fenster dem
+separaten Acht-Tage-Sweeper. Beide Pfade ersetzen die autoritative
+Sieben-Tage-Loeschung nicht.
 
 Die beiden getrennten `media-worker`-Dispatcher rufen auf dem isolierten
 `media-runner` den Endpunkt `POST /api/internal/jobs/media/dispatch` mit
 dem nur fuer Medienjobs gueltigen `MEDIA_CRON_SECRET` auf. Dieser Endpunkt ist
 streng begrenzt: Jeder Request claimt hoechstens einen Scan und danach
 hoechstens einen Thumbnail-, Transcode- oder Transkriptjob. Ein einzelner
-Provideraufruf hat ein hartes Zehn-Minuten-Limit; der Dispatcher-Timeout von
-1.300 Sekunden deckt beide seriellen Arbeitsschritte samt Abschluss ab.
+Provideraufruf hat ein hartes Zehn-Minuten-Limit. Kompositionsjobs koennen vor
+diesem Aufruf jedoch bis zu acht weitere unveraenderliche S3-Quellen seriell
+materialisieren und vollstaendig verifizieren. Der Dispatcher und die Route
+begrenzen deshalb den gesamten synchronen Request auf 14.400 Sekunden.
 Retention oder S3-Harddelete koennen die beiden Jobschleifen daher nicht
 blockieren.
 
 Der Produktions-Compose baut einen separaten `media-runner` mit FFmpeg und
 bindet dessen Arbeitsverzeichnis an das dedizierte, groessenbegrenzte
 Disk-Filesystem des Hosts. Der Runner
-laedt nur die gespeicherte S3-VersionId mit passender ETag, verifiziert den
+laedt im Modus `versioned` nur die gespeicherte S3-VersionId mit passendem ETag;
+im Modus `strato-hidrive` wird derselbe Zugriff an den gespeicherten ETag und
+die daraus abgeleitete synthetische Revision gebunden. Der Runner verifiziert den
 Quell-Digest, startet FFmpeg beziehungsweise den konfigurierten STT-Provider
 ohne Shell und speichert ein Derivat erst nach erneuter Version-/Metadaten-/
 Digestpruefung. Vor Kundenfreigabe muessen S3 und die konkrete STT-Installation
@@ -979,13 +1018,17 @@ Das vollstaendige Provider- und Datenmodell steht in
 
 `scheduler`, `media-worker` und `media-maintenance` aktualisieren jeweils nur
 nach einer erfolgreichen HTTP-2xx-Antwort einen atomar geschriebenen
-Success-Marker unter `/tmp`. Transportfehler werden als HTTP `000` gezaehlt.
+Success-Marker unter `/tmp`. Der Medien-Dispatcher aktualisiert waehrend seines
+auf vier Stunden begrenzten Requests zusaetzlich alle 30 Sekunden einen
+separaten In-progress-Marker; dieser belegt nur Prozessaktivitaet und wird nie
+als fachlicher Erfolg gewertet. Transportfehler werden als HTTP `000` gezaehlt.
 Nach `SCHEDULER_MAX_CONSECUTIVE_FAILURES`,
 `MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES` beziehungsweise
 `MEDIA_MAINTENANCE_MAX_CONSECUTIVE_FAILURES` aufeinanderfolgenden Fehlern
 beendet sich der Dispatcher, damit `restart: unless-stopped` greift. Die
 Docker-Healthchecks melden einen fehlenden oder zu alten Marker als
-`unhealthy`; die Altersgrenzen werden mit den drei
+`unhealthy`; beim Medien-Dispatcher gilt alternativ ein hoechstens 120 Sekunden
+alter In-progress-Marker. Die Altersgrenzen der Success-Marker werden mit den drei
 `*_HEARTBEAT_STALE_SECONDS`-Variablen gesetzt und muessen mindestens einen
 vollstaendigen Poll-/Timeout-Zyklus abdecken. Die Marker enthalten nur einen
 Unix-Zeitstempel. Secrets und Response-Bodies werden nicht protokolliert.
@@ -1426,9 +1469,11 @@ und beide Healthchecks pruefen. Das verwendete Backup und die Freigabe protokoll
    Freigabe das gesperrte Rollback-Skript mit dem bereits vorhandenen vorherigen
    Release-Tag ausfuehren. Es stoppt alle fuenf DB-Writer, startet `app` und
    `media-runner` gemeinsam ohne Abhaengigkeiten mit `--wait`, prueft beide
-   Runtimes im Container und startet erst danach die Dispatcher. Bei einem
-   Fehler bleiben alle Writer gestoppt. Den Tag persistiert es erst nach
-   Readiness atomar in Env und Release-State. Im Incident wird kein neues Image gebaut.
+   Runtimes im Container und startet erst danach die Dispatcher. Im
+   `strato-hidrive`-Modus startet es ausserdem den Sweeper aus dem exakt gleichen
+   Ziel-Tag und wartet auf dessen Healthcheck. Bei einem Fehler bleiben alle
+   Writer gestoppt. Den Tag persistiert es erst nach Readiness atomar in Env und
+   Release-State. Im Incident wird kein neues Image gebaut.
 3. Ist die Rueckwaertskompatibilitaet nicht belegt, keine improvisierten
    Down-SQLs ausfuehren. Entweder mit einem vorwaerts gerichteten Fix fortfahren
    oder das Pre-Deployment-Backup seitlich wiederherstellen, fachlich pruefen

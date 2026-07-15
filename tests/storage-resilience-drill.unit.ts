@@ -58,7 +58,11 @@ test("storage target validator accepts only the exact env-bound non-production b
     .relative(root, environmentFile)
     .replaceAll("\\", "/");
   const bashRunnerFile = path.relative(root, runnerFile).replaceAll("\\", "/");
-  const writeEnvironment = (bucket: string, endpoint: string) =>
+  const writeEnvironment = (
+    bucket: string,
+    endpoint: string,
+    compatibilityMode = "versioned",
+  ) =>
     writeFileSync(
       environmentFile,
       [
@@ -66,6 +70,7 @@ test("storage target validator accepts only the exact env-bound non-production b
         "COMPOSE_PROJECT_NAME=q-academy-staging",
         `MEDIA_S3_BUCKET=${bucket}`,
         `MEDIA_S3_ENDPOINT=${endpoint}`,
+        `MEDIA_S3_COMPATIBILITY_MODE=${compatibilityMode}`,
         "MEDIA_S3_SECRET_ACCESS_KEY=must-not-be-read-or-printed",
         "",
       ].join("\n"),
@@ -82,7 +87,7 @@ test("storage target validator accepts only the exact env-bound non-production b
       "set -euo pipefail",
       "source scripts/ops/drill-environment.sh",
       `validate_q_academy_staging_storage_drill_target "$PWD/${bashEnvironmentFile}" "$1" "$2" "$3" "$4" "$5" "$6"`,
-      "printf 'validated'",
+      "printf '%s' \"${Q_ACADEMY_STAGING_MEDIA_S3_COMPATIBILITY_MODE}\"",
       "",
     ].join("\n"),
     { mode: 0o700 },
@@ -108,7 +113,7 @@ test("storage target validator accepts only the exact env-bound non-production b
       "q-academy-staging-media",
     );
     assert.equal(valid.status, 0, valid.stderr);
-    assert.equal(valid.stdout, "validated");
+    assert.equal(valid.stdout, "versioned");
     assert.doesNotMatch(
       valid.stdout + valid.stderr,
       /must-not-be-read-or-printed/,
@@ -139,6 +144,29 @@ test("storage target validator accepts only the exact env-bound non-production b
       "q-academy-staging-media",
     );
     assert.notEqual(insecureEndpoint.status, 0);
+
+    writeEnvironment(
+      "q-academy-staging-media",
+      "https://objects.storage-provider.com",
+      "strato-hidrive",
+    );
+    const strato = run(
+      "q-academy-staging-media",
+      "q-academy-staging-media",
+    );
+    assert.equal(strato.status, 0, strato.stderr);
+    assert.equal(strato.stdout, "strato-hidrive");
+
+    writeEnvironment(
+      "q-academy-staging-media",
+      "https://objects.storage-provider.com",
+      "unknown",
+    );
+    const invalidMode = run(
+      "q-academy-staging-media",
+      "q-academy-staging-media",
+    );
+    assert.notEqual(invalidMode.status, 0);
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
@@ -174,7 +202,17 @@ test("storage outage proves one durable retry while public health remains green"
   );
   assert.match(drill, /STORAGE_PROBE_SCRIPT/);
   assert.match(drill, /app_storage_endpoint_reachable/);
+  assert.match(
+    drill,
+    /process\.env\.MEDIA_S3_COMPATIBILITY_MODE!==expectedMode/,
+  );
   assert.match(drill, /write-download-config/);
+  assert.match(drill, /validate-proxy-download/);
+  assert.match(drill, /validated_storage_compatibility_mode.*versioned/);
+  assert.match(drill, /validated_storage_compatibility_mode.*strato-hidrive/);
+  assert.match(drill, /--header 'Range: bytes=0-0'/);
+  assert.match(drill, /download_range_status.*!= "206"/);
+  assert.match(drill, /upload_status.*!= "201"/);
   assert.match(drill, /--noproxy '\*'/);
   assert.match(drill, /randomBytes\(32\)/);
   assert.match(drill, /MEDIA_DISPATCH_SCRIPT/);
@@ -225,6 +263,8 @@ test("storage evidence keeps credentials, signed URLs, identities, and hashes pr
   assert.match(helper, /mode: 0o600/);
   assert.match(helper, /url\.username/);
   assert.match(helper, /url\.password/);
+  assert.match(helper, /form-string/);
+  assert.match(drill, /"storageCompatibilityMode":/);
   const reportStart = drill.indexOf("write_report() {");
   const reportEnd = drill.indexOf("\nrun_compose_with_timeout()", reportStart);
   const report = drill.slice(reportStart, reportEnd);
@@ -247,9 +287,12 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
     path.join(root, ".q-academy-storage-json-"),
   );
   const id = "10000000-0000-4000-8000-000000000001";
+  const organizationId = "20000000-0000-4000-8000-000000000002";
   const canary = path.join(temporaryDirectory, "canary.txt");
   const create = path.join(temporaryDirectory, "create.json");
   const config = path.join(temporaryDirectory, "upload.curl");
+  const stratoCreate = path.join(temporaryDirectory, "strato-create.json");
+  const stratoConfig = path.join(temporaryDirectory, "strato-upload.curl");
   const session = path.join(temporaryDirectory, "session.json");
   const asset = path.join(temporaryDirectory, "asset.json");
   const dispatch = path.join(temporaryDirectory, "dispatch.json");
@@ -257,11 +300,17 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
   const downloadHeaders = path.join(temporaryDirectory, "download-headers.txt");
   const downloadConfig = path.join(temporaryDirectory, "download.curl");
   const downloadOutput = path.join(temporaryDirectory, "download.txt");
+  const proxyHeaders = path.join(temporaryDirectory, "proxy-headers.txt");
+  const proxyOutput = path.join(temporaryDirectory, "proxy-download.txt");
+  const rangeHeaders = path.join(temporaryDirectory, "range-headers.txt");
+  const rangeOutput = path.join(temporaryDirectory, "range-download.txt");
   const canaryBody = "Q-Academy storage resilience test\n";
+  const expectedIncomingKey =
+    `incoming/tenants/${organizationId}/assets/${id}/incoming.txt`;
   const signedUrl =
-    `https://q-academy-staging-media.objects.storage-provider.com/incoming/tenants/20000000-0000-4000-8000-000000000002/assets/${id}/incoming.txt?X-Amz-Signature=must-not-leak&x-amz-meta-asset-id=${id}&x-amz-meta-organization-id=20000000-0000-4000-8000-000000000002`;
+    `https://q-academy-staging-media.objects.storage-provider.com/${expectedIncomingKey}?X-Amz-Signature=must-not-leak&x-amz-meta-asset-id=${id}&x-amz-meta-organization-id=${organizationId}`;
   const signedDownloadUrl =
-    `https://q-academy-staging-media.objects.storage-provider.com/tenants/20000000-0000-4000-8000-000000000002/assets/${id}/ready.txt?X-Amz-Signature=must-not-leak`;
+    `https://q-academy-staging-media.objects.storage-provider.com/tenants/${organizationId}/assets/${id}/ready.txt?X-Amz-Signature=must-not-leak`;
   const run = (...arguments_: string[]) =>
     spawnSync(process.execPath, [helperPath, ...arguments_], {
       cwd: root,
@@ -275,7 +324,7 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
       JSON.stringify({
         data: {
           id,
-          organizationId: "20000000-0000-4000-8000-000000000002",
+          organizationId,
           sessionId: "30000000-0000-4000-8000-000000000003",
           role: "member",
           status: "active",
@@ -318,6 +367,7 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
       config,
       "https://objects.storage-provider.com",
       "q-academy-staging-media",
+      "versioned",
     );
     assert.equal(upload.status, 0, upload.stderr);
     assert.equal(upload.stdout, "");
@@ -339,11 +389,217 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
       downloadOutput,
       "https://objects.storage-provider.com",
       "q-academy-staging-media",
+      "versioned",
     );
     assert.equal(download.status, 0, download.stderr);
     assert.equal(download.stdout, "");
     assert.match(readFileSync(downloadConfig, "utf8"), /X-Amz-Signature/);
     assert.doesNotMatch(download.stdout + download.stderr, /must-not-leak/);
+
+    const stratoTimestamp = "20260715T120000Z";
+    const stratoCredential =
+      "STAGINGACCESSKEY/20260715/eu-central-1/s3/aws4_request";
+    const stratoConditions = [
+      { bucket: "q-academy-staging-media" },
+      ["eq", "$key", expectedIncomingKey],
+      [
+        "content-length-range",
+        Buffer.byteLength(canaryBody),
+        Buffer.byteLength(canaryBody),
+      ],
+      ["eq", "$Content-Type", "text/plain"],
+      ["eq", "$x-amz-meta-asset-id", id],
+      ["eq", "$x-amz-meta-organization-id", organizationId],
+      { "x-amz-algorithm": "AWS4-HMAC-SHA256" },
+      { "x-amz-credential": stratoCredential },
+      { "x-amz-date": stratoTimestamp },
+      { success_action_status: "201" },
+    ];
+    const stratoPolicy = Buffer.from(
+      JSON.stringify({
+        expiration: "2026-07-15T12:15:00.000Z",
+        conditions: stratoConditions,
+      }),
+    ).toString("base64");
+    const stratoPayload = {
+      data: {
+        id,
+        purpose: "community",
+        status: "pending",
+        originalFileName: "q-academy-storage-drill.txt",
+        declaredMimeType: "text/plain",
+        declaredSizeBytes: Buffer.byteLength(canaryBody),
+        statusUrl: `/api/media-assets/${id}`,
+        completeUrl: `/api/media-assets/${id}/complete`,
+        upload: {
+          transport: "s3",
+          method: "POST",
+          url: "https://objects.storage-provider.com/q-academy-staging-media",
+          fields: {
+            key: expectedIncomingKey,
+            "Content-Type": "text/plain",
+            "x-amz-algorithm": "AWS4-HMAC-SHA256",
+            "x-amz-credential": stratoCredential,
+            "x-amz-date": stratoTimestamp,
+            success_action_status: "201",
+            "x-amz-meta-asset-id": id,
+            "x-amz-meta-organization-id": organizationId,
+            policy: stratoPolicy,
+            "x-amz-signature": "a".repeat(64),
+          },
+          expiresInSeconds: 900,
+        },
+      },
+    };
+    writeFileSync(stratoCreate, JSON.stringify(stratoPayload), { mode: 0o600 });
+    const stratoUpload = run(
+      "write-upload-config",
+      stratoCreate,
+      session,
+      id,
+      canary,
+      stratoConfig,
+      "https://objects.storage-provider.com",
+      "q-academy-staging-media",
+      "strato-hidrive",
+    );
+    assert.equal(stratoUpload.status, 0, stratoUpload.stderr);
+    const stratoCurl = readFileSync(stratoConfig, "utf8");
+    assert.match(stratoCurl, /request = "POST"/);
+    assert.match(stratoCurl, /form-string = "key=incoming\/tenants\//);
+    assert.match(stratoCurl, /form = "file=@.*;type=text\/plain"/);
+    assert.doesNotMatch(stratoCurl, /If-None-Match/);
+    assert.doesNotMatch(
+      stratoUpload.stdout + stratoUpload.stderr,
+      /STAGINGACCESSKEY|must-not-leak/,
+    );
+    const mismatchedModeConfig = path.join(
+      temporaryDirectory,
+      "mismatched-mode.curl",
+    );
+    const mismatchedMode = run(
+      "write-upload-config",
+      stratoCreate,
+      session,
+      id,
+      canary,
+      mismatchedModeConfig,
+      "https://objects.storage-provider.com",
+      "q-academy-staging-media",
+      "versioned",
+    );
+    assert.notEqual(mismatchedMode.status, 0);
+    assert.equal(existsSync(mismatchedModeConfig), false);
+
+    writeFileSync(proxyOutput, canaryBody, { mode: 0o600 });
+    writeFileSync(
+      proxyHeaders,
+      [
+        "HTTP/2 200",
+        "accept-ranges: bytes",
+        "cache-control: private, no-store",
+        'content-disposition: attachment; filename="q-academy-storage-drill.txt"',
+        `content-length: ${Buffer.byteLength(canaryBody)}`,
+        "content-type: text/plain",
+        "x-content-type-options: nosniff",
+        "",
+        "",
+      ].join("\r\n"),
+      { mode: 0o600 },
+    );
+    const proxyDownload = run(
+      "validate-proxy-download",
+      proxyHeaders,
+      proxyOutput,
+      canary,
+      "full",
+      "strato-hidrive",
+    );
+    assert.equal(proxyDownload.status, 0, proxyDownload.stderr);
+    assert.notEqual(
+      run(
+        "validate-proxy-download",
+        proxyHeaders,
+        proxyOutput,
+        canary,
+        "full",
+        "versioned",
+      ).status,
+      0,
+    );
+
+    writeFileSync(rangeOutput, Buffer.from(canaryBody).subarray(0, 1), {
+      mode: 0o600,
+    });
+    writeFileSync(
+      rangeHeaders,
+      [
+        "HTTP/2 206",
+        "accept-ranges: bytes",
+        "cache-control: private, no-store",
+        'content-disposition: attachment; filename="q-academy-storage-drill.txt"',
+        "content-length: 1",
+        `content-range: bytes 0-0/${Buffer.byteLength(canaryBody)}`,
+        "content-type: text/plain",
+        "x-content-type-options: nosniff",
+        "",
+        "",
+      ].join("\r\n"),
+      { mode: 0o600 },
+    );
+    const rangeDownload = run(
+      "validate-proxy-download",
+      rangeHeaders,
+      rangeOutput,
+      canary,
+      "range",
+      "strato-hidrive",
+    );
+    assert.equal(rangeDownload.status, 0, rangeDownload.stderr);
+
+    const tamperedStratoCreate = path.join(
+      temporaryDirectory,
+      "tampered-strato-create.json",
+    );
+    const tamperedStratoConfig = path.join(
+      temporaryDirectory,
+      "tampered-strato-upload.curl",
+    );
+    const tamperedStratoPayload = structuredClone(stratoPayload);
+    tamperedStratoPayload.data.upload.fields.key = `${expectedIncomingKey}.other`;
+    writeFileSync(
+      tamperedStratoCreate,
+      JSON.stringify(tamperedStratoPayload),
+      { mode: 0o600 },
+    );
+    const tamperedStrato = run(
+      "write-upload-config",
+      tamperedStratoCreate,
+      session,
+      id,
+      canary,
+      tamperedStratoConfig,
+      "https://objects.storage-provider.com",
+      "q-academy-staging-media",
+      "strato-hidrive",
+    );
+    assert.notEqual(tamperedStrato.status, 0);
+    assert.equal(existsSync(tamperedStratoConfig), false);
+    assert.doesNotMatch(
+      tamperedStrato.stdout + tamperedStrato.stderr,
+      /STAGINGACCESSKEY|must-not-leak/,
+    );
+
+    writeFileSync(rangeOutput, "x", { mode: 0o600 });
+    const wrongProxyBody = run(
+      "validate-proxy-download",
+      rangeHeaders,
+      rangeOutput,
+      canary,
+      "range",
+      "strato-hidrive",
+    );
+    assert.notEqual(wrongProxyBody.status, 0);
 
     assert.equal(run("validate-session", session).status, 0);
 
@@ -408,6 +664,7 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
       invalidConfig,
       "https://different.storage-provider.com",
       "q-academy-staging-media",
+      "versioned",
     );
     assert.notEqual(invalid.status, 0);
     assert.equal(existsSync(invalidConfig), false);
@@ -436,6 +693,7 @@ test("private JSON helper validates upload, retry, asset, session, and preflight
       wrongPathStyleConfig,
       "https://objects.storage-provider.com",
       "q-academy-staging-media",
+      "versioned",
     );
     assert.notEqual(wrongPathStyle.status, 0);
     assert.equal(existsSync(wrongPathStyleConfig), false);
@@ -478,11 +736,15 @@ test("storage drill fails before Docker with exactly one parseable JSON report",
   const lines = result.stdout.trim().split(/\r?\n/);
   assert.equal(lines.length, 1);
   const report = JSON.parse(lines[0]) as {
+    schemaVersion: number;
     status: string;
     failureCode: string;
+    storageCompatibilityMode: string | null;
   };
+  assert.equal(report.schemaVersion, 2);
   assert.equal(report.status, "failed");
   assert.equal(report.failureCode, "acknowledgement_missing");
+  assert.equal(report.storageCompatibilityMode, null);
   assert.doesNotMatch(
     result.stdout + result.stderr,
     /WRONG_ACKNOWLEDGEMENT|not-used-storage/,
@@ -510,4 +772,8 @@ test("resilience documentation states the storage drill evidence boundary", () =
   assert.match(documentation, /provider-wide outage/i);
   assert.match(documentation, /physical asset cleanup/i);
   assert.match(documentation, /verified cleanup/i);
+  assert.match(documentation, /MEDIA_S3_COMPATIBILITY_MODE/);
+  assert.match(documentation, /multipart POST/);
+  assert.match(documentation, /HTTP 206/);
+  assert.match(documentation, /schema-version-2 report/);
 });

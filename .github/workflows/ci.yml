@@ -19,12 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      CI_NODE_IMAGE: node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
+      CI_NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
       CI_ZAP_IMAGE: zaproxy/zap-stable:2.17.0@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2
       CI_PROMETHEUS_IMAGE: prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac
-      CI_DEBIAN_SNAPSHOT: 20260701T000000Z
+      CI_DEBIAN_SNAPSHOT: 20260714T202849Z
       CI_CA_CERTIFICATES_VERSION: 20230311+deb12u1
       CI_FFMPEG_VERSION: 7:5.1.9-0+deb12u1
+      CI_MESA_VERSION: 22.3.6-1+deb12u2
       Q_ACADEMY_CI_RELEASE_TAG: git-${{ github.sha }}
       DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@127.0.0.1:54329/q_academy
       POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:54329/postgres
@@ -294,6 +295,7 @@ jobs:
             --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
             --build-arg CA_CERTIFICATES_VERSION="$CI_CA_CERTIFICATES_VERSION" \
             --build-arg FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
+            --build-arg MESA_VERSION="$CI_MESA_VERSION" \
             --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
             --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
             -t "q-academy-media-runner:$Q_ACADEMY_CI_RELEASE_TAG" .
@@ -303,17 +305,64 @@ jobs:
             --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
             --build-arg CA_CERTIFICATES_VERSION="$CI_CA_CERTIFICATES_VERSION" \
             --build-arg FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
+            --build-arg MESA_VERSION="$CI_MESA_VERSION" \
             -t "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
             --target s3-app-principal-preflight \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
+
+          image_components=(app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
+          for component in "${image_components[@]}"; do
+            image="q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG"
+            docker run --rm --entrypoint /bin/sh "$image" -ec '
+              test ! -e /usr/local/lib/node_modules/npm
+              ! command -v npm >/dev/null 2>&1
+              ! command -v npx >/dev/null 2>&1
+              ! command -v corepack >/dev/null 2>&1
+              ! command -v yarn >/dev/null 2>&1
+              ! command -v yarnpkg >/dev/null 2>&1
+              test ! -e /app/node_modules/drizzle-kit
+              test ! -e /app/node_modules/@esbuild-kit/core-utils
+            '
+          done
+
+          tsx_image_components=(migrator key-rotation tenant-ops media-preflight s3-app-principal-preflight)
+          for component in "${tsx_image_components[@]}"; do
+            image="q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG"
+            docker run --rm --entrypoint /bin/sh "$image" -ec \
+              'test -x /app/node_modules/.bin/tsx'
+          done
+
+          for component in media-runner media-preflight; do
+            docker run --rm -i \
+              -e EXPECTED_MESA_VERSION="$CI_MESA_VERSION" \
+              -e EXPECTED_FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
+              -e EXPECTED_CA_CERTIFICATES_VERSION="$CI_CA_CERTIFICATES_VERSION" \
+              --entrypoint /bin/sh \
+              "q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG" -s <<'SH'
+          set -eu
+          for package in libgbm1 libgl1-mesa-dri libglapi-mesa libglx-mesa0; do
+            actual="$(dpkg-query -W -f='${Version}' "$package")"
+            test "$actual" = "$EXPECTED_MESA_VERSION" || {
+              echo "$package=$actual" >&2
+              exit 1
+            }
+          done
+          test "$(dpkg-query -W -f='${Version}' ffmpeg)" = "$EXPECTED_FFMPEG_VERSION"
+          test "$(dpkg-query -W -f='${Version}' ca-certificates)" = "$EXPECTED_CA_CERTIFICATES_VERSION"
+          SH
+          done
+
           docker run --rm --entrypoint /bin/sh \
             "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
             'test "$(id -u)" = 1001 && test -r scripts/media-processing-preflight.ts && test -r scripts/clamav-preflight.ts && /usr/bin/ffmpeg -version >/dev/null && /usr/bin/ffprobe -version >/dev/null'
           docker run --rm --entrypoint /bin/sh \
             "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
-            'test "$(id -u)" = 1001 && test -r scripts/s3-app-principal-preflight.ts'
+            'test "$(id -u)" = 1001 && test -r scripts/s3-app-principal-preflight.ts && test -r scripts/strato-privacy-export-sweeper.ts && test -r src/lib/media/s3-presigned-post.ts && test -r src/lib/media/s3-strato-compatibility-preflight.ts && test -r src/lib/privacy/strato-retention-sweeper.ts'
+          docker run --rm --entrypoint ./node_modules/.bin/tsx \
+            "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" \
+            scripts/strato-privacy-export-sweeper.ts --help >/dev/null
           docker run --rm \
             "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" help
           if docker run --rm \
@@ -835,7 +884,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      Q_ACADEMY_DRILL_NODE_IMAGE: node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
+      Q_ACADEMY_DRILL_NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
       Q_ACADEMY_DRILL_POSTGRES_IMAGE: postgres:16.14-alpine3.23@sha256:c95dee655b8a0743021bdbd2d21abb7ef2fd520c5df39bd328798769c049648f
     steps:
       - name: Check out repository

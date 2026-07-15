@@ -5,7 +5,11 @@ import {
   exactS3VersionDeletionTargets,
   immutableS3ObjectLocator,
   requireS3VersionId,
+  requireStratoEtagRevision,
+  s3CopySource,
+  s3ObjectLocator,
   S3ObjectIntegrityError,
+  stratoEtagRevision,
   verifyS3ObjectIntegrity,
   versionedS3CopySource,
 } from "../src/lib/media/s3-object-integrity";
@@ -59,6 +63,51 @@ test("unversioned S3 providers fail closed", () => {
   assert.throws(() => requireS3VersionId("null"), S3ObjectIntegrityError);
   assert.throws(
     () => verifyS3ObjectIntegrity(stored({ VersionId: undefined }), expected),
+    S3ObjectIntegrityError,
+  );
+});
+
+test("explicit STRATO mode binds the synthetic revision to key and ETag", () => {
+  const key = "tenants/acme/final.pdf";
+  const revision = stratoEtagRevision(key, expected.etag);
+  const verified = verifyS3ObjectIntegrity(
+    stored({ VersionId: undefined }),
+    {
+      ...expected,
+      compatibilityMode: "strato-hidrive",
+      key,
+      versionId: revision,
+    },
+  );
+
+  assert.equal(verified.versionId, revision);
+  assert.deepEqual(
+    s3ObjectLocator("strato-hidrive", key, revision, expected.etag),
+    { Key: key },
+  );
+  assert.equal(
+    s3CopySource(
+      "strato-hidrive",
+      "private bucket",
+      key,
+      revision,
+      expected.etag,
+    ),
+    "/private%20bucket/tenants/acme/final.pdf",
+  );
+  assert.throws(
+    () => requireStratoEtagRevision(key, "other-etag", revision),
+    S3ObjectIntegrityError,
+  );
+  assert.throws(
+    () =>
+      verifyS3ObjectIntegrity(stored({ VersionId: undefined }), {
+        ...expected,
+        compatibilityMode: "strato-hidrive",
+        key,
+        versionId: revision,
+        etag: "other-etag",
+      }),
     S3ObjectIntegrityError,
   );
 });
