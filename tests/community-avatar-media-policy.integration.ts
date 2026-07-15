@@ -286,14 +286,11 @@ test(
         communityToken,
         `/api/v1/media-assets/${assetId}/download`,
       );
-      assert.equal(publicApiDownload.status, 307);
-      assert.match(
-        publicApiDownload.headers.get("location") ?? "",
-        new RegExp(`/api/v1/media-assets/${assetId}/content`),
-      );
-      assert.doesNotMatch(
-        publicApiDownload.headers.get("location") ?? "",
-        /tenants\//,
+      assert.equal(publicApiDownload.status, 200);
+      assert.equal(publicApiDownload.headers.get("location"), null);
+      assert.deepEqual(
+        Buffer.from(await publicApiDownload.arrayBuffer()),
+        bytes,
       );
 
       await expectProblem(
@@ -389,7 +386,8 @@ test(
         memberToken,
         `/api/v1/media-assets/${assetId}/download`,
       );
-      assert.equal(membersDownload.status, 307);
+      assert.equal(membersDownload.status, 200);
+      assert.deepEqual(Buffer.from(await membersDownload.arrayBuffer()), bytes);
 
       await sql`
         insert into community_public_profile_fields (
