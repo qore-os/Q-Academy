@@ -593,6 +593,16 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /docker image prune --force/);
   assert.doesNotMatch(continuousIntegration, /docker (?:image|system) prune --all/);
   assert.match(continuousIntegration, /cmp --silent "\$before_manifest" "\$after_manifest"/);
+  assert.match(
+    continuousIntegration,
+    /image="q-academy-\$component:\$Q_ACADEMY_CI_RELEASE_TAG"/,
+  );
+  assert.match(continuousIntegration, /printf '%s ' "\$image"/);
+  assert.match(
+    continuousIntegration,
+    /docker image inspect --format 'id=\{\{\.Id\}\} size=\{\{\.Size\}\}' "\$image"/,
+  );
+  assert.doesNotMatch(continuousIntegration, /join \.RepoTags/);
   assert.match(continuousIntegration, /required_bytes=\$\(\(6 \* 1024 \* 1024 \* 1024\)\)/);
   assert.match(continuousIntegration, /TMPDIR: \$\{\{ runner\.temp \}\}/);
   assert.match(createReleaseArtifact, /docker save/);

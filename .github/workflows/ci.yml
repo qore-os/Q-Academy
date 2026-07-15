@@ -764,8 +764,9 @@ jobs:
           df -h -- / "$RUNNER_TEMP" /tmp
           docker system df
           for component in "${image_components[@]}"; do
-            docker image inspect --format '{{join .RepoTags ","}} id={{.Id}} size={{.Size}}' \
-              "q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG"
+            image="q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG"
+            printf '%s ' "$image"
+            docker image inspect --format 'id={{.Id}} size={{.Size}}' "$image"
           done
           du -sh -- node_modules "$HOME/.cache/ms-playwright" .data 2>/dev/null || true
 
