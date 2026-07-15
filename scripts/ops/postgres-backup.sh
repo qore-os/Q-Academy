@@ -213,6 +213,11 @@ if [[ "${VERIFY_RESTORE}" == "true" ]]; then
     export PGPASSWORD
     dropdb --host=postgres --username="$PGUSER" --force --if-exists "$VERIFY_DATABASE"
     createdb --host=postgres --username="$PGUSER" --owner="$OWNER_DATABASE_USER" --template=template0 "$VERIFY_DATABASE"
+    # template0 assigns public to pg_database_owner; the restore contract uses the concrete owner.
+    psql --host=postgres --username="$PGUSER" --dbname="$VERIFY_DATABASE" \
+      --set=ON_ERROR_STOP=1 --set=owner_user="$OWNER_DATABASE_USER" <<'"'"'SQL'"'"'
+    alter schema public owner to :"owner_user";
+SQL
   '
   verification_created=true
 

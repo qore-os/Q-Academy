@@ -590,6 +590,31 @@ test("database bootstrap, ownership, and runtime privileges stay separated", () 
   assert.match(backup, /owner_role\.rolbypassrls/);
 });
 
+test("backup verification owns the template public schema before restoring", () => {
+  const verificationDatabaseCreation = backup.indexOf(
+    'createdb --host=postgres --username="$PGUSER" --owner="$OWNER_DATABASE_USER" --template=template0 "$VERIFY_DATABASE"',
+  );
+  const publicSchemaConnection = backup.indexOf(
+    'psql --host=postgres --username="$PGUSER" --dbname="$VERIFY_DATABASE"',
+    verificationDatabaseCreation,
+  );
+  const publicSchemaOwnership = backup.indexOf(
+    'alter schema public owner to :"owner_user";',
+    publicSchemaConnection,
+  );
+  const verificationRestore = backup.indexOf(
+    "pg_restore \\",
+    publicSchemaOwnership,
+  );
+  const ownershipAudit = backup.indexOf("misowned_objects", verificationRestore);
+
+  assert.ok(verificationDatabaseCreation >= 0);
+  assert.ok(publicSchemaConnection > verificationDatabaseCreation);
+  assert.ok(publicSchemaOwnership > publicSchemaConnection);
+  assert.ok(verificationRestore > publicSchemaOwnership);
+  assert.ok(ownershipAudit > verificationRestore);
+});
+
 test("in-place restore isolates every persistent database writer", () => {
   assert.match(
     common,
