@@ -9,6 +9,7 @@ function source(path: string) {
 
 test("CodeQL runs pinned extended JavaScript and TypeScript analysis", () => {
   const workflow = source(".github/workflows/codeql.yml");
+  assert.match(workflow, /actions: read/);
   assert.match(workflow, /security-events: write/);
   assert.match(workflow, /languages: javascript-typescript/);
   assert.match(workflow, /queries: security-extended/);
