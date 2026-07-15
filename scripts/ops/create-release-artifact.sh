@@ -65,10 +65,11 @@ scan_failed=false
 trivy --version >"$output_directory/evidence/trivy-version.txt"
 for component in "${image_components[@]}"; do
   image="q-academy-$component:$release_tag"
-  trivy image --quiet --scanners vuln --format cyclonedx \
-    --output "$output_directory/evidence/sbom-$component.cdx.json" "$image"
-  trivy image --quiet --scanners vuln --format json --exit-code 0 \
+  trivy image --quiet --scanners vuln --format json --list-all-pkgs --exit-code 0 \
     --output "$output_directory/evidence/vulnerabilities-$component.json" "$image"
+  trivy convert --quiet --format cyclonedx \
+    --output "$output_directory/evidence/sbom-$component.cdx.json" \
+    "$output_directory/evidence/vulnerabilities-$component.json"
   if ! trivy image --quiet --scanners vuln --severity HIGH,CRITICAL \
     --ignore-unfixed --exit-code 1 --format table \
     --output "$output_directory/evidence/vulnerability-gate-$component.txt" "$image"; then

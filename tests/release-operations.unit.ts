@@ -562,6 +562,10 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /TRIVY_VERSION: 0\.70\.0/);
   assert.match(
     continuousIntegration,
+    /CI_PROMETHEUS_IMAGE: prom\/prometheus:v3\.12\.0@sha256:[a-f0-9]{64}/,
+  );
+  assert.match(
+    continuousIntegration,
     /CI_CA_CERTIFICATES_VERSION: 20230311\+deb12u1/,
   );
   assert.equal(
@@ -580,9 +584,17 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /actions\/download-artifact@[a-f0-9]{40}/);
   assert.match(continuousIntegration, /packages: write/);
 
-  assert.match(createReleaseArtifact, /--format cyclonedx/);
+  assert.match(createReleaseArtifact, /--format json --list-all-pkgs/);
+  assert.match(createReleaseArtifact, /trivy convert --quiet --format cyclonedx/);
+  assert.equal(createReleaseArtifact.match(/trivy image /g)?.length, 2);
   assert.match(createReleaseArtifact, /--severity HIGH,CRITICAL/);
   assert.match(createReleaseArtifact, /--ignore-unfixed --exit-code 1/);
+  assert.match(continuousIntegration, /docker builder prune --all --force/);
+  assert.match(continuousIntegration, /docker image prune --force/);
+  assert.doesNotMatch(continuousIntegration, /docker (?:image|system) prune --all/);
+  assert.match(continuousIntegration, /cmp --silent "\$before_manifest" "\$after_manifest"/);
+  assert.match(continuousIntegration, /required_bytes=\$\(\(6 \* 1024 \* 1024 \* 1024\)\)/);
+  assert.match(continuousIntegration, /TMPDIR: \$\{\{ runner\.temp \}\}/);
   assert.match(createReleaseArtifact, /docker save/);
   assert.match(createReleaseArtifact, /s3-app-principal-preflight/);
   assert.match(createReleaseArtifact, /CI_CA_CERTIFICATES_VERSION/);
