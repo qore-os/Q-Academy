@@ -22,6 +22,7 @@ jobs:
       CI_NODE_IMAGE: node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
       CI_ZAP_IMAGE: zaproxy/zap-stable:2.17.0@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2
       CI_DEBIAN_SNAPSHOT: 20260701T000000Z
+      CI_CA_CERTIFICATES_VERSION: 20230311+deb12u1
       CI_FFMPEG_VERSION: 7:5.1.9-0+deb12u1
       Q_ACADEMY_CI_RELEASE_TAG: git-${{ github.sha }}
       DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@127.0.0.1:54329/q_academy
@@ -287,6 +288,7 @@ jobs:
             --target media-runner \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
+            --build-arg CA_CERTIFICATES_VERSION="$CI_CA_CERTIFICATES_VERSION" \
             --build-arg FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
             --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
             --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
@@ -295,6 +297,7 @@ jobs:
             --target media-preflight \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
+            --build-arg CA_CERTIFICATES_VERSION="$CI_CA_CERTIFICATES_VERSION" \
             --build-arg FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
             -t "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \

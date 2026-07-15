@@ -485,11 +485,48 @@ test("production migration and release verification images contain their runtime
     2,
   );
   assert.match(dockerfile, /ARG DEBIAN_SNAPSHOT=\d{8}T\d{6}Z/);
+  assert.match(
+    dockerfile,
+    /ARG CA_CERTIFICATES_VERSION=20230311\+deb12u1/,
+  );
   assert.match(dockerfile, /ARG FFMPEG_VERSION=7:5\.1\.9-0\+deb12u1/);
   assert.match(dockerfile, /snapshot\.debian\.org\/archive\/debian-security/);
   assert.equal(
+    dockerfile.match(/"ca-certificates=\$\{CA_CERTIFICATES_VERSION\}"/g)
+      ?.length,
+    2,
+  );
+  assert.equal(
     dockerfile.match(/"ffmpeg=\$\{FFMPEG_VERSION\}"/g)?.length,
     2,
+  );
+  assert.equal(
+    dockerfile.match(
+      /s\|http:\/\/snapshot\.debian\.org\|https:\/\/snapshot\.debian\.org\|g/g,
+    )?.length,
+    2,
+  );
+  assert.equal(
+    dockerfile.match(
+      /apt-get --error-on=any -o Acquire::Check-Valid-Until=false update/g,
+    )?.length,
+    4,
+  );
+  assert.equal(
+    dockerfile.match(
+      /test -r \/usr\/share\/keyrings\/debian-archive-keyring\.gpg/g,
+    )?.length,
+    2,
+  );
+  assert.equal(
+    dockerfile.match(
+      /test -s \/etc\/ssl\/certs\/ca-certificates\.crt/g,
+    )?.length,
+    2,
+  );
+  assert.doesNotMatch(
+    dockerfile,
+    /Verify-Peer|allow-insecure|trusted=(?:yes|true)/i,
   );
 });
 
@@ -525,6 +562,16 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /TRIVY_VERSION: 0\.70\.0/);
   assert.match(
     continuousIntegration,
+    /CI_CA_CERTIFICATES_VERSION: 20230311\+deb12u1/,
+  );
+  assert.equal(
+    continuousIntegration.match(
+      /--build-arg CA_CERTIFICATES_VERSION="\$CI_CA_CERTIFICATES_VERSION"/g,
+    )?.length,
+    2,
+  );
+  assert.match(
+    continuousIntegration,
     /TRIVY_LINUX_AMD64_SHA256: [a-f0-9]{64}/,
   );
   assert.match(continuousIntegration, /create-release-artifact\.sh/);
@@ -538,6 +585,8 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(createReleaseArtifact, /--ignore-unfixed --exit-code 1/);
   assert.match(createReleaseArtifact, /docker save/);
   assert.match(createReleaseArtifact, /s3-app-principal-preflight/);
+  assert.match(createReleaseArtifact, /CI_CA_CERTIFICATES_VERSION/);
+  assert.match(createReleaseArtifact, /Q_ACADEMY_CA_CERTIFICATES_VERSION/);
   assert.match(createReleaseArtifact, /SHA256SUMS/);
   assert.match(publishReleaseImages, /sha256sum --check --strict/);
   assert.match(publishReleaseImages, /docker push/);

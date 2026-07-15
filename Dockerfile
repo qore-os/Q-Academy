@@ -1,9 +1,11 @@
 ARG NODE_IMAGE=node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
 ARG DEBIAN_SNAPSHOT=20260701T000000Z
+ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
 ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
 
 FROM ${NODE_IMAGE} AS base
 ARG DEBIAN_SNAPSHOT
+ARG CA_CERTIFICATES_VERSION
 ARG FFMPEG_VERSION
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -84,11 +86,22 @@ ENTRYPOINT ["./node_modules/.bin/tsx", "scripts/s3-app-principal-preflight.ts"]
 
 FROM dependencies AS media-preflight
 ENV NODE_ENV=production
-RUN sed -Ei \
-      -e "s|https?://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/|g" \
-      -e "s|https?://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|g" \
+# The slim base has no system CA bundle. Debian's signed InRelease metadata and
+# package hashes authenticate the exact HTTP bootstrap; HTTPS is enabled as
+# soon as the pinned CA package is installed.
+RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
+    && sed -Ei \
+      -e "s|https?://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/|g" \
+      -e "s|https?://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|g" \
       /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get --error-on=any -o Acquire::Check-Valid-Until=false update \
+    && apt-get install --yes --no-install-recommends "ca-certificates=${CA_CERTIFICATES_VERSION}" \
+    && test -s /etc/ssl/certs/ca-certificates.crt \
+    && sed -Ei \
+      -e "s|http://snapshot.debian.org|https://snapshot.debian.org|g" \
+      /etc/apt/sources.list.d/debian.sources \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get --error-on=any -o Acquire::Check-Valid-Until=false update \
     && apt-get install --yes --no-install-recommends "ffmpeg=${FFMPEG_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 COPY --chown=nextjs:nodejs tsconfig.json ./tsconfig.json
@@ -115,11 +128,19 @@ CMD ["./node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]
 
 FROM runner AS media-runner
 USER root
-RUN sed -Ei \
-      -e "s|https?://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/|g" \
-      -e "s|https?://deb.debian.org/debian|https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|g" \
+RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
+    && sed -Ei \
+      -e "s|https?://deb.debian.org/debian-security|http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/|g" \
+      -e "s|https?://deb.debian.org/debian|http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/|g" \
       /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::Check-Valid-Until=false update \
+    && apt-get --error-on=any -o Acquire::Check-Valid-Until=false update \
+    && apt-get install --yes --no-install-recommends "ca-certificates=${CA_CERTIFICATES_VERSION}" \
+    && test -s /etc/ssl/certs/ca-certificates.crt \
+    && sed -Ei \
+      -e "s|http://snapshot.debian.org|https://snapshot.debian.org|g" \
+      /etc/apt/sources.list.d/debian.sources \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get --error-on=any -o Acquire::Check-Valid-Until=false update \
     && apt-get install --yes --no-install-recommends "ffmpeg=${FFMPEG_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 COPY --chown=nextjs:nodejs scripts/ops/media-runner-entrypoint.sh /usr/local/bin/q-academy-media-runner
