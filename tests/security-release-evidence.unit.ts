@@ -37,9 +37,11 @@ test("Semgrep CE runs a pinned, isolated, evidence-producing SAST gate", () => {
   assert.match(workflow, /--max-target-bytes 2000000/);
   for (const path of [
     "android/gradlew",
+    "deploy/postgres/Dockerfile",
     "scripts/ops/docker-egress-firewall.sh",
     "scripts/ops/postgres-backup-restore-drill.sh",
     "scripts/ops/postgres-backup.sh",
+    "scripts/ops/release-common.sh",
     "scripts/ops/staging-app-replica-drain-drill.sh",
     "scripts/ops/staging-storage-pipeline-outage-drill.sh",
   ]) {

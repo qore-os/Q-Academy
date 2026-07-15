@@ -129,9 +129,11 @@ jobs:
             --exclude-rule generic.secrets.security.detected-generic-secret.detected-generic-secret \
             --exclude-rule generic.secrets.security.detected-bcrypt-hash.detected-bcrypt-hash \
             --exclude android/gradlew \
+            --exclude deploy/postgres/Dockerfile \
             --exclude scripts/ops/docker-egress-firewall.sh \
             --exclude scripts/ops/postgres-backup-restore-drill.sh \
             --exclude scripts/ops/postgres-backup.sh \
+            --exclude scripts/ops/release-common.sh \
             --exclude scripts/ops/staging-app-replica-drain-drill.sh \
             --exclude scripts/ops/staging-storage-pipeline-outage-drill.sh \
             --json-output /output/semgrep.json \
@@ -204,8 +206,9 @@ jobs:
           fi
 
       # Secret fixtures are covered by the complete-history secret scan. The
-      # exact shell exclusions exceed Semgrep's parser but retain bash -n and
-      # dedicated operational contract/drill tests in the main CI workflow.
+      # exact Dockerfile and shell exclusions exceed Semgrep's parser but retain
+      # image builds plus dedicated operational contract/drill tests in the
+      # main CI workflow.
       - name: Upload SAST evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
