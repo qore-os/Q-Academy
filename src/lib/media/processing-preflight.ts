@@ -59,7 +59,9 @@ function executable(value: string | undefined, fallback: string, name: string) {
 }
 
 function commandArguments(value: string | undefined) {
-  if (!value?.trim()) return ["--help"];
+  if (!value?.trim()) {
+    throw new Error("MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON is required.");
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);

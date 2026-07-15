@@ -479,7 +479,16 @@ jobs:
           done
           test "$(dpkg-query -W -f='${Version}' ffmpeg)" = "$EXPECTED_FFMPEG_VERSION"
           test "$(dpkg-query -W -f='${Version}' ca-certificates)" = "$EXPECTED_CA_CERTIFICATES_VERSION"
+          test -x /app/node_modules/.bin/tsx
+          test -r /app/scripts/openai-whisper-transcribe-core.ts
+          test -r /app/scripts/openai-whisper-transcribe.ts
           SH
+          done
+
+          for component in app dispatcher; do
+            docker run --rm --entrypoint /bin/sh \
+              "q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
+              'test ! -e /app/scripts/openai-whisper-transcribe-core.ts && test ! -e /app/scripts/openai-whisper-transcribe.ts'
           done
 
           docker run --rm --entrypoint /bin/sh \

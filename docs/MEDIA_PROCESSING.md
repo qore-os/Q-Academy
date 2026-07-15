@@ -1,6 +1,6 @@
 # Medienverarbeitung
 
-Stand: 2026-07-12.
+Stand: 2026-07-15.
 
 ## Lifecycle
 
@@ -27,15 +27,23 @@ Nicht parsebare oder unplausible Dateien werden quarantiniert.
 
 - `MEDIA_FFMPEG_PATH` zeigt auf ein echtes FFmpeg-Binary. Ohne Wert wird
   `ffmpeg` aus `PATH` verwendet.
-- `MEDIA_TRANSCRIPT_COMMAND` zeigt auf ein lokales STT-Programm. Es wird ohne
-  Shell, mit geschlossenem stdin und begrenztem stderr gestartet.
+- Der Produktions-Compose setzt `MEDIA_TRANSCRIPT_COMMAND` fest auf
+  `/app/node_modules/.bin/tsx` und startet damit ausschliesslich
+  `/app/scripts/openai-whisper-transcribe.ts`. Die Jobargumente sind fest
+  `--input {input} --output-vtt {output} --language {language} --temperature 0`;
+  der Preflight ist fest das Script plus `--preflight`. Ein `--help`-Ersatz
+  besteht den Preflight nicht.
+- Der Adapter verwendet ausschliesslich
+  `https://api.openai.com/v1/audio/transcriptions` und das feste Modell
+  `whisper-1`. Weder Base-URL noch Modell kommen aus Job-, Tenant- oder
+  Operator-Eingaben.
 - `MEDIA_FFMPEG_TIMEOUT_SECONDS` und `MEDIA_TRANSCRIPT_TIMEOUT_SECONDS`
   begrenzen die beiden Prozessoren getrennt. Die Produktionsdefaults sind
   10.800 beziehungsweise 7.200 Sekunden; zulaessig sind 60 bis 13.800
   Sekunden und damit immer weniger als das Vier-Stunden-Dispatcher-Limit.
-- `MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON` ist optional ein JSON-Array. Die exakt
-  ersetzten Argumente sind `{input}`, `{output}` und `{language}`. Der Default
-  erwartet `--input`, `--output-vtt`, `--language` und `--temperature 0`.
+- `MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON` ersetzt nur die drei exakten Platzhalter
+  `{input}`, `{output}` und `{language}`. Im Produktions-Compose ist das Array
+  fest verdrahtet; freie Jobargumente werden nicht uebernommen.
 - `MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY` aktiviert den deterministischen
   Dev-/Test-Provider. Er liest nur
   `<sha256>.<language>.vtt` unter diesem Verzeichnis und validiert das Ergebnis
@@ -56,6 +64,43 @@ Download muessen Groesse und SHA-256 erneut zur Datenbankidentitaet passen.
 FFmpeg und STT laufen ohne Shell, mit geschlossenem stdin und getrennten
 harten Timeouts. Bei Timeout oder Claim-Verlust wird unter Linux die gesamte
 Prozessgruppe beendet, damit kein Kindprozess weiterarbeitet.
+Das dedizierte Provider-Credential steht nie in Compose-Environment,
+Build-Argumenten oder App-Logs. Der Hostpfad
+`OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE` ist standardmaessig
+`/etc/q-academy/openai-transcription-api-key`; Compose bindet ihn mit Long-
+Syntax, `read_only: true` und `create_host_path: false` ausschliesslich nach
+`media-runner` und `media-preflight` als
+`/run/secrets/q-academy-openai-transcription-api-key`. Auf dem Host muss die
+regulaere Datei exakt UID/GID `1001:1001` und Modus `0400` besitzen. UID/GID
+1001 ist fuer den nicht privilegierten Containerprozess reserviert und braucht
+kein anmeldbares Hostkonto. Initiales Einspielen und Rotation erfolgen aus
+einer geschuetzten Operatorquelle, niemals ueber die Env-Datei oder die
+Shell-History:
+
+```bash
+install -o 1001 -g 1001 -m 0400 \
+  /geschuetzte/operatorquelle/openai-transcription-api-key \
+  /etc/q-academy/openai-transcription-api-key.new
+mv -f /etc/q-academy/openai-transcription-api-key.new \
+  /etc/q-academy/openai-transcription-api-key
+test "$(stat -c '%u:%g:%a' /etc/q-academy/openai-transcription-api-key)" = \
+  "1001:1001:400"
+```
+
+Nach jeder Rotation muss der echte Medien-Preflight erfolgreich laufen; der
+alte Schluessel wird erst danach beim Provider widerrufen. Vor Kundenfreigabe
+muessen Audio-Egress zu OpenAI, Rechtsgrundlage beziehungsweise Einwilligung,
+Datenschutzhinweis, AVV/DPA, Provider-Retention und Datenregion schriftlich
+freigegeben sein. Die fuer Uploads erzeugten Audio-Chunks liegen nur im
+Container-`/tmp`-Tmpfs und werden im `finally` entfernt; diese lokale
+Bereinigung ersetzt keine vertragliche Provider-Retention.
+Das Kostenmodell wird gegen den jeweils gueltigen
+Minutenpreis vertraglich bestaetigt und mit Budget-/Usage-Alarmen begrenzt.
+Bei Provider-Ausfall bleiben neue Transkriptjobs unfertig und werden ueber die
+bestehende Queue erneut versucht; es gibt keinen stillen Ersatzprovider und
+keine Freigabe eines Scheintranskripts. Bestehende Inhalte und die App-
+Readiness bleiben davon getrennt.
+
 Derivate werden mit Quell-Digest und Job-ID hochgeladen und erst nach einem
 verifizierenden Head-Request inklusive VersionId, ETag, Groesse, MIME-Typ und
 Metadaten in der Datenbank freigegeben. Jeder Fehler entfernt die erzeugte
@@ -72,9 +117,11 @@ docker compose --env-file "$Q_ACADEMY_ENV_FILE" -f compose.production.yml \
 Der Preflight prueft Worker-Rolle, S3-Versionierung/Conditional Writes/Cleanup,
 einen sauberen und einen erkannten ClamAV-INSTREAM-Canary, FFmpeg, FFprobe, den
 konfigurierten STT-Provider und Schreib-/Loeschzugriff im isolierten
-Arbeitsverzeichnis. Der STT-Befehl wird absichtlich nicht in den
-oeffentlichen App-Container aufgenommen; er muss im Runner-Image oder ueber
-einen read-only Mount bereitgestellt werden.
+Arbeitsverzeichnis. Der STT-Schritt erzeugt einen kurzen synthetischen
+Audio-Canary und ruft damit den echten festen OpenAI-Endpunkt auf. Er ist ein
+explizites Go-live-Gate und darf weder offline ersetzt noch mit `--help`
+uebersprungen werden. Script und Credential werden absichtlich nicht in den
+oeffentlichen App- oder Dispatcher-Container aufgenommen.
 
 Fehlerausgaben des Release-Preflights enthalten nur den stabilen Code
 `media_processing_preflight_failed` und eine feste Stage. Rohes `stderr` von

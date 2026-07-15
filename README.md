@@ -340,11 +340,13 @@ tenant- und kursbegrenzten Medienbibliothek waehlen, trimmen, zeitlich
 versetzen und in der Lautstaerke regeln. Der Renderjob friert jede Quelle mit
 Key, Version, ETag, SHA-256, Groesse und Dauer ein; Publishing und
 Mitgliedsauslieferung akzeptieren nur den exakt gebundenen erfolgreichen Job.
-Automatische
-Transkripte werden asynchron ueber einen lokalen STT-Befehl als begrenztes,
-validiertes WebVTT erzeugt und koennen fuer Untertitel sowie zeitcodierte Suche
-uebernommen werden. Profilbilder und Medien-Profilfelder laufen durch dieselbe
-tenantgebundene `ready`-Asset-Pipeline. Der S3-Runner bindet exakte VersionId,
+Automatische Transkripte werden asynchron ueber einen isolierten, ohne Shell
+gestarteten STT-Befehl als begrenztes, validiertes WebVTT erzeugt und koennen
+fuer Untertitel sowie zeitcodierte Suche uebernommen werden. Der
+Produktions-Compose verdrahtet dafuer den nur in den Medien-Images enthaltenen
+OpenAI-Adapter fest auf `whisper-1`; Schluessel, echter Canary und rechtliche
+Providerfreigabe bleiben Go-live-Gates. Profilbilder und Medien-Profilfelder
+laufen durch dieselbe tenantgebundene `ready`-Asset-Pipeline. Der S3-Runner bindet exakte VersionId,
 ETag und SHA-256, verifiziert Derivat-Uploads und bereinigt sein dediziertes,
 diskbasiertes sowie groessenbegrenztes `nodev,nosuid,noexec`-Arbeitsfilesystem.
 Konkrete S3-/FFmpeg-, STT-Modell-/Sprach- und Lastabnahmen bleiben

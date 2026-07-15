@@ -37,6 +37,14 @@ setzen, wuerde aus einer partiellen Medienstoerung ein vollstaendiger
 Plattformausfall. Externe Provider werden deshalb nicht pro Readiness-Abruf
 beschrieben, gelistet oder mit Schreibcanaries belastet.
 
+Der release-blockierende STT-Teil ist dagegen bewusst echt: Das ausschliesslich
+in den Medien-Images enthaltene Script sendet einen synthetischen Audio-Canary
+an `https://api.openai.com/v1/audio/transcriptions` mit `whisper-1`. Erst nach
+Freigabe von Audio-Egress, Einwilligung/Rechtsgrundlage, AVV/DPA, Retention,
+Datenregion und Kostenkontrollen sowie erfolgreichem Canary darf der
+Medienbetrieb live gehen. `--help`, ein Offline-Mock oder ein zweiter Provider
+erfuellt diesen Vertrag nicht.
+
 ## App-S3-Principal
 
 Dieser Abschnitt beschreibt den strikten Modus `versioned`. Im

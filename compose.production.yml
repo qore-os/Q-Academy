@@ -551,9 +551,9 @@ services:
       MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
       MEDIA_FFMPEG_TIMEOUT_SECONDS: ${MEDIA_FFMPEG_TIMEOUT_SECONDS:-10800}
       MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-7200}
-      MEDIA_TRANSCRIPT_COMMAND: ${MEDIA_TRANSCRIPT_COMMAND:-}
-      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: ${MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON:-}
-      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: ${MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON:-}
+      MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}","--temperature","0"]'
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--preflight"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -578,6 +578,12 @@ services:
         source: clamav_signatures
         target: /var/lib/q-academy-clamav-signatures
         read_only: true
+      - type: bind
+        source: ${OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE:-/etc/q-academy/openai-transcription-api-key}
+        target: /run/secrets/q-academy-openai-transcription-api-key
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:size=128m,mode=1777
     deploy:
@@ -712,9 +718,9 @@ services:
       MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
       MEDIA_FFMPEG_TIMEOUT_SECONDS: ${MEDIA_FFMPEG_TIMEOUT_SECONDS:-10800}
       MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-7200}
-      MEDIA_TRANSCRIPT_COMMAND: ${MEDIA_TRANSCRIPT_COMMAND:-}
-      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: ${MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON:-}
-      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: ${MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON:-}
+      MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}","--temperature","0"]'
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--preflight"]'
     networks:
       - egress
       - media
@@ -723,6 +729,12 @@ services:
         source: ${MEDIA_PROCESSING_WORK_DIR:?Set MEDIA_PROCESSING_WORK_DIR to the bounded host filesystem}
         target: /var/lib/q-academy-media-processing
         read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE:-/etc/q-academy/openai-transcription-api-key}
+        target: /run/secrets/q-academy-openai-transcription-api-key
+        read_only: true
         bind:
           create_host_path: false
     read_only: true

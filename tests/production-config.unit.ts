@@ -276,6 +276,11 @@ test("production media worker accepts only its database, job and storage secrets
       "CADDY_TLS_ASK_SECRET",
       "C4ddyWorkerLeak-8TyU4iO0pA6sD2fG9hJ5kL1zX7cVbNmQ",
     ],
+    ["OPENAI_API_KEY", "forbidden-general-openai-key"],
+    [
+      "OPENAI_TRANSCRIPTION_API_KEY",
+      "forbidden-inline-transcription-key",
+    ],
   ] as const) {
     const leaked = { ...validMediaWorkerEnvironment(), [name]: value };
     assert.throws(

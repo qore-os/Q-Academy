@@ -15,14 +15,33 @@ const production = {
   MEDIA_FFMPEG_PATH: "/usr/bin/ffmpeg",
   MEDIA_FFPROBE_PATH: "/usr/bin/ffprobe",
   MEDIA_TRANSCRIPT_COMMAND: "/opt/stt/transcribe",
+  MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/opt/stt/preflight","--preflight"]',
 };
 
 test("processing preflight resolves an isolated bounded production toolchain", () => {
   const result = resolveMediaProcessingPreflightConfiguration(production);
   assert.match(result.workRoot.replaceAll("\\", "/"), /\/var\/lib\/q-academy-media-processing\/work$/);
   assert.equal(result.transcript.mode, "command");
+  if (result.transcript.mode !== "command") {
+    assert.fail("Expected a command transcript provider.");
+  }
+  assert.deepEqual(result.transcript.arguments, [
+    "/opt/stt/preflight",
+    "--preflight",
+  ]);
   assert.equal(result.ffmpegTimeoutMs, 10_800_000);
   assert.equal(result.transcriptTimeoutMs, 7_200_000);
+});
+
+test("processing preflight never substitutes a help-only transcript probe", () => {
+  assert.throws(
+    () =>
+      resolveMediaProcessingPreflightConfiguration({
+        ...production,
+        MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: "",
+      }),
+    /MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON is required/,
+  );
 });
 
 test("processing preflight rejects unsafe roots and ambiguous transcript providers", () => {

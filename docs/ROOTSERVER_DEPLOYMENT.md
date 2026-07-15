@@ -1012,6 +1012,26 @@ ohne Shell und speichert ein Derivat erst nach erneuter Version-/Metadaten-/
 Digestpruefung. Vor Kundenfreigabe muessen S3 und die konkrete STT-Installation
 im Runner-Netz abgenommen werden:
 
+Der Produktionsadapter ist auf `whisper-1` und
+`https://api.openai.com/v1/audio/transcriptions` festgelegt. Sein dedizierter
+Schluessel liegt standardmaessig nur in
+`/etc/q-academy/openai-transcription-api-key` mit Host-Owner `1001:1001` und
+Modus `0400`; `OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE` darf ausschliesslich
+einen gleich geschuetzten alternativen Hostpfad benennen. UID/GID 1001 bleibt
+auf dem Host ohne Login-Konto fuer den Container reserviert. Vor dem Lauf gilt:
+
+```bash
+test "$(stat -c '%u:%g:%a' /etc/q-academy/openai-transcription-api-key)" = \
+  "1001:1001:400"
+```
+
+Der Medien-Preflight uebertraegt einen synthetischen Audio-Canary an den echten
+Provider. Ohne dokumentierte Freigabe von Audio-Egress, Rechtsgrundlage oder
+Einwilligung, Datenschutzhinweis, AVV/DPA, Retention/Datenregion und
+Kostenalarmierung darf dieses Gate nicht ausgefuehrt und der Medienbetrieb
+nicht freigegeben werden. Rotation und Provider-Ausfall stehen in
+[MEDIA_PROCESSING.md](./MEDIA_PROCESSING.md).
+
 ```bash
 docker compose --env-file "$Q_ACADEMY_ENV_FILE" -f compose.production.yml \
   --profile operations run --rm --no-deps s3-app-principal-preflight \

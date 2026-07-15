@@ -262,7 +262,7 @@ RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
     done \
     && rm -rf /var/lib/apt/lists/*
 COPY --chown=nextjs:nodejs tsconfig.json ./tsconfig.json
-COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/clamav-preflight.ts scripts/media-processing-preflight.ts ./scripts/
+COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/clamav-preflight.ts scripts/media-processing-preflight.ts scripts/openai-whisper-transcribe-core.ts scripts/openai-whisper-transcribe.ts ./scripts/
 COPY --chown=nextjs:nodejs src/lib ./src/lib
 USER nextjs
 ENTRYPOINT ["node", "--conditions=react-server", "--import", "tsx", "scripts/media-processing-preflight.ts"]
@@ -310,6 +310,7 @@ RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
       test "$actual" = "$MESA_VERSION" || exit 1; \
     done \
     && rm -rf /var/lib/apt/lists/*
+COPY --chown=nextjs:nodejs scripts/openai-whisper-transcribe-core.ts scripts/openai-whisper-transcribe.ts ./scripts/
 COPY --chown=nextjs:nodejs scripts/ops/media-runner-entrypoint.sh /usr/local/bin/q-academy-media-runner
 RUN chmod 0755 /usr/local/bin/q-academy-media-runner
 USER nextjs
