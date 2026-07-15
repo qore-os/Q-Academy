@@ -173,3 +173,51 @@ test("later browser suites reuse Chromium and install only remaining engines", (
   assert.match(installStep, /playwright install --with-deps firefox webkit/);
   assert.doesNotMatch(installStep, /chromium/);
 });
+
+test("production builds retain type checks with a bounded four-GiB heap", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const dockerfile = source("Dockerfile");
+  const nextConfig = source("next.config.ts");
+
+  const typecheckStart = workflow.indexOf("- name: Typecheck");
+  const lintStart = workflow.indexOf("- name: Lint");
+  assert.ok(typecheckStart >= 0 && lintStart > typecheckStart);
+  assert.match(
+    workflow.slice(typecheckStart, lintStart),
+    /NODE_OPTIONS: --max-old-space-size=4096[\s\S]*run: npm run typecheck/,
+  );
+
+  const buildStart = workflow.indexOf("- name: Build production application");
+  const composeStart = workflow.indexOf(
+    "- name: Validate production Compose configuration",
+  );
+  assert.ok(buildStart >= 0 && composeStart > buildStart);
+  assert.match(
+    workflow.slice(buildStart, composeStart),
+    /NODE_OPTIONS: --max-old-space-size=4096[\s\S]*run: npm run build/,
+  );
+
+  const builderStart = dockerfile.indexOf("FROM base AS builder");
+  const productionDependenciesStart = dockerfile.indexOf(
+    "FROM base AS production-dependencies",
+  );
+  const runnerStart = dockerfile.indexOf("FROM base AS runner");
+  const mediaRunnerStart = dockerfile.indexOf("FROM runner AS media-runner");
+  assert.ok(
+    builderStart >= 0 &&
+      productionDependenciesStart > builderStart &&
+      runnerStart > productionDependenciesStart &&
+      mediaRunnerStart > runnerStart,
+  );
+  assert.equal(dockerfile.match(/NODE_OPTIONS=/g)?.length, 1);
+  assert.doesNotMatch(dockerfile.slice(0, builderStart), /NODE_OPTIONS/);
+  assert.match(
+    dockerfile.slice(builderStart, productionDependenciesStart),
+    /ENV NODE_OPTIONS=--max-old-space-size=4096[\s\S]*npm run build/,
+  );
+  assert.doesNotMatch(
+    dockerfile.slice(runnerStart, mediaRunnerStart),
+    /NODE_OPTIONS/,
+  );
+  assert.doesNotMatch(nextConfig, /ignoreBuildErrors/);
+});

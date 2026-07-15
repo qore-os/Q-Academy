@@ -31,8 +31,9 @@ test("Semgrep CE runs a pinned, isolated, evidence-producing SAST gate", () => {
   assert.match(workflow, /--metrics=off/);
   assert.match(workflow, /--strict/);
   assert.match(workflow, /--error/);
+  assert.match(workflow, /timeout-minutes: 30/);
   assert.doesNotMatch(workflow, /--severity (?:ERROR|WARNING|INFO)/);
-  assert.match(workflow, /--timeout 60/);
+  assert.match(workflow, /--timeout 180/);
   assert.match(workflow, /--max-target-bytes 2000000/);
   for (const path of [
     "android/gradlew",

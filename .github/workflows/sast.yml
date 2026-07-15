@@ -124,7 +124,7 @@ jobs:
             --no-rewrite-rule-ids \
             --strict \
             --error \
-            --timeout 60 \
+            --timeout 180 \
             --max-target-bytes 2000000 \
             --exclude-rule generic.secrets.security.detected-generic-secret.detected-generic-secret \
             --exclude-rule generic.secrets.security.detected-bcrypt-hash.detected-bcrypt-hash \

@@ -187,6 +187,7 @@ jobs:
 
       - name: Build production application
         env:
+          NODE_OPTIONS: --max-old-space-size=4096
           DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@ci-postgres.internal:54329/q_academy
           NEXT_PUBLIC_APP_URL: https://academy.ci.q-academy.de
           NEXT_PUBLIC_ENABLE_PWA: "true"
