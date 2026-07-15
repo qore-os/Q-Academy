@@ -379,6 +379,7 @@ jobs:
             --env POSTGRES_DB=q_academy_image_smoke \
             "$postgres_image" >/dev/null
           postgres_image_ready=false
+          postgres_sql_result=""
           for attempt in $(seq 1 90); do
             # pg_isready also accepts the temporary bootstrap server. Require
             # the entrypoint to have exec'd the final PID 1 and prove a query
@@ -388,10 +389,12 @@ jobs:
               docker exec "$postgres_smoke_container" \
                 pg_isready --username=postgres --dbname=q_academy_image_smoke \
                 >/dev/null 2>&1 &&
-              test "$(docker exec "$postgres_smoke_container" \
+              postgres_sql_result="$(docker exec "$postgres_smoke_container" \
                 psql --username=postgres --dbname=q_academy_image_smoke \
-                  --tuples-only --no-align --command='select current_user, 6 * 7' \
-                  2>/dev/null)" = 'postgres|42'; then
+                  --no-password --no-psqlrc --tuples-only --no-align \
+                  --set=ON_ERROR_STOP=1 \
+                  --command='select current_user, 6 * 7' 2>/dev/null)" &&
+              test "$postgres_sql_result" = 'postgres|42'; then
               postgres_image_ready=true
               break
             fi

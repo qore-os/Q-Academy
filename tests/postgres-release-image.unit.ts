@@ -103,10 +103,38 @@ test("CI smoke-tests and packages PostgreSQL with all release components", () =>
   );
   assert.match(continuousIntegration, /pg_isready --username=postgres/);
   assert.match(continuousIntegration, /select current_user, 6 \* 7/);
-  assert.match(
-    continuousIntegration,
-    /cat \/proc\/1\/comm[\s\S]*"postgres"[\s\S]*pg_isready[\s\S]*select current_user, 6 \* 7[\s\S]*postgres_image_ready=true/,
+  const readinessStart = continuousIntegration.indexOf(
+    "postgres_image_ready=false",
   );
+  const readinessEnd = continuousIntegration.indexOf(
+    'test "$postgres_image_ready" = true',
+    readinessStart,
+  );
+  assert.ok(readinessStart >= 0 && readinessEnd > readinessStart);
+  const readinessGate = continuousIntegration.slice(
+    readinessStart,
+    readinessEnd,
+  );
+  const processIdentity = readinessGate.indexOf("cat /proc/1/comm");
+  const protocolReadiness = readinessGate.indexOf(
+    "pg_isready --username=postgres",
+  );
+  const sqlProbe = readinessGate.indexOf(
+    'postgres_sql_result="$(docker exec',
+  );
+  const exactResult = readinessGate.indexOf(
+    "test \"$postgres_sql_result\" = 'postgres|42'",
+  );
+  const accepted = readinessGate.indexOf("postgres_image_ready=true");
+  assert.ok(
+    processIdentity >= 0 &&
+      processIdentity < protocolReadiness &&
+      protocolReadiness < sqlProbe &&
+      sqlProbe < exactResult &&
+      exactResult < accepted,
+  );
+  assert.match(readinessGate, /--no-password --no-psqlrc/);
+  assert.match(readinessGate, /--set=ON_ERROR_STOP=1/);
   const ciReleaseComponentLists = continuousIntegration.match(
     /image_components=\([^)]*\bpostgres\b[^)]*\)/g,
   );
