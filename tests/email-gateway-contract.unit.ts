@@ -54,17 +54,17 @@ test("mail gateway receives absolute light and dark logos plus the configured se
   });
 });
 
-test("auth-link deliveries retain the link gateway contract", () => {
-  const request = buildEmailGatewayRequest({
-    event: "invitation.created",
-    email: "member@example.test",
-    decryptedPayload: { link: "https://academy.example.test/invitation/token" },
-    tenantBranding,
-  });
-  assert.equal(request.event, "invitation.created");
-  assert.equal(request.email, "member@example.test");
-  assert.equal("link" in request ? request.link : null, "https://academy.example.test/invitation/token");
-  assert.equal("message" in request, false);
+test("auth-link gateway requests require materialized content", () => {
+  assert.throws(() =>
+    buildEmailGatewayRequest({
+      event: "invitation.created",
+      email: "member@example.test",
+      decryptedPayload: {
+        link: "https://academy.example.test/invitation/token",
+      },
+      tenantBranding,
+    }),
+  );
 });
 
 test("materialized authentication templates retain encrypted-link gateway semantics", () => {

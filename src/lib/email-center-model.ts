@@ -675,11 +675,35 @@ export const authenticationLinkRenderedPayloadSchema =
       locale: z.enum(SUPPORTED_LOCALES).optional(),
     })
     .strict();
-const lessonStoredPayloadSchema = safeStoredEmailPayloadSchema
-  .extend({
-    link: deliveryLinkSchema,
-  })
+function validateStoredDerivedHtml(
+  payload: { message: string; html?: string },
+  context: z.RefinementCtx,
+) {
+  if (
+    payload.html !== undefined &&
+    payload.html !== plainTextToSafeEmailHtml(payload.message)
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["html"],
+      message: "HTML muss exakt aus dem Plaintext abgeleitet sein.",
+    });
+  }
+}
+const safeStoredEmailDeliveryPayloadSchema =
+  safeStoredEmailPayloadSchema.superRefine(validateStoredDerivedHtml);
+const authenticationLinkStoredPayloadSchema = z.union([
+  authenticationLinkSourcePayloadSchema,
+  authenticationLinkRenderedPayloadSchema.superRefine(
+    validateStoredDerivedHtml,
+  ),
+]);
+const linkedStoredEmailPayloadSchema = safeStoredEmailPayloadSchema
+  .extend({ link: deliveryLinkSchema })
   .strict();
+const lessonStoredPayloadSchema = linkedStoredEmailPayloadSchema.superRefine(
+  validateStoredDerivedHtml,
+);
 export const courseModulesReleasedStoredPayloadSchema =
   safeStoredEmailPayloadSchema
     .extend({
@@ -708,6 +732,35 @@ export const courseModulesReleasedStoredPayloadSchema =
     });
 const eventLifecycleStoredPayloadSchema = lessonStoredPayloadSchema;
 
+function storedEmailDeliverySourceSchema(event: string): z.ZodType | null {
+  if (isAuthenticationLinkEmailEvent(event)) {
+    return authenticationLinkStoredPayloadSchema;
+  }
+  if (event === "lesson.available") return lessonStoredPayloadSchema;
+  if (event === "course.modules.released") {
+    return courseModulesReleasedStoredPayloadSchema;
+  }
+  if (EVENT_LIFECYCLE_EMAIL_EVENTS.some((item) => item === event)) {
+    return eventLifecycleStoredPayloadSchema;
+  }
+  if (event === "feedback.reply" || event === "email.template.test") {
+    return safeStoredEmailDeliveryPayloadSchema;
+  }
+  return null;
+}
+
+// Immutable snapshot source contract. Future source fields require a V2 parser.
+export function parseStoredEmailDeliverySourcePayloadV1(
+  event: string,
+  payload: unknown,
+): unknown {
+  const schema = storedEmailDeliverySourceSchema(event);
+  if (!schema) {
+    throw new Error("Nicht unterstuetztes E-Mail-Ereignis.");
+  }
+  return schema.parse(payload);
+}
+
 export type EmailDeliveryContentView =
   | {
       available: true;
@@ -730,14 +783,14 @@ export function presentEmailDeliveryContent(
   }
   const schema =
     event === "lesson.available"
-      ? lessonStoredPayloadSchema
+      ? linkedStoredEmailPayloadSchema
       : event === "course.modules.released"
         ? courseModulesReleasedStoredPayloadSchema
-      : EVENT_LIFECYCLE_EMAIL_EVENTS.some((item) => item === event)
-        ? eventLifecycleStoredPayloadSchema
-      : event === "feedback.reply" || event === "email.template.test"
-        ? safeStoredEmailPayloadSchema
-        : null;
+        : EVENT_LIFECYCLE_EMAIL_EVENTS.some((item) => item === event)
+          ? linkedStoredEmailPayloadSchema
+          : event === "feedback.reply" || event === "email.template.test"
+            ? safeStoredEmailPayloadSchema
+            : null;
   if (!schema) return { available: false, reason: "unsupported_event" };
   const parsed = schema.safeParse(decryptedPayload);
   if (!parsed.success) return { available: false, reason: "invalid_payload" };

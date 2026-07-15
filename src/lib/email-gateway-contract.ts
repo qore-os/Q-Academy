@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   authenticationLinkRenderedPayloadSchema,
-  authenticationLinkSourcePayloadSchema,
   courseModulesReleasedStoredPayloadSchema,
   MAX_RENDERED_EMAIL_HTML_LENGTH,
   plainTextToSafeEmailHtml,
@@ -10,7 +9,10 @@ import {
 } from "@/lib/email-center-model";
 import { brandLogoSource } from "@/lib/branding-asset-policy";
 import type { TenantBranding } from "@/lib/branding-model";
-import type { AppLocale } from "@/lib/i18n/model";
+import {
+  SUPPORTED_LOCALES,
+  type AppLocale,
+} from "@/lib/i18n/model";
 
 const gatewayLinkSchema = z
   .string()
@@ -21,7 +23,12 @@ const safeMessageShape = {
   subject: renderedEmailSubjectSchema,
   message: renderedEmailMessageSchema,
   html: z.string().max(MAX_RENDERED_EMAIL_HTML_LENGTH).optional(),
-  locale: z.enum(["de", "en", "it", "es", "fr"]).optional(),
+  locale: z.enum(SUPPORTED_LOCALES).optional(),
+};
+const gatewayMessageShape = {
+  subject: renderedEmailSubjectSchema,
+  message: renderedEmailMessageSchema,
+  html: z.string().max(MAX_RENDERED_EMAIL_HTML_LENGTH).optional(),
 };
 function validateDerivedHtml(
   payload: { message: string; html?: string },
@@ -48,23 +55,159 @@ const lessonAvailablePayloadSchema = z
   .superRefine(validateDerivedHtml);
 const eventLifecyclePayloadSchema = lessonAvailablePayloadSchema;
 const templateTestPayloadSchema = feedbackReplyPayloadSchema;
-const authLinkPayloadSchema = z.union([
-  authenticationLinkSourcePayloadSchema,
-  authenticationLinkRenderedPayloadSchema.superRefine(validateDerivedHtml),
-]);
+const authLinkPayloadSchema =
+  authenticationLinkRenderedPayloadSchema.superRefine(validateDerivedHtml);
 
-export type EmailTenantBranding = {
-  organizationId: string;
-  name: string;
-  platformName: string;
-  primaryColor: string;
-  accentColor: string;
-  senderName: string;
-  logoUrl: string | null;
-  logoLightUrl: string | null;
-  logoDarkUrl: string | null;
-  locale: AppLocale;
+const gatewayEmailSchema = z.string().email().max(255);
+const gatewayColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+const gatewayDisplayNameSchema = (minimum: number, maximum: number) =>
+  z
+    .string()
+    .min(minimum)
+    .max(maximum)
+    .refine((value) => value.trim() === value)
+    .regex(/^[^\u0000-\u001f\u007f]+$/);
+const gatewaySenderNameSchema = gatewayDisplayNameSchema(2, 120).regex(
+  /^[^<>"\\]+$/,
+);
+const gatewayBrandAssetSchema = z
+  .string()
+  .url()
+  .max(2_000)
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return (
+        ["http:", "https:"].includes(url.protocol) &&
+        !url.username &&
+        !url.password
+      );
+    } catch {
+      return false;
+    }
+  })
+  .nullable();
+
+export const emailTenantBrandingSchema = z
+  .object({
+    organizationId: z.string().uuid(),
+    name: gatewayDisplayNameSchema(1, 160),
+    platformName: gatewayDisplayNameSchema(2, 120),
+    primaryColor: gatewayColorSchema,
+    accentColor: gatewayColorSchema,
+    senderName: gatewaySenderNameSchema,
+    logoUrl: gatewayBrandAssetSchema,
+    logoLightUrl: gatewayBrandAssetSchema,
+    logoDarkUrl: gatewayBrandAssetSchema,
+    locale: z.enum(SUPPORTED_LOCALES),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.logoUrl !== value.logoLightUrl) {
+      context.addIssue({
+        code: "custom",
+        path: ["logoUrl"],
+        message: "Das Standardlogo muss dem hellen Logo entsprechen.",
+      });
+    }
+  });
+
+const gatewayRequestBaseShape = {
+  email: gatewayEmailSchema,
+  tenantBranding: emailTenantBrandingSchema,
 };
+const invitationGatewayRequestSchema = z
+  .object({
+    event: z.literal("invitation.created"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+    link: gatewayLinkSchema,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const passwordResetGatewayRequestSchema = z
+  .object({
+    event: z.literal("password.reset"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+    link: gatewayLinkSchema,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const feedbackReplyGatewayRequestSchema = z
+  .object({
+    event: z.literal("feedback.reply"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const lessonAvailableGatewayRequestSchema = z
+  .object({
+    event: z.literal("lesson.available"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+    link: gatewayLinkSchema,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const courseModulesReleasedGatewayRequestSchema = z
+  .object({
+    event: z.literal("course.modules.released"),
+    ...gatewayRequestBaseShape,
+    subject: renderedEmailSubjectSchema,
+    message: renderedEmailMessageSchema,
+    html: z.string().max(MAX_RENDERED_EMAIL_HTML_LENGTH),
+    link: gatewayLinkSchema,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const eventRescheduledGatewayRequestSchema = z
+  .object({
+    event: z.literal("event.rescheduled"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+    link: gatewayLinkSchema,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const eventCancelledGatewayRequestSchema = z
+  .object({
+    event: z.literal("event.cancelled"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+    link: gatewayLinkSchema,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+const templateTestGatewayRequestSchema = z
+  .object({
+    event: z.literal("email.template.test"),
+    ...gatewayRequestBaseShape,
+    ...gatewayMessageShape,
+  })
+  .strict()
+  .superRefine(validateDerivedHtml);
+
+// Immutable snapshot wire contract. Future gateway fields require a V2 schema.
+export const emailGatewayRequestV1Schema = z.union([
+  invitationGatewayRequestSchema,
+  passwordResetGatewayRequestSchema,
+  feedbackReplyGatewayRequestSchema,
+  lessonAvailableGatewayRequestSchema,
+  courseModulesReleasedGatewayRequestSchema,
+  eventRescheduledGatewayRequestSchema,
+  eventCancelledGatewayRequestSchema,
+  templateTestGatewayRequestSchema,
+]);
+export const emailGatewayRequestSchema = emailGatewayRequestV1Schema;
+
+export type EmailGatewayRequestV1 = z.infer<
+  typeof emailGatewayRequestV1Schema
+>;
+export type EmailGatewayRequest = EmailGatewayRequestV1;
+
+export type EmailTenantBranding = z.infer<typeof emailTenantBrandingSchema>;
 
 function absoluteBrandAsset(source: string | null, origin: string) {
   if (!source) return null;
@@ -144,39 +287,35 @@ export function buildEmailGatewayRequest(input: {
   email: string;
   decryptedPayload: unknown;
   tenantBranding: EmailTenantBranding;
-}) {
+}): EmailGatewayRequest {
   switch (input.event) {
     case "invitation.created":
     case "password.reset": {
       const payload = authLinkPayloadSchema.parse(input.decryptedPayload);
-      return {
+      return emailGatewayRequestSchema.parse({
         event: input.event,
         email: input.email,
         link: payload.link,
-        ...("subject" in payload
-          ? {
-              subject: payload.subject,
-              message: payload.message,
-              ...(payload.html ? { html: payload.html } : {}),
-            }
-          : {}),
+        subject: payload.subject,
+        message: payload.message,
+        ...(payload.html ? { html: payload.html } : {}),
         tenantBranding: input.tenantBranding,
-      };
+      });
     }
     case "feedback.reply": {
       const payload = feedbackReplyPayloadSchema.parse(input.decryptedPayload);
-      return {
+      return emailGatewayRequestSchema.parse({
         event: input.event,
         email: input.email,
         subject: payload.subject,
         message: payload.message,
         ...(payload.html ? { html: payload.html } : {}),
         tenantBranding: input.tenantBranding,
-      };
+      });
     }
     case "lesson.available": {
       const payload = lessonAvailablePayloadSchema.parse(input.decryptedPayload);
-      return {
+      return emailGatewayRequestSchema.parse({
         event: input.event,
         email: input.email,
         subject: payload.subject,
@@ -184,13 +323,13 @@ export function buildEmailGatewayRequest(input: {
         ...(payload.html ? { html: payload.html } : {}),
         link: payload.link,
         tenantBranding: input.tenantBranding,
-      };
+      });
     }
     case "course.modules.released": {
       const payload = courseModulesReleasedStoredPayloadSchema.parse(
         input.decryptedPayload,
       );
-      return {
+      return emailGatewayRequestSchema.parse({
         event: input.event,
         email: input.email,
         subject: payload.subject,
@@ -198,12 +337,12 @@ export function buildEmailGatewayRequest(input: {
         html: payload.html,
         link: payload.link,
         tenantBranding: input.tenantBranding,
-      };
+      });
     }
     case "event.rescheduled":
     case "event.cancelled": {
       const payload = eventLifecyclePayloadSchema.parse(input.decryptedPayload);
-      return {
+      return emailGatewayRequestSchema.parse({
         event: input.event,
         email: input.email,
         subject: payload.subject,
@@ -211,18 +350,18 @@ export function buildEmailGatewayRequest(input: {
         ...(payload.html ? { html: payload.html } : {}),
         link: payload.link,
         tenantBranding: input.tenantBranding,
-      };
+      });
     }
     case "email.template.test": {
       const payload = templateTestPayloadSchema.parse(input.decryptedPayload);
-      return {
+      return emailGatewayRequestSchema.parse({
         event: input.event,
         email: input.email,
         subject: payload.subject,
         message: payload.message,
         ...(payload.html ? { html: payload.html } : {}),
         tenantBranding: input.tenantBranding,
-      };
+      });
     }
     default:
       throw new Error("Nicht unterstuetztes E-Mail-Ereignis.");

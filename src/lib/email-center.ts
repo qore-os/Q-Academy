@@ -28,6 +28,7 @@ import {
 import { ApiError } from "@/lib/api/errors";
 import type { ApiTransaction } from "@/lib/api/handler";
 import { decryptPayload, encryptPayload } from "@/lib/api/crypto";
+import { emailDeliveryPayloadSource } from "@/lib/email-delivery-snapshot";
 import {
   authenticationLinkTemplateVariables,
   DEFAULT_EMAIL_TEMPLATE_SETTINGS,
@@ -747,7 +748,15 @@ export async function getEmailDeliveryDetail(
           `email-delivery:${row.delivery.id}`,
         ),
       );
-      content = presentEmailDeliveryContent(row.delivery.event, decrypted);
+      content = presentEmailDeliveryContent(
+        row.delivery.event,
+        emailDeliveryPayloadSource({
+          event: row.delivery.event,
+          email: row.delivery.recipientEmail,
+          organizationId: row.delivery.organizationId,
+          payload: decrypted,
+        }),
+      );
     } catch {
       content = { available: false, reason: "invalid_payload" };
     }
