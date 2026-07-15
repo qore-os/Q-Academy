@@ -143,6 +143,16 @@ test("CI smoke runs against the exact app image before the media worker replaces
 
   const mediaStep = workflow.slice(mediaStart);
   assert.match(mediaStep, /docker rm --force q-academy-ci-runtime/);
+  assert.match(
+    mediaStep,
+    /docker image inspect --format '\{\{json \.Config\.Cmd\}\}' "\$media_image"/,
+  );
+  assert.match(mediaStep, /"\$configured_media_command" != "\$expected_media_command"/);
+  assert.match(
+    mediaStep,
+    /docker inspect --format '\{\{\.State\.Running\}\}' q-academy-ci-runtime/,
+  );
+  assert.match(mediaStep, /Media container state: status=/);
 });
 
 test("CI provides canonical TLS and a non-development seeded API key", () => {

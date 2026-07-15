@@ -40,7 +40,16 @@ test("production runner uses FFmpeg and a bounded disk-backed work root", () => 
   assert.match(compose, /create_host_path: false/);
   assert.doesNotMatch(compose, /q-academy-media-processing:size=/);
   assert.match(dockerfile, /q-academy-media-runner/);
+  const mediaRunnerStage = dockerfile.slice(
+    dockerfile.indexOf("FROM runner AS media-runner"),
+  );
+  assert.match(
+    mediaRunnerStage,
+    /ENTRYPOINT \["\/usr\/local\/bin\/q-academy-media-runner"\]\s+CMD \["\.\/node_modules\/\.bin\/next", "start", "-H", "0\.0\.0\.0", "-p", "3000"\]/,
+  );
   const entrypoint = source("scripts/ops/media-runner-entrypoint.sh");
+  assert.match(entrypoint, /if \[ "\$#" -eq 0 \]/);
+  assert.match(entrypoint, /Media runner command is missing/);
   assert.match(entrypoint, /expected_root="\$mount_root\/work"/);
   assert.match(entrypoint, /\.q-academy-media-work-root/);
   assert.match(entrypoint, /q-academy-media-processing-v1/);

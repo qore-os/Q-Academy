@@ -641,6 +641,14 @@ jobs:
           sudo chown root:root "$media_work_root/.q-academy-media-work-root"
           sudo chmod 0444 "$media_work_root/.q-academy-media-work-root"
 
+          media_image="q-academy-media-runner:$Q_ACADEMY_CI_RELEASE_TAG"
+          expected_media_command='["./node_modules/.bin/next","start","-H","0.0.0.0","-p","3000"]'
+          configured_media_command="$(docker image inspect --format '{{json .Config.Cmd}}' "$media_image")"
+          if [[ "$configured_media_command" != "$expected_media_command" ]]; then
+            echo "Production media image has no exact startup command." >&2
+            exit 1
+          fi
+
           docker rm --force q-academy-ci-runtime >/dev/null
           docker run --detach --name q-academy-ci-runtime --network host \
             --add-host ci-postgres.internal:127.0.0.1 \
@@ -660,10 +668,15 @@ jobs:
             -e MEDIA_CLAMAV_PORT=3310 \
             -e MEDIA_PROCESSING_WORK_ROOT=/var/lib/q-academy-media-processing/work \
             --volume "$media_work_root:/var/lib/q-academy-media-processing" \
-            "q-academy-media-runner:$Q_ACADEMY_CI_RELEASE_TAG"
+            "$media_image"
 
           media_ready=false
           for attempt in $(seq 1 30); do
+            if [[ "$(docker inspect --format '{{.State.Running}}' q-academy-ci-runtime)" != true ]]; then
+              docker inspect --format 'Media container state: status={{.State.Status}} exitCode={{.State.ExitCode}} error={{json .State.Error}}' q-academy-ci-runtime
+              docker logs q-academy-ci-runtime
+              exit 1
+            fi
             if curl --fail --silent --show-error \
               http://127.0.0.1:3000/api/v1/health/ready \
               | node -e "let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',(chunk)=>input+=chunk);process.stdin.on('end',()=>{try{const body=JSON.parse(input);if(body?.data?.schema!=='current'||body?.data?.version!==process.env.Q_ACADEMY_CI_RELEASE_TAG)process.exitCode=1}catch{process.exitCode=1}})"; then

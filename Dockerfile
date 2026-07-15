@@ -148,3 +148,4 @@ COPY --chown=nextjs:nodejs scripts/ops/media-runner-entrypoint.sh /usr/local/bin
 RUN chmod 0755 /usr/local/bin/q-academy-media-runner
 USER nextjs
 ENTRYPOINT ["/usr/local/bin/q-academy-media-runner"]
+CMD ["./node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]

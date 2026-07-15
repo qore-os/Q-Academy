@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+if [ "$#" -eq 0 ]; then
+  printf 'Media runner command is missing.\n' >&2
+  exit 1
+fi
+
 work_root="${MEDIA_PROCESSING_WORK_ROOT:-}"
 mount_root="/var/lib/q-academy-media-processing"
 expected_root="$mount_root/work"
