@@ -62,6 +62,30 @@ tenantgebundenen Outbox gespeicherte E-Mail des aktiven Mitglieds:
 }
 ```
 
+Modulfreigaben senden ebenfalls nur die gerenderten Zustellfelder an das
+Gateway. Die intern validierten Kurs-, Versions- und Modul-IDs sind nicht Teil
+des Requests:
+
+```json
+{
+  "event": "course.modules.released",
+  "email": "mitglied@example.com",
+  "subject": "Neue Module in Sicher lernen",
+  "message": "Hallo Mara, ...",
+  "html": "<p>Hallo Mara, ...</p>",
+  "link": "https://academy.example.com/academy/courses/sicher-lernen",
+  "tenantBranding": {
+    "organizationId": "...",
+    "name": "Beispiel Academy",
+    "platformName": "Beispiel Academy",
+    "primaryColor": "#17324d",
+    "accentColor": "#2bb7a9",
+    "logoUrl": null,
+    "locale": "de"
+  }
+}
+```
+
 Unterstuetzte Events:
 
 - `invitation.created`: tenantweite Plaintext-Vorlage mit sieben Tagen
@@ -70,13 +94,15 @@ Unterstuetzte Events:
   Linkgueltigkeit
 - `feedback.reply`: direkte Antwort eines Teammitglieds auf Kursfeedback
 - `lesson.available`: einmalige Freigabeinformation fuer eine abonnierte Lektion mit `subject`, `message` und absolutem `link`
+- `course.modules.released`: einmalige Freigabeinformation fuer neue Kursmodule mit gerendertem Inhalt und absolutem Kurslink
 - `event.rescheduled`: einmalige Information ueber ein neu geplantes Event
 - `event.cancelled`: einmalige Information ueber ein abgesagtes Event
 - `email.template.test`: sichere Testsendung einer gespeicherten Vorlage an den
   aktiven Owner/Admin, der sie ausgeloest hat
 
-Fuer alle sechs produktiven Events sowie `email.template.test` ist `html`
-optional. Falls es vorhanden ist, muss es exakt aus `message` erzeugt sein:
+Fuer sechs der sieben produktiven Events sowie `email.template.test` ist `html`
+optional; bei `course.modules.released` gehoert es zum unveraenderlichen
+Snapshot. Falls es vorhanden ist, muss es exakt aus `message` erzeugt sein:
 Text wird HTML-escaped, Leerzeilen werden zu Absaetzen und einfache Zeilenumbrueche
 zu `<br>`. Frei eingegebenes Admin-HTML wird weder gespeichert noch versendet.
 

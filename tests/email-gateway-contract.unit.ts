@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { z } from "zod";
 import {
@@ -7,6 +8,7 @@ import {
   emailTenantBrandingFromTenantBranding,
 } from "../src/lib/email-gateway-contract";
 import { DEFAULT_TENANT_BRANDING } from "../src/lib/branding-model";
+import { plainTextToSafeEmailHtml } from "../src/lib/email-center-model";
 
 const tenantBranding = {
   organizationId: "00000000-0000-4000-8000-000000000001",
@@ -264,6 +266,106 @@ test("lesson availability payloads fail closed without an absolute link", () => 
       }),
     z.ZodError,
   );
+});
+
+test("course module releases dispatch a minimal rendered request to active members", () => {
+  const message =
+    "Hallo Mara,\n\nin deinem Kurs wurden neue Module freigegeben.";
+  const request = buildEmailGatewayRequest({
+    event: "course.modules.released",
+    email: "member@example.test",
+    decryptedPayload: {
+      subject: "Neue Kursmodule",
+      message,
+      html: plainTextToSafeEmailHtml(message),
+      locale: "de",
+      link: "https://academy.example.test/academy/courses/sicher-lernen",
+      courseId: "10000000-0000-4000-8000-000000000001",
+      courseVersionId: "10000000-0000-4000-8000-000000000002",
+      moduleIds: [
+        "10000000-0000-4000-8000-000000000003",
+        "10000000-0000-4000-8000-000000000004",
+      ],
+    },
+    tenantBranding,
+  });
+
+  assert.deepEqual(request, {
+    event: "course.modules.released",
+    email: "member@example.test",
+    subject: "Neue Kursmodule",
+    message,
+    html: plainTextToSafeEmailHtml(message),
+    link: "https://academy.example.test/academy/courses/sicher-lernen",
+    tenantBranding,
+  });
+  assert.equal(
+    canDispatchEmailToRecipient({
+      event: "course.modules.released",
+      recipientStatus: "active",
+      recipientRole: "member",
+    }),
+    true,
+  );
+  assert.equal(
+    canDispatchEmailToRecipient({
+      event: "course.modules.released",
+      recipientStatus: "suspended",
+      recipientRole: "member",
+    }),
+    false,
+  );
+  assert.equal(
+    canDispatchEmailToRecipient({
+      event: "course.modules.released",
+      recipientStatus: "active",
+      recipientRole: "trainer",
+    }),
+    false,
+  );
+});
+
+test("course module release payloads reject unsafe, excessive and extra data", () => {
+  const message = "Neue Module sind verfuegbar.";
+  const validPayload = {
+    subject: "Neue Kursmodule",
+    message,
+    html: plainTextToSafeEmailHtml(message),
+    locale: "de",
+    link: "https://academy.example.test/academy/courses/sicher-lernen",
+    courseId: "10000000-0000-4000-8000-000000000001",
+    courseVersionId: "10000000-0000-4000-8000-000000000002",
+    moduleIds: ["10000000-0000-4000-8000-000000000003"],
+  };
+  const invalidPayloads = [
+    { ...validPayload, html: "<script>alert(1)</script>" },
+    { ...validPayload, link: "/academy/courses/sicher-lernen" },
+    { ...validPayload, courseId: "not-a-course-id" },
+    { ...validPayload, courseVersionId: "not-a-version-id" },
+    { ...validPayload, moduleIds: [] },
+    {
+      ...validPayload,
+      moduleIds: [validPayload.moduleIds[0], validPayload.moduleIds[0]],
+    },
+    {
+      ...validPayload,
+      moduleIds: Array.from({ length: 1_001 }, () => randomUUID()),
+    },
+    { ...validPayload, internalAuditContext: "must-not-pass" },
+  ];
+
+  for (const decryptedPayload of invalidPayloads) {
+    assert.throws(
+      () =>
+        buildEmailGatewayRequest({
+          event: "course.modules.released",
+          email: "member@example.test",
+          decryptedPayload,
+          tenantBranding,
+        }),
+      z.ZodError,
+    );
+  }
 });
 
 test("feedback replies dispatch only to active member identities", () => {

@@ -160,6 +160,44 @@ test("mail list identities are masked while safe detail content redacts links", 
   );
 });
 
+test("course module release details use the strict snapshot and redact internal links", () => {
+  const message =
+    "Neue Module sind unter https://academy.example.test/academy/courses/kurs verfuegbar.";
+  const payload = {
+    subject: "Neue Kursmodule",
+    message,
+    html: plainTextToSafeEmailHtml(message),
+    locale: "de",
+    link: "https://academy.example.test/academy/courses/kurs",
+    courseId: "10000000-0000-4000-8000-000000000001",
+    courseVersionId: "10000000-0000-4000-8000-000000000002",
+    moduleIds: ["10000000-0000-4000-8000-000000000003"],
+  };
+
+  assert.deepEqual(
+    presentEmailDeliveryContent("course.modules.released", payload),
+    {
+      available: true,
+      subject: "Neue Kursmodule",
+      message: "Neue Module sind unter [Link ausgeblendet] verfuegbar.",
+      html: "<p>Neue Module sind unter [Link ausgeblendet] verfuegbar.</p>",
+      linksRedacted: true,
+    },
+  );
+  for (const invalidPayload of [
+    { ...payload, html: "<script>alert(1)</script>" },
+    { ...payload, internalAuditContext: "must-not-pass" },
+  ]) {
+    assert.deepEqual(
+      presentEmailDeliveryContent(
+        "course.modules.released",
+        invalidPayload,
+      ),
+      { available: false, reason: "invalid_payload" },
+    );
+  }
+});
+
 test("authentication-link details never inspect or expose decrypted payloads", () => {
   const payload = new Proxy(
     {},

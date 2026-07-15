@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   authenticationLinkRenderedPayloadSchema,
   authenticationLinkSourcePayloadSchema,
+  courseModulesReleasedStoredPayloadSchema,
   MAX_RENDERED_EMAIL_HTML_LENGTH,
   plainTextToSafeEmailHtml,
   renderedEmailMessageSchema,
@@ -122,6 +123,7 @@ export function canDispatchEmailToRecipient(input: {
       return input.recipientStatus === "active";
     case "feedback.reply":
     case "lesson.available":
+    case "course.modules.released":
     case "event.rescheduled":
     case "event.cancelled":
       return (
@@ -180,6 +182,20 @@ export function buildEmailGatewayRequest(input: {
         subject: payload.subject,
         message: payload.message,
         ...(payload.html ? { html: payload.html } : {}),
+        link: payload.link,
+        tenantBranding: input.tenantBranding,
+      };
+    }
+    case "course.modules.released": {
+      const payload = courseModulesReleasedStoredPayloadSchema.parse(
+        input.decryptedPayload,
+      );
+      return {
+        event: input.event,
+        email: input.email,
+        subject: payload.subject,
+        message: payload.message,
+        html: payload.html,
         link: payload.link,
         tenantBranding: input.tenantBranding,
       };

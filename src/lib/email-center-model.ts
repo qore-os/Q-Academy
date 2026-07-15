@@ -680,6 +680,32 @@ const lessonStoredPayloadSchema = safeStoredEmailPayloadSchema
     link: deliveryLinkSchema,
   })
   .strict();
+export const courseModulesReleasedStoredPayloadSchema =
+  safeStoredEmailPayloadSchema
+    .extend({
+      html: z.string().max(MAX_RENDERED_EMAIL_HTML_LENGTH),
+      locale: z.enum(SUPPORTED_LOCALES),
+      link: deliveryLinkSchema,
+      courseId: z.string().uuid(),
+      courseVersionId: z.string().uuid(),
+      moduleIds: z
+        .array(z.string().uuid())
+        .min(1)
+        .max(1_000)
+        .refine((value) => new Set(value).size === value.length, {
+          message: "Modul-IDs muessen eindeutig sein.",
+        }),
+    })
+    .strict()
+    .superRefine((payload, context) => {
+      if (payload.html !== plainTextToSafeEmailHtml(payload.message)) {
+        context.addIssue({
+          code: "custom",
+          path: ["html"],
+          message: "HTML muss exakt aus dem Plaintext abgeleitet sein.",
+        });
+      }
+    });
 const eventLifecycleStoredPayloadSchema = lessonStoredPayloadSchema;
 
 export type EmailDeliveryContentView =
@@ -705,6 +731,8 @@ export function presentEmailDeliveryContent(
   const schema =
     event === "lesson.available"
       ? lessonStoredPayloadSchema
+      : event === "course.modules.released"
+        ? courseModulesReleasedStoredPayloadSchema
       : EVENT_LIFECYCLE_EMAIL_EVENTS.some((item) => item === event)
         ? eventLifecycleStoredPayloadSchema
       : event === "feedback.reply" || event === "email.template.test"
@@ -724,6 +752,7 @@ export function presentEmailDeliveryContent(
       subject !== parsed.data.subject ||
       message !== parsed.data.message ||
       event === "lesson.available" ||
+      event === "course.modules.released" ||
       EVENT_LIFECYCLE_EMAIL_EVENTS.some((item) => item === event),
   };
 }
