@@ -28,8 +28,11 @@ Nicht parsebare oder unplausible Dateien werden quarantiniert.
 - `MEDIA_FFMPEG_PATH` zeigt auf ein echtes FFmpeg-Binary. Ohne Wert wird
   `ffmpeg` aus `PATH` verwendet.
 - `MEDIA_TRANSCRIPT_COMMAND` zeigt auf ein lokales STT-Programm. Es wird ohne
-  Shell, mit geschlossenem stdin, begrenztem stderr und hartem
-  10-Minuten-Timeout gestartet.
+  Shell, mit geschlossenem stdin und begrenztem stderr gestartet.
+- `MEDIA_FFMPEG_TIMEOUT_SECONDS` und `MEDIA_TRANSCRIPT_TIMEOUT_SECONDS`
+  begrenzen die beiden Prozessoren getrennt. Die Produktionsdefaults sind
+  10.800 beziehungsweise 7.200 Sekunden; zulaessig sind 60 bis 13.800
+  Sekunden und damit immer weniger als das Vier-Stunden-Dispatcher-Limit.
 - `MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON` ist optional ein JSON-Array. Die exakt
   ersetzten Argumente sind `{input}`, `{output}` und `{language}`. Der Default
   erwartet `--input`, `--output-vtt`, `--language` und `--temperature 0`.
@@ -50,7 +53,9 @@ Der Produktions-Runner verwendet den eingeschraenkten Datenbanknutzer und die
 separaten S3-Credentials des Runtime-Roles `media-worker`. Eine Quelle wird nur
 ueber ihre gespeicherte `VersionId` und ETag geladen. Nach dem begrenzten
 Download muessen Groesse und SHA-256 erneut zur Datenbankidentitaet passen.
-FFmpeg und STT laufen ohne Shell, mit geschlossenem stdin und hartem Timeout.
+FFmpeg und STT laufen ohne Shell, mit geschlossenem stdin und getrennten
+harten Timeouts. Bei Timeout oder Claim-Verlust wird unter Linux die gesamte
+Prozessgruppe beendet, damit kein Kindprozess weiterarbeitet.
 Derivate werden mit Quell-Digest und Job-ID hochgeladen und erst nach einem
 verifizierenden Head-Request inklusive VersionId, ETag, Groesse, MIME-Typ und
 Metadaten in der Datenbank freigegeben. Jeder Fehler entfernt die erzeugte

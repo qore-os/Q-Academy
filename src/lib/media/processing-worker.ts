@@ -26,6 +26,7 @@ import {
   MediaProcessingProviderError,
   runBoundedMediaCommand,
 } from "@/lib/media/processing-provider";
+import { resolveMediaProcessorTimeouts } from "@/lib/media/processing-preflight";
 import {
   deleteStoredMediaObject,
   deleteStoredMediaObjectRevision,
@@ -844,6 +845,7 @@ async function completeDerivative(
     executable: ffmpeg,
     arguments: args,
     signal,
+    timeoutMs: resolveMediaProcessorTimeouts(process.env).ffmpegTimeoutMs,
   });
   signal.throwIfAborted();
   const details = await stat(/* turbopackIgnore: true */ outputPath);

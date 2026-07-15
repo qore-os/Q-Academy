@@ -185,7 +185,19 @@ test("media provider keeps its deployment-controlled process boundary shell-free
     /input\.executable, \/\/ nosemgrep: javascript\.lang\.security\.detect-child-process\.detect-child-process/,
   );
   assert.match(provider, /shell: false/);
+  assert.match(provider, /detached: process\.platform !== "win32"/);
+  assert.match(provider, /process\.kill\(-pid, "SIGKILL"\)/);
+  assert.match(provider, /MAX_COMMAND_TIMEOUT_MS = 13_800_000/);
   assert.match(provider, /stdio: \["ignore"/);
+  assert.match(
+    provider,
+    /resolveMediaProcessorTimeouts\(process\.env\)\.transcriptTimeoutMs/,
+  );
+  const worker = source("src/lib/media/processing-worker.ts");
+  assert.match(
+    worker,
+    /resolveMediaProcessorTimeouts\(process\.env\)\.ffmpegTimeoutMs/,
+  );
   assert.doesNotMatch(provider, /shell: true|\bexec(?:Sync)?\(/);
 });
 

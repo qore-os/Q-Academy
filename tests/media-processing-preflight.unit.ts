@@ -21,12 +21,22 @@ test("processing preflight resolves an isolated bounded production toolchain", (
   const result = resolveMediaProcessingPreflightConfiguration(production);
   assert.match(result.workRoot.replaceAll("\\", "/"), /\/var\/lib\/q-academy-media-processing\/work$/);
   assert.equal(result.transcript.mode, "command");
+  assert.equal(result.ffmpegTimeoutMs, 10_800_000);
+  assert.equal(result.transcriptTimeoutMs, 7_200_000);
 });
 
 test("processing preflight rejects unsafe roots and ambiguous transcript providers", () => {
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_PROCESSING_WORK_ROOT: "/" }), /unsafe/);
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY: "/tmp/vtt" }), /not allowed|exactly one/);
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, Q_ACADEMY_RUNTIME_ROLE: "app" }), /media-worker/);
+  assert.throws(
+    () => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_FFMPEG_TIMEOUT_SECONDS: "14400" }),
+    /MEDIA_FFMPEG_TIMEOUT_SECONDS/,
+  );
+  assert.throws(
+    () => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: "59" }),
+    /MEDIA_TRANSCRIPT_TIMEOUT_SECONDS/,
+  );
 });
 
 test("processing preflight dispatches STRATO without weakening the strict provider contract", () => {

@@ -9,8 +9,10 @@ import {
   parseWebVttTranscript,
   type VideoTranscriptDocument,
 } from "@/lib/content-blocks/video-transcript";
+import { resolveMediaProcessorTimeouts } from "@/lib/media/processing-preflight";
 
-const COMMAND_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60_000;
+const MAX_COMMAND_TIMEOUT_MS = 13_800_000;
 const MAX_COMMAND_ERROR_BYTES = 16 * 1_024;
 const MAX_TRANSCRIPT_FILE_BYTES = 600_000;
 const EXECUTABLE_PATTERN = /^[^\u0000-\u001f\u007f]{1,1024}$/;
@@ -96,10 +98,17 @@ export async function runBoundedMediaCommand(input: {
       "The media processing executable is not configured safely.",
     );
   }
-  const timeoutMs = Math.min(
-    Math.max(input.timeoutMs ?? COMMAND_TIMEOUT_MS, 1_000),
-    COMMAND_TIMEOUT_MS,
-  );
+  const timeoutMs = input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 1_000 ||
+    timeoutMs > MAX_COMMAND_TIMEOUT_MS
+  ) {
+    throw new MediaProcessingProviderError(
+      "provider_unavailable",
+      "The media processing timeout is invalid.",
+    );
+  }
   return new Promise<string>((resolvePromise, reject) => {
     const stdoutLimit = Math.min(
       Math.max(input.captureStdoutBytes ?? 0, 0),
@@ -113,6 +122,7 @@ export async function runBoundedMediaCommand(input: {
       {
         shell: false,
         windowsHide: true,
+        detached: process.platform !== "win32",
         stdio: ["ignore", stdoutLimit ? "pipe" : "ignore", "pipe"],
       },
     );
@@ -133,11 +143,23 @@ export async function runBoundedMediaCommand(input: {
       ]);
     });
     let timedOut = false;
+    const terminate = () => {
+      const pid = child.pid;
+      if (process.platform !== "win32" && pid) {
+        try {
+          process.kill(-pid, "SIGKILL");
+          return;
+        } catch {
+          // Fall back to the direct child when the process group already ended.
+        }
+      }
+      child.kill("SIGKILL");
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGKILL");
+      terminate();
     }, timeoutMs);
-    const abort = () => child.kill("SIGKILL");
+    const abort = () => terminate();
     input.signal?.addEventListener("abort", abort, { once: true });
     child.once("error", (error) => {
       clearTimeout(timer);
@@ -219,6 +241,7 @@ export class LocalCommandTranscriptProvider implements TranscriptProvider {
       executable,
       arguments: args,
       signal: input.signal,
+      timeoutMs: resolveMediaProcessorTimeouts(process.env).transcriptTimeoutMs,
     });
     return readTranscript(input.outputPath, input.language);
   }

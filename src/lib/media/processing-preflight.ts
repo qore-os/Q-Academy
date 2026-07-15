@@ -1,15 +1,56 @@
 import { isAbsolute, parse, resolve } from "node:path";
 
 const SAFE_EXECUTABLE = /^[^\u0000-\u001f\u007f]{1,1024}$/;
+const MAX_PROCESSOR_TIMEOUT_SECONDS = 13_800;
+const DEFAULT_FFMPEG_TIMEOUT_SECONDS = 10_800;
+const DEFAULT_TRANSCRIPT_TIMEOUT_SECONDS = 7_200;
 
 export type MediaProcessingPreflightConfiguration = Readonly<{
   workRoot: string;
   ffmpeg: string;
   ffprobe: string;
+  ffmpegTimeoutMs: number;
+  transcriptTimeoutMs: number;
   transcript:
     | Readonly<{ mode: "command"; executable: string; arguments: readonly string[] }>
     | Readonly<{ mode: "sidecar"; directory: string }>;
 }>;
+
+function processorTimeoutMs(
+  environment: Readonly<Record<string, string | undefined>>,
+  name: string,
+  fallbackSeconds: number,
+) {
+  const raw = environment[name]?.trim();
+  if (!raw) return fallbackSeconds * 1_000;
+  if (!/^[1-9][0-9]{1,4}$/.test(raw)) {
+    throw new Error(`${name} must be an integer number of seconds.`);
+  }
+  const seconds = Number(raw);
+  if (seconds < 60 || seconds > MAX_PROCESSOR_TIMEOUT_SECONDS) {
+    throw new Error(
+      `${name} must be between 60 and ${MAX_PROCESSOR_TIMEOUT_SECONDS} seconds.`,
+    );
+  }
+  return seconds * 1_000;
+}
+
+export function resolveMediaProcessorTimeouts(
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  return {
+    ffmpegTimeoutMs: processorTimeoutMs(
+      environment,
+      "MEDIA_FFMPEG_TIMEOUT_SECONDS",
+      DEFAULT_FFMPEG_TIMEOUT_SECONDS,
+    ),
+    transcriptTimeoutMs: processorTimeoutMs(
+      environment,
+      "MEDIA_TRANSCRIPT_TIMEOUT_SECONDS",
+      DEFAULT_TRANSCRIPT_TIMEOUT_SECONDS,
+    ),
+  } as const;
+}
 
 function executable(value: string | undefined, fallback: string, name: string) {
   const result = value?.trim() || fallback;
@@ -56,6 +97,7 @@ export function resolveMediaProcessingPreflightConfiguration(
   }
   const ffmpeg = executable(environment.MEDIA_FFMPEG_PATH, "ffmpeg", "MEDIA_FFMPEG_PATH");
   const ffprobe = executable(environment.MEDIA_FFPROBE_PATH, "ffprobe", "MEDIA_FFPROBE_PATH");
+  const timeouts = resolveMediaProcessorTimeouts(environment);
   const sidecar = environment.MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY?.trim();
   const transcriptCommand = environment.MEDIA_TRANSCRIPT_COMMAND?.trim();
   if (production && sidecar) {
@@ -68,6 +110,7 @@ export function resolveMediaProcessingPreflightConfiguration(
     workRoot,
     ffmpeg,
     ffprobe,
+    ...timeouts,
     transcript: transcriptCommand
       ? {
           mode: "command",
