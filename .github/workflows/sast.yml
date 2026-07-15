@@ -1,0 +1,216 @@
+name: Semgrep SAST
+
+on:
+  workflow_call:
+  schedule:
+    - cron: "17 3 * * 2"
+  workflow_dispatch:
+
+concurrency:
+  group: semgrep-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SEMGREP_IMAGE: semgrep/semgrep:1.169.0-nonroot@sha256:7fe2d3ab4bbb60412c9edb833fd36bb1dec3c955f09b91a4725cf027718ee4b1
+      SEMGREP_RULESET_COUNT: "1074"
+      SEMGREP_RULESET_SHA256: 7c6e80adeb6ede2016aebfb4292513d1f7832aad778fc5d395a240bc48452e55
+      SEMGREP_VERSION: 1.169.0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download reviewed and content-pinned rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          rules_directory="$RUNNER_TEMP/q-academy-semgrep-rules"
+          output_directory="$RUNNER_TEMP/q-academy-semgrep-output"
+          install -d -m 0700 "$rules_directory" "$output_directory"
+          curl --fail --silent --show-error --location --retry 3 \
+            --proto '=https' --tlsv1.2 \
+            --output "$rules_directory/p-default.download.yml" \
+            https://semgrep.dev/c/p/default
+
+          # The registry may reorder unchanged top-level rules. Canonicalizing
+          # unique IDs makes the digest sensitive to content, not delivery order.
+          RULES_INPUT="$rules_directory/p-default.download.yml" \
+          RULES_OUTPUT="$rules_directory/p-default.yml" \
+            node --input-type=module <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const source = readFileSync(process.env.RULES_INPUT, "utf8").replaceAll(
+            "\r\n",
+            "\n",
+          );
+          if (!source.startsWith("rules:\n- ") || !source.endsWith("\n")) {
+            throw new Error("Semgrep rules use an unexpected document structure.");
+          }
+          const blocks = source
+            .slice("rules:\n".length)
+            .split(/(?=^- )/m)
+            .map((block) => {
+              const matches = [
+                ...block.matchAll(
+                  /^(?:- id|  id): ([A-Za-z0-9_.-]+)$/gm,
+                ),
+              ];
+              if (matches.length !== 1) {
+                throw new Error("Semgrep rule must contain one top-level ID.");
+              }
+              return { block, id: matches[0][1] };
+            });
+          if (
+            blocks.length !== Number(process.env.SEMGREP_RULESET_COUNT) ||
+            new Set(blocks.map(({ id }) => id)).size !== blocks.length
+          ) {
+            throw new Error("Semgrep rule count or uniqueness changed.");
+          }
+          blocks.sort((left, right) =>
+            left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+          );
+          const canonical = `rules:\n${blocks.map(({ block }) => block).join("")}`;
+          const digest = createHash("sha256").update(canonical).digest("hex");
+          if (digest !== process.env.SEMGREP_RULESET_SHA256) {
+            throw new Error(`Semgrep rules changed: ${digest}`);
+          }
+          writeFileSync(process.env.RULES_OUTPUT, canonical, {
+            encoding: "utf8",
+            flag: "wx",
+            mode: 0o600,
+          });
+          NODE
+          printf '%s  p-default.yml\n' "$SEMGREP_RULESET_SHA256" \
+            >"$output_directory/rules.sha256"
+
+      - name: Run isolated Semgrep Community Edition scan
+        shell: bash
+        run: |
+          set -uo pipefail
+          rules_directory="$RUNNER_TEMP/q-academy-semgrep-rules"
+          output_directory="$RUNNER_TEMP/q-academy-semgrep-output"
+          scan_status=0
+          set +e
+          docker run --rm \
+            --network none \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 512 \
+            --memory 6g \
+            --cpus 2 \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp/semgrep-home \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=1g,mode=1777 \
+            --volume "$GITHUB_WORKSPACE:/src:ro" \
+            --volume "$rules_directory:/rules:ro" \
+            --volume "$output_directory:/output:rw" \
+            --workdir /src \
+            "$SEMGREP_IMAGE" semgrep scan \
+            --config /rules/p-default.yml \
+            --oss-only \
+            --metrics=off \
+            --disable-version-check \
+            --no-rewrite-rule-ids \
+            --strict \
+            --error \
+            --timeout 60 \
+            --max-target-bytes 2000000 \
+            --exclude-rule generic.secrets.security.detected-generic-secret.detected-generic-secret \
+            --exclude-rule generic.secrets.security.detected-bcrypt-hash.detected-bcrypt-hash \
+            --exclude android/gradlew \
+            --exclude scripts/ops/docker-egress-firewall.sh \
+            --exclude scripts/ops/postgres-backup-restore-drill.sh \
+            --exclude scripts/ops/postgres-backup.sh \
+            --exclude scripts/ops/staging-app-replica-drain-drill.sh \
+            --exclude scripts/ops/staging-storage-pipeline-outage-drill.sh \
+            --json-output /output/semgrep.json \
+            --sarif-output /output/semgrep.sarif \
+            --text-output /output/semgrep.txt \
+            /src
+          scan_status=$?
+          set -e
+
+          printf '%s\n' "$scan_status" >"$output_directory/exit-code.txt"
+          evidence_complete=true
+          [[ -s "$output_directory/semgrep.json" ]] || evidence_complete=false
+          [[ -s "$output_directory/semgrep.sarif" ]] || evidence_complete=false
+          [[ -f "$output_directory/semgrep.txt" ]] || evidence_complete=false
+          if [[ "$evidence_complete" == true ]]; then
+            OUTPUT_DIRECTORY="$output_directory" SCAN_STATUS="$scan_status" \
+              node --input-type=module <<'NODE' \
+              || evidence_complete=false
+          import { readFileSync } from "node:fs";
+
+          const directory = process.env.OUTPUT_DIRECTORY;
+          const results = JSON.parse(
+            readFileSync(`${directory}/semgrep.json`, "utf8"),
+          );
+          const sarif = JSON.parse(
+            readFileSync(`${directory}/semgrep.sarif`, "utf8"),
+          );
+          const scanStatus = Number(process.env.SCAN_STATUS);
+          if (
+            !Number.isSafeInteger(scanStatus) ||
+            results.version !== process.env.SEMGREP_VERSION ||
+            !Array.isArray(results.results) ||
+            !Array.isArray(results.errors) ||
+            (scanStatus === 0 &&
+              (results.results.length > 0 || results.errors.length > 0)) ||
+            (scanStatus === 1 && results.results.length === 0) ||
+            sarif.version !== "2.1.0" ||
+            !Array.isArray(sarif.runs) ||
+            sarif.runs.length < 1
+          ) {
+            throw new Error("Semgrep evidence contract is invalid.");
+          }
+          NODE
+          fi
+          if [[ "$evidence_complete" == true ]]; then
+            if ! (
+              cd "$output_directory"
+              sha256sum semgrep.json semgrep.sarif semgrep.txt >evidence.sha256
+            ); then
+              evidence_complete=false
+            fi
+          fi
+          {
+            printf 'schema_version=1\n'
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'scanner_image=%s\n' "$SEMGREP_IMAGE"
+            printf 'scanner_version=%s\n' "$SEMGREP_VERSION"
+            printf 'rules_count=%s\n' "$SEMGREP_RULESET_COUNT"
+            printf 'rules_sha256=%s\n' "$SEMGREP_RULESET_SHA256"
+            printf 'scan_exit_code=%s\n' "$scan_status"
+            printf 'evidence_complete=%s\n' "$evidence_complete"
+          } >"$output_directory/scan-manifest.txt"
+
+          if (( scan_status != 0 )); then
+            exit "$scan_status"
+          fi
+          if [[ "$evidence_complete" != true ]]; then
+            echo "Semgrep did not produce complete, parseable evidence." >&2
+            exit 2
+          fi
+
+      # Secret fixtures are covered by the complete-history secret scan. The
+      # exact shell exclusions exceed Semgrep's parser but retain bash -n and
+      # dedicated operational contract/drill tests in the main CI workflow.
+      - name: Upload SAST evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: q-academy-semgrep-${{ github.sha }}
+          path: ${{ runner.temp }}/q-academy-semgrep-output
+          if-no-files-found: error
+          retention-days: 30

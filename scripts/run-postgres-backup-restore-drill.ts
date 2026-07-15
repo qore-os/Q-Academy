@@ -65,13 +65,14 @@ if (prerequisitesRequired) {
   }
 }
 
-function commandSucceeds(command: string, args: string[]) {
-  const result = spawnSync(command, args, {
-    cwd: rootDirectory,
-    stdio: "ignore",
-    timeout: 15_000,
-    windowsHide: true,
-  });
+const probeOptions = {
+  cwd: rootDirectory,
+  stdio: "ignore",
+  timeout: 15_000,
+  windowsHide: true,
+} as const;
+
+function probeSucceeded(result: ReturnType<typeof spawnSync>) {
   return result.status === 0 && !result.error;
 }
 
@@ -88,13 +89,17 @@ function unavailable(message: string): never {
   process.exit(0);
 }
 
-if (!commandSucceeds("bash", ["--version"])) {
+if (!probeSucceeded(spawnSync("bash", ["--version"], probeOptions))) {
   unavailable("Bash is unavailable.");
 }
-if (!commandSucceeds("docker", ["compose", "version"])) {
+if (
+  !probeSucceeded(
+    spawnSync("docker", ["compose", "version"], probeOptions),
+  )
+) {
   unavailable("the Docker CLI or Compose plugin is unavailable.");
 }
-if (!commandSucceeds("docker", ["info"])) {
+if (!probeSucceeded(spawnSync("docker", ["info"], probeOptions))) {
   unavailable("the Docker daemon is unavailable.");
 }
 

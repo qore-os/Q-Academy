@@ -143,4 +143,17 @@ test("unknown key IDs and modified ciphertext fail closed", () => {
       ),
     /authentication failed/,
   );
+
+  const shortenedTag = Buffer.from(encrypted.tag, "base64url")
+    .subarray(0, 12)
+    .toString("base64url");
+  assert.throws(
+    () =>
+      decryptPayloadWithKeyring(
+        { ...encrypted, tag: shortenedTag },
+        "row:7",
+        keyring,
+      ),
+    /authentication failed/,
+  );
 });

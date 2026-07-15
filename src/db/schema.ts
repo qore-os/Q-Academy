@@ -4692,7 +4692,7 @@ export const organizationSupportSettings = pgTable(
     ),
     check(
       "organization_support_settings_configuration_check",
-      sql`${table.enabled} = false or (${table.provider} = 'link' and ${table.supportUrl} is not null) or (${table.provider} = 'email' and ${table.supportEmail} is not null) or (${table.provider} = 'intercom' and ${table.intercomAppId} is not null)`,
+      sql`${table.enabled} = false or (${table.provider} = 'link' and ${table.supportUrl} is not null) or (${table.provider} = 'email' and ${table.supportEmail} is not null) or (${table.provider} = 'intercom' and ${table.intercomAppId} is not null and ${table.identitySecretEncrypted} is not null and ${table.identitySecretEncrypted} <> '')`,
     ),
   ],
 );

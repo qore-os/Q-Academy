@@ -30,9 +30,8 @@ Optional JSON key maps:
 
 --check decrypts every stored value and reports how many records still use an
 old or legacy key. --execute rewrites those records in bounded transactions and
-then performs the same full verification, including tenant/user-bound TOTP
-secrets. No plaintext or key material is
-written to stdout.`;
+then performs the same full verification, including tenant/user-bound TOTP and
+Intercom identity secrets. No plaintext or key material is written to stdout.`;
 
 type Options = {
   mode: "check" | "execute";
@@ -44,6 +43,7 @@ type RotationStats = {
   idempotencyResponses: number;
   oidcClientSecrets: number;
   mfaTotpSecrets: number;
+  supportIdentitySecrets: number;
   webhookSecrets: number;
 };
 
@@ -59,6 +59,10 @@ type IdempotencyRow = {
   response_body: unknown;
 };
 type WebhookRow = { id: string; signing_secret_encrypted: string };
+type SupportIdentityRow = {
+  organization_id: string;
+  identity_secret_encrypted: string;
+};
 type OidcConfigurationRow = {
   organization_id: string;
   client_secret_encrypted: unknown;
@@ -266,6 +270,45 @@ async function rotateWebhookSecrets(
   }
 }
 
+async function rotateSupportIdentitySecrets(
+  sql: Sql,
+  ring: EncryptionKeyring,
+  batchSize: number,
+) {
+  let rotated = 0;
+  while (true) {
+    const count = await sql.begin(async (transaction) => {
+      const rows = await transaction<SupportIdentityRow[]>`
+        select organization_id, identity_secret_encrypted
+        from organization_support_settings
+        where identity_secret_encrypted is not null
+          and (
+            split_part(identity_secret_encrypted, '.', 1) <> 'v2'
+            or split_part(identity_secret_encrypted, '.', 2) <> ${ring.activeKeyId}
+          )
+        order by organization_id
+        for update skip locked
+        limit ${batchSize}
+      `;
+      for (const row of rows) {
+        const plaintext = decryptCompactValueWithKeyring(
+          row.identity_secret_encrypted,
+          ring,
+        );
+        await transaction`
+          update organization_support_settings
+          set identity_secret_encrypted = ${encryptCompactValueWithKeyring(plaintext, ring)},
+              updated_at = now()
+          where organization_id = ${row.organization_id}
+        `;
+      }
+      return rows.length;
+    });
+    rotated += count;
+    if (count < batchSize) return rotated;
+  }
+}
+
 async function rotateOidcClientSecrets(
   sql: Sql,
   ring: EncryptionKeyring,
@@ -427,6 +470,32 @@ async function verifyWebhookSecrets(sql: Sql, ring: EncryptionKeyring) {
   }
 }
 
+async function verifySupportIdentitySecrets(
+  sql: Sql,
+  ring: EncryptionKeyring,
+) {
+  let cursor = "00000000-0000-0000-0000-000000000000";
+  let remaining = 0;
+  while (true) {
+    const rows = await sql<SupportIdentityRow[]>`
+      select organization_id, identity_secret_encrypted
+      from organization_support_settings
+      where identity_secret_encrypted is not null
+        and organization_id > ${cursor}
+      order by organization_id
+      limit 500
+    `;
+    for (const row of rows) {
+      decryptCompactValueWithKeyring(row.identity_secret_encrypted, ring);
+      if (!compactValueUsesActiveKey(row.identity_secret_encrypted, ring)) {
+        remaining += 1;
+      }
+    }
+    if (rows.length < 500) return remaining;
+    cursor = rows.at(-1)!.organization_id;
+  }
+}
+
 async function verifyOidcClientSecrets(sql: Sql, ring: EncryptionKeyring) {
   let cursor = "00000000-0000-0000-0000-000000000000";
   let remaining = 0;
@@ -490,6 +559,7 @@ async function verifyAll(
     idempotencyResponses,
     oidcClientSecrets,
     mfaTotpSecrets,
+    supportIdentitySecrets,
     webhookSecrets,
   ] =
     await Promise.all([
@@ -497,6 +567,7 @@ async function verifyAll(
       verifyIdempotencyResponses(sql, dataKeyring),
       verifyOidcClientSecrets(sql, dataKeyring),
       verifyMfaTotpSecrets(sql, dataKeyring),
+      verifySupportIdentitySecrets(sql, webhookKeyring),
       verifyWebhookSecrets(sql, webhookKeyring),
     ]);
   return {
@@ -504,6 +575,7 @@ async function verifyAll(
     idempotencyResponses,
     oidcClientSecrets,
     mfaTotpSecrets,
+    supportIdentitySecrets,
     webhookSecrets,
   };
 }
@@ -551,6 +623,7 @@ async function main() {
       idempotencyResponses: 0,
       oidcClientSecrets: 0,
       mfaTotpSecrets: 0,
+      supportIdentitySecrets: 0,
       webhookSecrets: 0,
     };
     if (options.mode === "execute") {
@@ -573,6 +646,11 @@ async function main() {
         mfaTotpSecrets: await rotateMfaTotpSecrets(
           sql,
           dataKeyring,
+          options.batchSize,
+        ),
+        supportIdentitySecrets: await rotateSupportIdentitySecrets(
+          sql,
+          webhookKeyring,
           options.batchSize,
         ),
         webhookSecrets: await rotateWebhookSecrets(

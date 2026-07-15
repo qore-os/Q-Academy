@@ -633,6 +633,9 @@ test("course providers remain click-to-load and custom code remains isolated", (
   assert.equal(intercom?.loadMode, "automatic-when-tenant-enabled");
   assert.equal(intercom?.necessary, false);
   assert.equal(intercom?.legalDecision, "open");
+  assert.ok(
+    intercom?.data.includes("verpflichtender nutzergebundener HMAC"),
+  );
 
   assert.equal(inventory.configurableThirdPartySurfaces.length, 1);
   const customCode = inventory.configurableThirdPartySurfaces[0];

@@ -139,8 +139,8 @@ Q-Academy ist eine eigenstaendige, mandantenfaehige Lernplattform nach dem Produ
 - Next.js 16 App Router und React 19
 - TypeScript und Tailwind CSS 4
 - PostgreSQL mit Drizzle ORM
-- Aktueller Datenstand: 170 PostgreSQL-Tabellen und 73 versionierte Migrationen
-  bis einschliesslich `0072_orbit_billing_price_versions`;
+- Aktueller Datenstand: 170 PostgreSQL-Tabellen und 74 versionierte Migrationen
+  bis einschliesslich `0073_intercom_identity_fail_closed`;
   DSAR-Exportschema 23
 - Signierte HTTP-only Sessions mit serverseitiger Widerrufsliste und `jose`
 - Playwright fuer End-to-End- und visuelle Tests

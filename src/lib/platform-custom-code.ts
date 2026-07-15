@@ -100,15 +100,21 @@ function directive(origins: string[]) {
   return origins.length > 0 ? origins.join(" ") : "'none'";
 }
 
-function escapeAttribute(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 type HtmlNode = DefaultTreeAdapterMap["node"];
+type HtmlElement = DefaultTreeAdapterMap["element"];
+
+function serializeCspMetaElement(content: string) {
+  const fragment = parseFragment(
+    '<meta http-equiv="Content-Security-Policy">',
+  );
+  const meta = fragment.childNodes.find(
+    (node): node is HtmlElement =>
+      "tagName" in node && node.tagName === "meta",
+  );
+  if (!meta) throw new Error("Could not construct the CSP meta element.");
+  meta.attrs.push({ name: "content", value: content });
+  return serialize(fragment);
+}
 
 function applyScriptNonce(node: HtmlNode, nonce: string) {
   if ("tagName" in node && node.tagName === "script") {
@@ -172,7 +178,7 @@ export function platformCustomCodeDocument(input: {
     "<head>",
     '<meta charset="utf-8">',
     '<meta name="referrer" content="no-referrer">',
-    `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">`,
+    serializeCspMetaElement(csp),
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     "<style>html,body{margin:0;padding:0;max-width:100%;overflow-x:hidden;background:transparent;color-scheme:light dark}</style>",
     "</head>",

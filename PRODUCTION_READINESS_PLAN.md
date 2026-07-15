@@ -54,7 +54,7 @@ Im Repository nachweisbar vorhanden:
   Kursinhaltstransfer
 - [x] Capacitor-8-Container fuer Android/iOS/iPad, Deep Links sowie
   sitzungsgebundene APNs-/FCM-Push-Queue
-- [x] 170 PostgreSQL-Tabellen, 73 versionierte Migrationen bis `0072` und
+- [x] 170 PostgreSQL-Tabellen, 74 versionierte Migrationen bis `0073` und
   DSAR-Exportschema 23 sowie realistische Demo-Daten
 - [x] Automatisierte Build-, Lint-, Typecheck-, Integrations-, Accessibility-,
   Cross-Browser- und responsive E2E-Pipelines sind vorhanden; der lokale Stand
@@ -611,7 +611,8 @@ Aufgaben:
   bestehende Query-/Composite-FK-/Trigger-Grenzen sowie Neubewertungs- und
   Einfuehrungsanforderungen stehen in [ADR_POSTGRES_RLS.md](./docs/ADR_POSTGRES_RLS.md)
 - [x] Dependency-Audit, redigiertes Arbeitsbaum-/Vollhistorien-Secret-Scanning
-  und dediziertes CodeQL-SAST in CI aktivieren
+  und digest-/regelgebundenes Semgrep-CE-SAST mit isoliertem Lauf und
+  JSON-/SARIF-Evidence in CI aktivieren
 - [ ] DAST gegen Staging ausfuehren
 - [ ] Unabhaengigen Penetrationstest beauftragen
 - [ ] Alle kritischen und hohen Funde vor GA schliessen
@@ -677,7 +678,7 @@ Aufgaben:
 - [ ] Produktionsnahe Staging-Umgebung mit getrennten Secrets und synthetischen Daten betreiben
 - [~] Vollstaendigen CI-Testlauf gegen das Release-Artefakt ausfuehren
 - [~] Automatisierten Upgradepfad von der unmittelbar vorherigen Migration auf
-  den aktuellen Stand `0072` testen; Upgrade des spaeteren echten
+  den aktuellen Stand `0073` testen; Upgrade des spaeteren echten
   Staging-Releases bleibt
   praktisch abzunehmen
 - [ ] Backup-Restore und Rollback in Staging demonstrieren
@@ -814,7 +815,7 @@ Ein Arbeitspaket ist erst abgeschlossen, wenn:
 | 2026-07-14 | Lokale Paritaetsrunde auf 170 Tabellen/73 Migrationen bis 0072 abgeschlossen: Code-/Tabellenbloecke, wiederverwendbare Kursmedien, valider WebVTT-Import/-Export, vollstaendiger transkriptbasierter Aufgaben-Wizard, Event-Zeitzonen/-Themes, mobile Release-Preflights, tiefere Commerce-/n8n-/Support-Pruefungen sowie revisionsgebundene Orbit-Abrechnung mit append-only Preis- und Periodenhistorie umgesetzt. Fresh-/Incremental-Migrationen sind gruen; Rootserver, reale Provider/Geraete/Stores, Legal/Datenschutz, Accessibility, unabhaengiger Pentest, Restore, Staging, Last und formales Go/No-Go bleiben externe Freigaben | Codex |
 | 2026-07-14 | Lokalen Stand auf 166 Tabellen/69 Migrationen bis 0068 und DSAR-Schema 23 abgeglichen: private gescannte Kurs-Widget-Bilder, atomare Sektion-/Lektionskopien, Multi-Segment-Videozeit samt Endkarten, isolierter Hub-Custom-Code, ownergebundener Plattform-Header/-Footer-Code sowie fuenfsprachige Fachaktionen und empfaengerlokalisierte Community-Benachrichtigungen dokumentiert. Dies ist keine Produktionsfreigabe; Rootserver, DNS/TLS, Provider, Legal/Datenschutz, Accessibility, unabhaengiger Pentest, Staging, Last, Restore und formales Pilot-/GA-Go/No-Go bleiben offen | Codex |
 | 2026-07-13 | Stand auf 166 Tabellen/67 Migrationen und DSAR-Schema 23 aktualisiert: Webhook-Zustellungen verwenden rotationssichere Claim-Tokens und schreiben jeden gewonnenen Abschluss atomar in eine append-only, tenantgebundene Versuchshistorie ohne Response-Body. Admin/API zeigen bis zu 50 sanitisierte Versuche; Replay erhaelt alte Generationen, Prometheus alarmiert Dead Letters und DSAR/Offboarding enthalten nur freigegebene Metadaten. Reale Egress-Policy und Rootserver-Alarmempfaenger bleiben externe Gates | Codex |
-| 2026-07-13 | Release-Lieferkette lokal gehaertet: CI baut und smoketestet die exakten App-/Medien-Targets mit identischer Release-ID, erzeugt Trivy-Scan-Evidence und CycloneDX-SBOMs, publiziert exakt getestete Image-IDs nach GHCR und attestiert deren Digest-Manifest; Deploy zieht dieses Manifest standardmaessig statt neu zu bauen. CodeQL, Responsible Disclosure, deterministische Third-Party-Notices, reproduzierbares FFmpeg aus festem Debian-Snapshot sowie Web-/Native-Push-Queue-Alarme ergaenzt. Erster geschuetzter Main-/GHCR-/Attestierungs- und Rootserver-Lauf bleibt extern abzunehmen | Codex |
+| 2026-07-13 | Release-Lieferkette lokal gehaertet: CI baut und smoketestet die exakten App-/Medien-Targets mit identischer Release-ID, erzeugt Trivy-Scan-Evidence und CycloneDX-SBOMs, publiziert exakt getestete Image-IDs nach GHCR und attestiert deren Digest-Manifest; Deploy zieht dieses Manifest standardmaessig statt neu zu bauen. SAST, Responsible Disclosure, deterministische Third-Party-Notices, reproduzierbares FFmpeg aus festem Debian-Snapshot sowie Web-/Native-Push-Queue-Alarme ergaenzt. Erster geschuetzter Main-/GHCR-/Attestierungs- und Rootserver-Lauf bleibt extern abzunehmen | Codex |
 | 2026-07-13 | Release-ID in App und Medienrunner injiziert, Readiness und Deploy/Rollback exakt an den Zieltag gebunden, systemd-Service/-Timer fuer restore-verifizierte Backups sowie Incident-/Provider-Ausfall-Runbook mit Kommunikationsvorlagen lokal ergaenzt. Rootserver-Aktivierung, On-call-Zuordnung, externe Kanaele und Staging-Drill bleiben offen | Codex |
 | 2026-07-13 | Stand auf 163 Tabellen/64 Migrationen und DSAR-Schema 22 aktualisiert: geordnete Community-Areas, strukturierter Rich Text fuer Posts und Kommentare, konfigurierbare oeffentliche Profile sowie ein transaktionales Profil-Completion-Gate lokal umgesetzt. Rootserver-, Provider-, Staging-, Legal- und externe Security-Abnahmen bleiben unveraendert offen | Codex |
 | 2026-07-13 | Stand auf 157 Tabellen/60 Migrationen aktualisiert: 27 Kursbloecke mit sicheren Embeds und Authoring-Recorder, typisierter Pop-up-Blockeditor, exakt versionsgebundener S3-Medienrunner, Tenant-Vertraege mit DB-Limits und gemeinsamen KI-Kosten, Provider-Circuit-Breaker, verifizierte Custom Domains, Bounce-/Complaint-Suppressions, Owner-Uebergabe und verifizierbarer Audit-Export lokal umgesetzt. RLS-Entscheidung, Rollenhandbuch und Tenant-Operations-Runbook dokumentiert; reale DNS/TLS-, Provider-, Rootserver-/Staging-, Store-, Legal-, Accessibility-, Last- und Pentest-Gates bleiben offen | Codex |

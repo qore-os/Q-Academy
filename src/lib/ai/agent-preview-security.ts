@@ -119,7 +119,11 @@ export function sanitizeAiAgentDraftPreviewOutput(
     let redacted = value;
     for (const fragment of fragments) {
       redacted = redacted.replace(
-        new RegExp(regexEscape(fragment).replace(/ /g, "\\s+"), "gi"),
+        // The bounded fragment is fully escaped before spaces become a fixed token.
+        new RegExp( // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+          regexEscape(fragment).replace(/ /g, "\\s+"),
+          "gi",
+        ),
         "[geschuetzter Inhalt]",
       );
     }

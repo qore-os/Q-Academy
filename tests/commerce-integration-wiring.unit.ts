@@ -26,6 +26,22 @@ const integrationManager = readFileSync(
   path.join(root, "src/components/admin/integration-manager.tsx"),
   "utf8",
 );
+const supportService = readFileSync(
+  path.join(root, "src/lib/support.ts"),
+  "utf8",
+);
+const supportLauncher = readFileSync(
+  path.join(root, "src/components/layout/support-launcher.tsx"),
+  "utf8",
+);
+const supportRoute = readFileSync(
+  path.join(root, "src/app/api/v1/organization/support/route.ts"),
+  "utf8",
+);
+const supportIdentityMigration = readFileSync(
+  path.join(root, "drizzle/0073_intercom_identity_fail_closed.sql"),
+  "utf8",
+);
 const openApi = readFileSync(path.join(root, "src/lib/api/openapi.ts"), "utf8");
 
 test("commerce schema persists tenant-bound inbox, lifecycle and outbox state", () => {
@@ -111,6 +127,50 @@ test("operators can preflight provider, n8n and effective support paths", () => 
   assert.match(integrationManager, /value="preflight"/);
   assert.match(integrationManager, /workflowIntent/);
   assert.match(integrationManager, /value="rotate_endpoint"/);
+});
+
+test("Intercom identities fail closed without an effective user hash", () => {
+  assert.match(supportService, /userHash: string;/);
+  assert.doesNotMatch(supportService, /userHash: string \| null/);
+  assert.match(
+    supportService,
+    /settings\.intercomAppId &&[\s\S]*settings\.identitySecretEncrypted/,
+  );
+  assert.match(
+    supportService,
+    /action: "support\.launcher\.identity_verification"/,
+  );
+  assert.match(supportLauncher, /user_hash: configuration\.userHash/);
+  assert.doesNotMatch(supportLauncher, /configuration\.userHash \?/);
+  assert.match(
+    supportLauncher,
+    /INTERCOM_USER_HASH_PATTERN = \/\^\[a-f0-9\]\{64\}\$\//,
+  );
+  assert.match(
+    schema,
+    /table\.identitySecretEncrypted\} is not null[\s\S]*table\.identitySecretEncrypted\} <> ''/,
+  );
+  for (const source of [adminActions, supportRoute]) {
+    assert.match(
+      source,
+      /provider === "intercom" &&[\s\S]*!encryptedSecret/,
+    );
+  }
+  assert.match(
+    supportRoute,
+    /identitySecretEncrypted: _secret[\s\S]*identitySecretConfigured: Boolean\(_secret\)/,
+  );
+  const cleanupIndex = supportIdentityMigration.indexOf(
+    'UPDATE "organization_support_settings"',
+  );
+  const constraintIndex = supportIdentityMigration.indexOf(
+    'ADD CONSTRAINT "organization_support_settings_configuration_check"',
+  );
+  assert.ok(cleanupIndex >= 0 && constraintIndex > cleanupIndex);
+  assert.match(
+    supportIdentityMigration,
+    /"identity_secret_encrypted" IS NULL[\s\S]*"identity_secret_encrypted" = ''/,
+  );
 });
 
 test("Zapier and Make member action supports provenance-safe grant and revoke", () => {

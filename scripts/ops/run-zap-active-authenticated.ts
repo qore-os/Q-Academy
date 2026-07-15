@@ -393,9 +393,9 @@ async function cleanIdentityWithRetry(input: Parameters<typeof cleanIdentity>[0]
   throw lastError;
 }
 
-async function runIgnored(command: string, args: string[]) {
+async function runDockerIgnored(args: string[]) {
   return await new Promise<number>((resolveProcess) => {
-    const child = spawn(command, args, { stdio: "ignore", shell: false });
+    const child = spawn("docker", args, { stdio: "ignore", shell: false });
     child.once("error", () => resolveProcess(127));
     child.once("close", (code) => resolveProcess(code ?? 1));
   });
@@ -406,7 +406,7 @@ async function runDockerScan(args: string[], containerName: string, runtimeMilli
   let interrupted = false;
   let removing: Promise<number> | undefined;
   const removeContainer = () => {
-    removing ??= runIgnored("docker", ["rm", "--force", containerName]);
+    removing ??= runDockerIgnored(["rm", "--force", containerName]);
     return removing;
   };
   const child = spawn("docker", args, { stdio: "ignore", shell: false });
@@ -566,7 +566,7 @@ async function main() {
   if (ownerInput.path === memberInput.path || ownerInput.credentials.email.toLowerCase() === memberInput.credentials.email.toLowerCase()) {
     throw new Error("owner and member credentials must be distinct");
   }
-  if ((await runIgnored("docker", ["version", "--format", "{{.Server.Version}}"])) !== 0) {
+  if ((await runDockerIgnored(["version", "--format", "{{.Server.Version}}"])) !== 0) {
     throw new Error("Docker is unavailable");
   }
 
@@ -623,7 +623,7 @@ async function main() {
     scannerFailure = true;
     scanner = { schemaVersion: 1, contractValid: false, reasonCode: "preflight_or_scanner_failed" };
   } finally {
-    await runIgnored("docker", ["rm", "--force", containerName]);
+    await runDockerIgnored(["rm", "--force", containerName]);
     for (const [role, credentials] of [
       ["owner", ownerInput.credentials],
       ["member", memberInput.credentials],

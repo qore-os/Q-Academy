@@ -8,6 +8,7 @@ import {
 const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
 const MAX_PREVIOUS_KEYS = 16;
+const AES_GCM_AUTH_TAG_BYTES = 16;
 
 export type LegacyEncryptedPayload = {
   v: 1;
@@ -171,9 +172,10 @@ function decryptWithSecret(
     "aes-256-gcm",
     derivedKey(secret),
     decodePart(payload.iv, 12),
+    { authTagLength: AES_GCM_AUTH_TAG_BYTES },
   );
   decipher.setAAD(Buffer.from(associatedData, "utf8"));
-  decipher.setAuthTag(decodePart(payload.tag, 16));
+  decipher.setAuthTag(decodePart(payload.tag, AES_GCM_AUTH_TAG_BYTES));
   return Buffer.concat([
     decipher.update(decodePart(payload.ciphertext, null)),
     decipher.final(),
@@ -218,6 +220,7 @@ export function encryptPayloadWithKeyring(
     "aes-256-gcm",
     derivedKey(keyring.keys[keyring.activeKeyId]!),
     iv,
+    { authTagLength: AES_GCM_AUTH_TAG_BYTES },
   );
   cipher.setAAD(Buffer.from(associatedData, "utf8"));
   const ciphertext = Buffer.concat([

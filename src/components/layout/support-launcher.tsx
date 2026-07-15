@@ -11,20 +11,34 @@ declare global {
   }
 }
 
+const INTERCOM_USER_HASH_PATTERN = /^[a-f0-9]{64}$/;
+
+function isVerifiedIntercomConfiguration(
+  configuration: SupportLauncherConfiguration | null,
+): configuration is Extract<
+  SupportLauncherConfiguration,
+  { provider: "intercom" }
+> {
+  return (
+    configuration?.provider === "intercom" &&
+    INTERCOM_USER_HASH_PATTERN.test(configuration.userHash)
+  );
+}
+
 export function SupportLauncher({
   configuration,
 }: {
   configuration: SupportLauncherConfiguration | null;
 }) {
   useEffect(() => {
-    if (configuration?.provider !== "intercom") return;
+    if (!isVerifiedIntercomConfiguration(configuration)) return;
     window.intercomSettings = {
       api_base: "https://api-iam.intercom.io",
       app_id: configuration.appId,
       user_id: configuration.userId,
       email: configuration.email,
       name: configuration.name,
-      ...(configuration.userHash ? { user_hash: configuration.userHash } : {}),
+      user_hash: configuration.userHash,
       hide_default_launcher: true,
     };
     window.Intercom?.("boot", window.intercomSettings);
@@ -46,6 +60,12 @@ export function SupportLauncher({
   }, [configuration]);
 
   if (!configuration) return null;
+  if (
+    configuration.provider === "intercom" &&
+    !isVerifiedIntercomConfiguration(configuration)
+  ) {
+    return null;
+  }
   const className =
     "focus-ring grid size-9 place-items-center rounded-md text-[#52606d] hover:bg-[#edf1f3] hover:text-[var(--brand-primary)]";
   if (configuration.provider === "link") {

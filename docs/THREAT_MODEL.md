@@ -200,7 +200,7 @@ Kontrollen:
   Secret-/URL-Sanitizing und ein Ausschlussmanifest. Webhook-Payloads,
   Antwortschluessel, Storage- und Claim-Daten bleiben ausgeschlossen. Eigene
   Kommentarreaktionen und Community-Scorebeitraege werden ohne Identitaeten
-  anderer Mitglieder exportiert. Das Inventar deckt alle 170 Tabellen aus 73
+  anderer Mitglieder exportiert. Das Inventar deckt alle 170 Tabellen aus 74
   Migrationen ab. MFA wird nur als sicherer Status-, Zeit- und Policy-Kontext
   ohne Secret-, Hash- oder Replay-Material exportiert. KI-Unterhaltungen werden
   mit ihrer unveraenderlich gebundenen
@@ -308,7 +308,9 @@ Kontrollen:
   delegierbaren Scope `automations:write` und API-Idempotenz.
 - n8n-Ziele durchlaufen dieselbe DNS-gepinnte SSRF-Pruefung und durable,
   HMAC-signierte Retry-Queue wie andere Webhooks. Intercom Identity-Secrets
-  bleiben verschluesselt; der Browser erhaelt nur den nutzergebundenen HMAC.
+  bleiben verschluesselt und werden vom Webhook-Keyring mitrotiert. Ohne
+  entschluesselbares Secret und gueltigen nutzergebundenen HMAC werden weder
+  Intercom-Launcher noch Browser-SDK ausgeliefert.
 
 Restrisiken: Die drei Provideradapter und das Intercom-/n8n-Verhalten muessen
 mit realen Konten, den dort aktivierten Signaturversionen und Sandbox-/Staging-

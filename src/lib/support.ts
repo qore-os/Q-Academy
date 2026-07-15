@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { organizationSupportSettings, type User } from "@/db/schema";
 import { decryptWebhookSecret } from "@/lib/api/crypto";
+import { logServerError } from "@/lib/server-error-logging";
 
 export type SupportLauncherConfiguration =
   | { provider: "link"; label: string; url: string }
@@ -13,7 +14,7 @@ export type SupportLauncherConfiguration =
       provider: "intercom";
       label: string;
       appId: string;
-      userHash: string | null;
+      userHash: string;
       userId: string;
       email: string;
       name: string;
@@ -58,21 +59,31 @@ export async function getSupportLauncherConfiguration(
       email: settings.supportEmail,
     };
   }
-  if (settings.provider === "intercom" && settings.intercomAppId) {
-    let userHash: string | null = null;
-    if (settings.identitySecretEncrypted) {
+  if (
+    settings.provider === "intercom" &&
+    settings.intercomAppId &&
+    settings.identitySecretEncrypted
+  ) {
+    try {
       const secret = decryptWebhookSecret(settings.identitySecretEncrypted);
-      userHash = createHmac("sha256", secret).update(user.id).digest("hex");
+      const userHash = createHmac("sha256", secret)
+        .update(user.id)
+        .digest("hex");
+      return {
+        provider: "intercom",
+        label: settings.launcherLabel,
+        appId: settings.intercomAppId,
+        userHash,
+        userId: user.id,
+        email: user.email,
+        name: `${user.firstName} ${user.lastName}`.trim(),
+      };
+    } catch (error) {
+      logServerError(error, {
+        action: "support.launcher.identity_verification",
+      });
+      return null;
     }
-    return {
-      provider: "intercom",
-      label: settings.launcherLabel,
-      appId: settings.intercomAppId,
-      userHash,
-      userId: user.id,
-      email: user.email,
-      name: `${user.firstName} ${user.lastName}`.trim(),
-    };
   }
   return null;
 }

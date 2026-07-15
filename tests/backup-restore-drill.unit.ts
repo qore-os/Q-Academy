@@ -34,6 +34,10 @@ const documentation = readFileSync(
   path.join(root, "docs", "ROOTSERVER_DEPLOYMENT.md"),
   "utf8",
 );
+const drillLauncher = readFileSync(
+  path.join(root, "scripts", "run-postgres-backup-restore-drill.ts"),
+  "utf8",
+);
 
 test("backup/restore drill is isolated and exercises the production role contract", () => {
   assert.equal(
@@ -79,6 +83,16 @@ test("backup/restore drill is isolated and exercises the production role contrac
   assert.match(drill, /ALLOW_UNVERIFIED_BACKUP=false/);
   assert.match(documentation, /npm run test:backup-restore-drill/);
   assert.match(documentation, /npm run test:backup-restore-drill:required/);
+});
+
+test("backup/restore prerequisite probes use only fixed process names", () => {
+  assert.doesNotMatch(drillLauncher, /spawnSync\(command/);
+  assert.match(drillLauncher, /spawnSync\("bash", \["--version"\]/);
+  assert.match(
+    drillLauncher,
+    /spawnSync\("docker", \["compose", "version"\]/,
+  );
+  assert.match(drillLauncher, /spawnSync\("docker", \["info"\]/);
 });
 
 test("side-by-side restore skips only the in-place media and runtime gates", () => {
@@ -184,7 +198,10 @@ test("required backup/restore drill gates release publication with pinned images
     ciWorkflow,
     /run: npm run test:backup-restore-drill:required/,
   );
-  assert.match(ciWorkflow, /needs: \[verify, backup-restore-drill\]/);
+  assert.match(
+    ciWorkflow,
+    /needs: \[verify, backup-restore-drill, sast\]/,
+  );
   assert.ok(
     ciWorkflow.indexOf("  backup-restore-drill:") <
       ciWorkflow.indexOf("  publish-release:"),

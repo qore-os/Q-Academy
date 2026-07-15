@@ -1078,9 +1078,10 @@ Host und das Textfile-Verzeichnis; sein Port wird nicht am Host publiziert.
 ## Verschluesselungsschluessel rotieren
 
 Die App schreibt Mail-Outbox- und Idempotenz-Nutzlasten als AES-256-GCM-v2 mit
-`kid`; Webhook-Secrets verwenden dasselbe versionierte Prinzip in einem
-kompakten Format. V1-Daten ohne `kid` bleiben waehrend der Rotation ueber den
-begrenzten Leseschluesselring entschluesselbar. Der Operations-Container besitzt
+`kid`; Webhook- und Intercom-Identity-Secrets verwenden dasselbe versionierte
+Prinzip in einem kompakten Format. V1-Daten ohne `kid` bleiben waehrend der
+Rotation ueber den begrenzten Leseschluesselring entschluesselbar. Der
+Operations-Container besitzt
 nur App-Datenbankrechte und die beiden Verschluesselungs-Keyrings, aber keine
 Session-, Cron-, Mail-, KI- oder S3-Secrets.
 
@@ -1114,7 +1115,9 @@ Session-, Cron-, Mail-, KI- oder S3-Secrets.
    `remaining`-Zaehler null sein. Der Prozess nutzt eine globale Advisory-Lock,
    `FOR UPDATE SKIP LOCKED` und gibt weder Klartext noch Schluessel aus.
    `mfaTotpSecrets: 0` ist zwingend, weil derselbe Daten-Keyring auch die
-   tenant-/nutzergebundenen TOTP-Secrets schuetzt.
+   tenant-/nutzergebundenen TOTP-Secrets schuetzt. Ebenso muss
+   `supportIdentitySecrets: 0` gelten, bevor ein alter Webhook-Leseschluessel
+   entfernt wird.
 
    Recovery-Code-Hashes verwenden einen getrennten Pepper-Keyring. Bei einem
    Wechsel kommt die bisherige ID samt Secret zuerst in

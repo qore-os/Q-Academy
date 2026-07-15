@@ -592,7 +592,51 @@ try {
     ) returning id
   `;
 
+  const preIntercomIdentityJournal = {
+    ...journal,
+    entries: journal.entries.filter((entry) => entry.idx < 73),
+  };
+  writeFileSync(
+    path.join(stagedMigrationFolder, "meta", "_journal.json"),
+    JSON.stringify(preIntercomIdentityJournal),
+  );
+  for (const entry of preIntercomIdentityJournal.entries) {
+    copyFileSync(
+      path.join(migrationFolder, `${entry.tag}.sql`),
+      path.join(stagedMigrationFolder, `${entry.tag}.sql`),
+    );
+  }
+  await migrate(drizzle(testClient), {
+    migrationsFolder: stagedMigrationFolder,
+  });
+  await testClient`
+    insert into organization_support_settings (
+      organization_id, enabled, provider, launcher_label, intercom_app_id,
+      identity_secret_encrypted
+    ) values (
+      ${legacyLearningOrganization.id}, true, 'intercom', 'Legacy support',
+      'legacy-app', null
+    )
+  `;
+
   await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+
+  const [normalizedIntercomSupport] = await testClient<
+    [{ enabled: boolean; identitySecretEncrypted: string | null }]
+  >`
+    select enabled,
+           identity_secret_encrypted as "identitySecretEncrypted"
+    from organization_support_settings
+    where organization_id = ${legacyLearningOrganization.id}
+  `;
+  if (
+    normalizedIntercomSupport.enabled ||
+    normalizedIntercomSupport.identitySecretEncrypted !== null
+  ) {
+    throw new Error(
+      "Migration 0073 did not disable an active Intercom channel without an identity secret.",
+    );
+  }
 
   const [normalizedPrivacyClaim] = await testClient<
     [

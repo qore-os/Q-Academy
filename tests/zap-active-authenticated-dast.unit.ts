@@ -204,6 +204,11 @@ test("host runner validates roles, proves logout, force-cleans, and never transp
   assert.match(runner, /anonymous\.status !== 401/);
   assert.match(runner, /"authentication_required"/);
   assert.match(runner, /finally \{[\s\S]*docker[\s\S]*rm[\s\S]*--force/);
+  assert.doesNotMatch(runner, /spawn\(command|runIgnored\(/);
+  assert.match(
+    runner,
+    /spawn\("docker", args, \{ stdio: "ignore", shell: false \}\)/,
+  );
   assert.match(runner, /validateScannerEvidence/);
   assert.match(runner, /credentials\.password/);
   assert.doesNotMatch(runner, /--env-file|PASSWORD=|EMAIL=|stdio: "inherit"|shell: true/);

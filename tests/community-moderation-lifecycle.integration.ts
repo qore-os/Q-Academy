@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import { and, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -28,10 +28,34 @@ import {
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
+const cleanupDatabaseUrl = new URL(
+  process.env.POSTGRES_ADMIN_URL ?? databaseUrl,
+);
+cleanupDatabaseUrl.pathname = new URL(databaseUrl).pathname;
 const client = postgres(databaseUrl, { max: 4, prepare: false });
+const cleanupClient = postgres(cleanupDatabaseUrl.toString(), {
+  max: 1,
+  prepare: false,
+});
 const database = drizzle(client, { schema });
 const lifecycle = createCommunityModerationLifecycle({
   getSecret: () => "community-lifecycle-integration-secret-32-bytes",
+});
+
+after(async () => {
+  const results = await Promise.allSettled([
+    client.end({ timeout: 5 }),
+    cleanupClient.end({ timeout: 5 }),
+  ]);
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      "Failed to close moderation test clients.",
+    );
+  }
 });
 
 function isApiError(code: string, status: number) {
@@ -784,31 +808,31 @@ test("community moderation lifecycle is transactional, versioned and non-destruc
     );
   } finally {
     if (organizationId) {
-      await client.begin(async (sqlClient) => {
+      await cleanupClient.begin(async (sqlClient) => {
         await sqlClient`set local session_replication_role = 'replica'`;
         await sqlClient`
           delete from community_moderation_events
           where organization_id = ${organizationId}
         `;
+        await sqlClient`set local session_replication_role = 'origin'`;
+        await sqlClient`
+          delete from community_moderation_assessments
+          where organization_id = ${organizationId}
+        `;
+        await sqlClient`
+          delete from community_moderation_appeals
+          where organization_id = ${organizationId}
+        `;
+        await sqlClient`
+          delete from community_reports
+          where organization_id = ${organizationId}
+        `;
+        await sqlClient`
+          delete from community_moderation_cases
+          where organization_id = ${organizationId}
+        `;
+        await sqlClient`delete from organizations where id = ${organizationId}`;
       });
-      await client`
-        delete from community_moderation_assessments
-        where organization_id = ${organizationId}
-      `;
-      await client`
-        delete from community_moderation_appeals
-        where organization_id = ${organizationId}
-      `;
-      await client`
-        delete from community_reports
-        where organization_id = ${organizationId}
-      `;
-      await client`
-        delete from community_moderation_cases
-        where organization_id = ${organizationId}
-      `;
-      await client`delete from organizations where id = ${organizationId}`;
     }
-    await client.end();
   }
 });

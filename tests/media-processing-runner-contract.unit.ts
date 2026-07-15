@@ -65,6 +65,17 @@ test("standalone processing preflight loads server-only modules under the server
   );
 });
 
+test("media provider keeps its deployment-controlled process boundary shell-free", () => {
+  const provider = source("src/lib/media/processing-provider.ts");
+  assert.match(
+    provider,
+    /input\.executable, \/\/ nosemgrep: javascript\.lang\.security\.detect-child-process\.detect-child-process/,
+  );
+  assert.match(provider, /shell: false/);
+  assert.match(provider, /stdio: \["ignore"/);
+  assert.doesNotMatch(provider, /shell: true|\bexec(?:Sync)?\(/);
+});
+
 test("video edits are validated, rendered deterministically and addressed by job", () => {
   const worker = source("src/lib/media/processing-worker.ts");
   const processingRoute = source(

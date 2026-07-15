@@ -51,6 +51,16 @@ test("agent preview output removes protected content, UUIDs and internal paths",
   assert.match(output, /interner Pfad entfernt/i);
 });
 
+test("agent preview treats protected regex metacharacters as literal text", () => {
+  const protectedContent = "Private [rubric] requires A+B? (never A*B).";
+  const output = sanitizeAiAgentDraftPreviewOutput(
+    `Summary: ${protectedContent}`,
+    [protectedContent],
+  );
+  assert.doesNotMatch(output, /Private \[rubric\]|A\+B|A\*B/);
+  assert.match(output, /geschuetzter Inhalt/i);
+});
+
 test("agent preview redaction fails closed before processing oversized values", () => {
   assert.equal(
     sanitizeAiAgentDraftPreviewOutput("Antwort", ["x".repeat(1_000_000)]),

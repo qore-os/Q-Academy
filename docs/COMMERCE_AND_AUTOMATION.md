@@ -99,11 +99,19 @@ Der tenantweite Supportlauncher unterstuetzt HTTPS-Link, E-Mail und Intercom.
 Bei Intercom wird die Nutzer-ID serverseitig per HMAC-SHA256 signiert; das
 Identity-Secret wird verschluesselt gespeichert und nie an Admin- oder REST-
 Antworten ausgegeben. App-ID, Nutzer-ID, Name, E-Mail und `user_hash` werden nur
-fuer einen aktiv konfigurierten Intercom-Kanal an das Widget uebergeben.
+fuer einen aktiv konfigurierten Intercom-Kanal an das Widget uebergeben. Fehlt
+das Identity-Secret oder kann es mit dem aktuellen Webhook-Keyring nicht
+authentifiziert entschluesselt werden, bleibt der Launcher samt Browser-SDK
+vollstaendig deaktiviert. Die Datenbankinvariante verlangt das verschluesselte
+Secret ebenfalls fuer jeden aktiven Intercom-Kanal.
 Der UI-Preflight verwendet den effektiven Launcherpfad fuer den angemeldeten
 Operator und akzeptiert Intercom nur mit einem entschluesselbaren Secret sowie
 dem daraus erzeugten 64-stelligen Identity-HMAC. Link und E-Mail werden anhand
 der effektiv ausgelieferten Konfiguration geprueft.
+
+Intercom-Identity-Secrets sind Teil der transaktionalen Webhook-Keyring-
+Rotation. Ein alter Webhook-Leseschluessel darf erst entfernt werden, wenn der
+Zaehler `supportIdentitySecrets` nach dem Rekey null ist.
 
 Das Intercom-SDK wird bei aktivierter Tenant-Konfiguration automatisch im
 Browser geladen; es ist kein Click-to-load-Widget. Provider-Cookies,

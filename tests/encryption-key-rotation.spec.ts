@@ -137,6 +137,7 @@ test("encryption rotation rekeys legacy rows online and is idempotent", async ({
   const responseText = JSON.stringify({ marker: `response-${suffix}` });
   const emailText = JSON.stringify({ link: `https://academy.test/${suffix}` });
   const webhookText = `hook-${suffix}`;
+  const supportIdentityText = `intercom-identity-${suffix}`;
   const oidcText = `oidc-client-secret-${suffix}`;
   const mfaText = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
   const oidcUpdatedAt = new Date("2020-03-04T05:06:07.000Z");
@@ -258,6 +259,15 @@ test("encryption rotation rekeys legacy rows online and is idempotent", async ({
           array['course.published']::text[], ${identity.user_id}
         )
       `;
+      await transaction`
+        insert into organization_support_settings (
+          organization_id, enabled, provider, launcher_label,
+          intercom_app_id, identity_secret_encrypted
+        ) values (
+          ${identity.organization_id}, true, 'intercom', 'Support',
+          'rotation-app', ${legacyCompact(supportIdentityText, webhookLegacySecret)}
+        )
+      `;
     });
 
     const cli = path.join(
@@ -297,6 +307,7 @@ test("encryption rotation rekeys legacy rows online and is idempotent", async ({
         idempotencyResponses: 1,
         oidcClientSecrets: 1,
         mfaTotpSecrets: 1,
+        supportIdentitySecrets: 1,
         webhookSecrets: 1,
       },
       remaining: {
@@ -304,28 +315,34 @@ test("encryption rotation rekeys legacy rows online and is idempotent", async ({
         idempotencyResponses: 0,
         oidcClientSecrets: 0,
         mfaTotpSecrets: 0,
+        supportIdentitySecrets: 0,
         webhookSecrets: 0,
       },
       verified: true,
     });
     expect(first.stdout).not.toContain(dataLegacySecret);
     expect(first.stdout).not.toContain(responseText);
+    expect(first.stdout).not.toContain(supportIdentityText);
 
     const [stored] = await sql<
       Array<{
         email_payload: unknown;
         response_body: unknown;
         signing_secret_encrypted: string;
+        identity_secret_encrypted: string;
         email_updated_at: Date | string;
       }>
     >`
       select e.payload as email_payload,
              e.updated_at as email_updated_at,
              i.response_body,
-             w.signing_secret_encrypted
+             w.signing_secret_encrypted,
+             s.identity_secret_encrypted
       from email_deliveries e
       join api_idempotency_keys i on i.id = ${idempotencyId}
       join webhooks w on w.id = ${webhookId}
+      join organization_support_settings s
+        on s.organization_id = ${identity.organization_id}
       where e.id = ${emailId}
     `;
     const dataRing = createEncryptionKeyring({
@@ -356,6 +373,12 @@ test("encryption rotation rekeys legacy rows online and is idempotent", async ({
         webhookRing,
       ),
     ).toBe(webhookText);
+    expect(
+      decryptCompactValueWithKeyring(
+        stored!.identity_secret_encrypted,
+        webhookRing,
+      ),
+    ).toBe(supportIdentityText);
     expect(timestampIso(stored!.email_updated_at)).toBe(
       emailUpdatedAt.toISOString(),
     );
@@ -401,6 +424,7 @@ test("encryption rotation rekeys legacy rows online and is idempotent", async ({
       idempotencyResponses: 0,
       oidcClientSecrets: 0,
       mfaTotpSecrets: 0,
+      supportIdentitySecrets: 0,
       webhookSecrets: 0,
     });
   } finally {

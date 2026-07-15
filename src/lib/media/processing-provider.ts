@@ -105,11 +105,17 @@ export async function runBoundedMediaCommand(input: {
       Math.max(input.captureStdoutBytes ?? 0, 0),
       64 * 1_024,
     );
-    const child = spawn(input.executable, [...input.arguments], {
-      shell: false,
-      windowsHide: true,
-      stdio: ["ignore", stdoutLimit ? "pipe" : "ignore", "pipe"],
-    });
+    // The executable is deployment-controlled; request values remain argv
+    // entries and are never interpreted by a shell.
+    const child = spawn(
+      input.executable, // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+      [...input.arguments],
+      {
+        shell: false,
+        windowsHide: true,
+        stdio: ["ignore", stdoutLimit ? "pipe" : "ignore", "pipe"],
+      },
+    );
     let errorOutput = Buffer.alloc(0);
     let stdout = Buffer.alloc(0);
     child.stdout?.on("data", (chunk: Buffer) => {

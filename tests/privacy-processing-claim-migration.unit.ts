@@ -99,10 +99,10 @@ test("0069 remains immutable while later migrations append to the journal", () =
     breakpoints: true,
   });
   assert.deepEqual(journal.entries.at(-1), {
-    idx: 72,
+    idx: 73,
     version: "7",
-    when: 1784015730415,
-    tag: "0072_orbit_billing_price_versions",
+    when: 1784090513409,
+    tag: "0073_intercom_identity_fail_closed",
     breakpoints: true,
   });
 });

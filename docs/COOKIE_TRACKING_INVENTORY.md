@@ -23,7 +23,7 @@ duerfen nicht als produktiver Cookie-Vertrag dokumentiert werden.
 
 | Integration | Ziel | Ladezeitpunkt | Technische Behandlung | Rechtlicher Status |
 | --- | --- | --- | --- | --- |
-| Intercom | `widget.intercom.io`, `api-iam.intercom.io` | automatisch, sobald der Tenant Intercom aktiviert hat | Browser-SDK erhaelt App-ID, Nutzer-ID, E-Mail, Name und optionalen nutzergebundenen HMAC; Provider-Cookies und -Speicher sind nicht durch Q-Academy steuerbar | offen |
+| Intercom | `widget.intercom.io`, `api-iam.intercom.io` | automatisch, sobald der Tenant Intercom mit entschluesselbarem Identity-Secret aktiviert hat | Browser-SDK erhaelt App-ID, Nutzer-ID, E-Mail, Name und den verpflichtenden nutzergebundenen HMAC; ohne gueltigen HMAC werden weder Launcher noch SDK geladen; Provider-Cookies und -Speicher sind nicht durch Q-Academy steuerbar | offen |
 | YouTube | `www.youtube-nocookie.com` | Click-to-load | Iframe entsteht erst nach explizitem Klick | offen |
 | Vimeo | `player.vimeo.com` | Click-to-load | Iframe entsteht erst nach explizitem Klick | offen |
 | Loom | `www.loom.com` | Click-to-load | Iframe entsteht erst nach explizitem Klick | offen |
@@ -86,4 +86,3 @@ Vor Pilotbetrieb bleiben mindestens diese Entscheidungen offen:
   oder ein Consent-Management-System benoetigt
 - Freigabe von Datenschutzhinweisen, AVV/TOMs und Unterauftragnehmerliste durch
   Legal und Datenschutzverantwortliche
-

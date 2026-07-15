@@ -29,15 +29,30 @@ import {
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
+const cleanupDatabaseUrl = new URL(
+  process.env.POSTGRES_ADMIN_URL ?? databaseUrl,
+);
+cleanupDatabaseUrl.pathname = new URL(databaseUrl).pathname;
 const sql = postgres(databaseUrl, { max: 4, prepare: false });
 const blocker = postgres(databaseUrl, { max: 1, prepare: false });
+const cleanupSql = postgres(cleanupDatabaseUrl.toString(), {
+  max: 1,
+  prepare: false,
+});
 
 after(async () => {
-  await Promise.all([
+  const results = await Promise.allSettled([
     sql.end({ timeout: 5 }),
     blocker.end({ timeout: 5 }),
+    cleanupSql.end({ timeout: 5 }),
     postgresClient.end({ timeout: 5 }),
   ]);
+  const failures = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Failed to close privacy test clients.");
+  }
 });
 
 before(async () => {
@@ -73,7 +88,7 @@ async function createTenant(label: string) {
 }
 
 async function removeFixtureOrganizations(organizationIds: string[]) {
-  await sql.begin(async (tx) => {
+  await cleanupSql.begin(async (tx) => {
     await tx.unsafe("set local session_replication_role = replica");
     await tx`
       delete from privacy_request_events

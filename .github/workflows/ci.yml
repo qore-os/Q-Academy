@@ -168,7 +168,7 @@ jobs:
         run: npm run test:unit
 
       - name: Run PostgreSQL integration tests
-        run: npm run test:integration
+        run: timeout --signal=TERM --kill-after=10s 30m npm run test:integration
 
       - name: Check OpenAPI contract
         run: npm run api:check-contract
@@ -752,10 +752,14 @@ jobs:
       - name: Run required production backup/restore drill
         run: npm run test:backup-restore-drill:required
 
+  sast:
+    name: Required SAST release gate
+    uses: ./.github/workflows/sast.yml
+
   publish-release:
     name: Publish immutable release images
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    needs: [verify, backup-restore-drill]
+    needs: [verify, backup-restore-drill, sast]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -777,9 +781,12 @@ jobs:
 
       - name: Authenticate to GitHub Container Registry
         shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USERNAME: ${{ github.actor }}
         run: |
-          printf '%s' "${{ github.token }}" \
-            | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          printf '%s' "$GHCR_TOKEN" \
+            | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
 
       - name: Publish the exact tested image IDs
         shell: bash
