@@ -41,6 +41,7 @@ test("production login renders without development-only access", async ({
 }) => {
   const response = await page.goto("/login", { waitUntil: "networkidle" });
   expect(response?.status()).toBeLessThan(400);
+  expect(response?.headers()["x-powered-by"]).toBeUndefined();
 
   await expect(page.getByRole("main")).toBeVisible();
   await expect(page.locator('input[name="email"]')).toBeEnabled();
@@ -48,6 +49,28 @@ test("production login renders without development-only access", async ({
   await expect(page.locator('input[name="password"]')).toBeEnabled();
   await expect(page.locator('input[name="password"]')).toHaveValue("");
   await expect(page.getByRole("button", { name: /testen|demo/i })).toHaveCount(0);
+});
+
+test("unauthenticated root redirect has no body or session", async ({
+  request,
+}) => {
+  const response = await request.get("/", { maxRedirects: 0 });
+  expect(response.status()).toBe(307);
+  expect(response.headers().location).toBe("/login");
+  expect(response.headers()["x-powered-by"]).toBeUndefined();
+  expect(response.headers()["cache-control"]).toBe(
+    "private, no-store, max-age=0, must-revalidate",
+  );
+  expect(
+    (response.headers().vary ?? "")
+      .split(",")
+      .map((value) => value.trim().toLowerCase()),
+  ).toContain("cookie");
+  expect(response.headers()["set-cookie"] ?? "").not.toContain(
+    "q_academy_session",
+  );
+
+  expect(await response.text()).toBe("");
 });
 
 test("seed owner can sign in with a real password and render admin", async ({
@@ -60,6 +83,57 @@ test("seed member can sign in with a real password and render academy", async ({
   page,
 }) => {
   await passwordLogin(page, memberEmail, "/academy");
+});
+
+test("login Server Action rejects a foreign Origin before creating a session", async ({
+  context,
+  page,
+}) => {
+  const response = await page.goto("/login", { waitUntil: "domcontentloaded" });
+  expect(response?.status()).toBeLessThan(400);
+
+  await page.locator('input[name="email"]').fill(adminEmail);
+  await page.locator('input[name="password"]').fill(password);
+  const loginForm = page
+    .locator('input[name="password"]')
+    .locator("xpath=ancestor::form");
+  await expect(loginForm.locator('button[type="submit"]')).toBeEnabled();
+
+  let interceptedActionRequests = 0;
+  await page.route("**/login", async (route) => {
+    const request = route.request();
+    if (request.method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    interceptedActionRequests += 1;
+    await route.continue({
+      headers: {
+        ...request.headers(),
+        origin: "https://foreign-origin.example",
+        "sec-fetch-site": "cross-site",
+      },
+    });
+  });
+
+  const actionResponsePromise = page.waitForResponse(
+    (candidate) =>
+      candidate.request().method() === "POST" &&
+      new URL(candidate.url()).pathname === "/login",
+  );
+  await loginForm.locator('button[type="submit"]').click();
+  const actionResponse = await actionResponsePromise;
+
+  expect(interceptedActionRequests).toBe(1);
+  expect(actionResponse.status()).toBe(500);
+  expect(actionResponse.headers()["set-cookie"] ?? "").not.toContain(
+    "q_academy_session",
+  );
+  expect(
+    (await context.cookies()).some((cookie) =>
+      cookie.name.endsWith("q_academy_session"),
+    ),
+  ).toBe(false);
 });
 
 test("ready health exposes the exact release version", async ({ request }) => {

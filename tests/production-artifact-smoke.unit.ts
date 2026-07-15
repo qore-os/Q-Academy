@@ -64,6 +64,15 @@ test("production artifact smoke covers login, both central routes, health, and A
   assert.match(smoke, /input\[name="password"\]/);
   assert.match(smoke, /passwordLogin\(page, adminEmail, "\/admin"\)/);
   assert.match(smoke, /passwordLogin\(page, memberEmail, "\/academy"\)/);
+  assert.match(smoke, /request\.get\("\/", \{ maxRedirects: 0 \}\)/);
+  assert.match(smoke, /expect\(response\.headers\(\)\.location\)\.toBe\("\/login"\)/);
+  assert.match(smoke, /expect\(await response\.text\(\)\)\.toBe\(""\)/);
+  assert.match(smoke, /private, no-store, max-age=0, must-revalidate/);
+  assert.match(smoke, /toContain\("cookie"\)/);
+  assert.match(smoke, /headers\(\)\["x-powered-by"\]/);
+  assert.match(smoke, /origin: "https:\/\/foreign-origin\.example"/);
+  assert.match(smoke, /expect\(actionResponse\.status\(\)\)\.toBe\(500\)/);
+  assert.match(smoke, /cookie\.name\.endsWith\("q_academy_session"\)/);
   assert.match(smoke, /\/api\/v1\/health\/ready/);
   assert.match(smoke, /version: expectedRelease/);
   assert.match(smoke, /\/api\/v1\/courses\?limit=1/);

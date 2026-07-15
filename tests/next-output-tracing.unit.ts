@@ -8,3 +8,7 @@ test("runtime data is excluded from every Next.js server trace", () => {
     "/*": [".data/**/*"],
   });
 });
+
+test("production responses do not disclose the Next.js framework header", () => {
+  assert.equal(nextConfig.poweredByHeader, false);
+});

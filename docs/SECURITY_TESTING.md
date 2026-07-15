@@ -50,8 +50,45 @@ scanner.
 information-disclosure, mixed-content, vulnerable-library, and application-error
 alerts to `FAIL`. Unlisted alerts retain ZAP's `WARN` default. The runner does not
 use `-I`, so both new warnings and configured failures block CI; scanner startup,
-timeout, connectivity, and report errors also return a failing status. Only a
-small set of deterministic informational rules is explicitly demoted to `INFO`.
+timeout, connectivity, and report errors also return a failing status.
+
+ZAP can configure only a whole rule family, while CSP rule `10055` contains
+separate sub-alerts. Rules `10055` and `10202` are therefore marked `INFO` only
+at the scanner layer and passed to
+`scripts/ci/validate-zap-baseline.ts`. That validator pins the exact ZAP version,
+origin, alert references, routes, methods, counts, evidence, and request details.
+Its independently pinned CSP literal is not derived from the application's CSP
+builder. It accepts only the exact login Server Action form, CSP `10055-4`, and
+style-only `10055-6`. Script `unsafe-inline`, `unsafe-eval`, a changed CSP, an
+extra form field, an unknown sub-alert, malformed JSON, or a second target remains
+a hard failure. Exit codes from the scanner, validator, and both evidence writers
+are preserved separately; none can mask another.
+
+The scanner exceptions are narrowly bounded, but the underlying CSP network
+sources are not host-bounded: the browser may load images, media and frames from
+any HTTPS origin and connect to any HTTPS/WSS origin. This is a deliberate
+residual risk, not a false positive. The application currently needs those
+scheme sources for remote media, direct object-storage transfers, integrations,
+configurable Hub embeds, and sandboxed tenant custom code. Those `srcdoc` frames
+inherit the parent CSP, so replacing the scheme sources with a static global host
+list would disable reviewed product functions. The validator compares every
+reported policy byte-for-byte after replacing only the random nonce. Removing
+this exposure requires a separately designed same-origin media/network proxy or
+a centrally enforced origin allowlist plus existing-data migration. The style
+exception covers the documented runtime stylesheet/UI-style contract; the
+production script policy still requires a nonce and `strict-dynamic` and forbids
+inline script attributes.
+
+The login form is a Next.js Server Action. Next.js compares `Origin` with
+`Host`/`X-Forwarded-Host` before executing an action; Q-Academy configures no
+cross-origin exceptions. The exact production-image browser smoke rewrites a
+real login action to a foreign Origin and requires HTTP 500 with no session
+cookie. This is the counter-test for ZAP `10202`, which looks only for a hidden
+token. Anonymous `GET /` requests are redirected in Proxy before page rendering;
+unit and exact-production smoke tests require status 307, `Location: /login`, no
+session cookie, an empty response body, `private, no-store` caching, and
+`Vary: Cookie`. ZAP `10044` is not demoted and remains a normal blocking finding
+if that contract regresses.
 
 The container runs read-only without Linux capabilities or new privileges, with
 CPU, memory, process, and writable-tmpfs limits. Its only writable bind mount is

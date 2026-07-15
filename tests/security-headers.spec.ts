@@ -5,6 +5,19 @@ test("pages and APIs expose the global browser security policy", async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Header contract runs once");
 
+  for (const path of [
+    "/",
+    "/login",
+    "/password/forgot",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/api/v1/health/live",
+  ]) {
+    const response = await request.get(path, { maxRedirects: 0 });
+    expect(response.status(), path).toBeLessThan(400);
+    expect(response.headers()["x-powered-by"], path).toBeUndefined();
+  }
+
   for (const path of ["/login", "/api/v1/health/live"]) {
     const response = await request.get(path);
     expect(response.ok(), path).toBe(true);

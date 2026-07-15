@@ -66,8 +66,57 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
   assert.match(runner, /-c zap-baseline\.conf/);
   assert.match(runner, /-T 5/);
   assert.match(runner, /-z "-silent -dir \/tmp\/\.ZAP"/);
-  assert.match(runner, /PIPESTATUS\[0\]/);
-  assert.match(runner, /exit "\$scan_status"/);
+  assert.match(runner, /scan_pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)/);
+  assert.match(runner, /policy_pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)/);
+  assert.match(
+    runner,
+    /"\$tsx_cli" "\$policy_validator" "\$report_file"[\s\\]*2>&1 \| tee "\$output_dir\/policy-validation\.txt"/,
+  );
+  assert.match(
+    runner,
+    /scan_status="\$\{scan_pipeline_status\[0\]\}"/,
+  );
+  assert.match(
+    runner,
+    /scan_evidence_status="\$\{scan_pipeline_status\[1\]\}"/,
+  );
+  assert.match(
+    runner,
+    /policy_status="\$\{policy_pipeline_status\[0\]\}"/,
+  );
+  assert.match(
+    runner,
+    /policy_evidence_status="\$\{policy_pipeline_status\[1\]\}"/,
+  );
+  assert.match(
+    runner,
+    /printf '%s\\n' "\$scan_status" >"\$output_dir\/scanner-exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
+    /printf '%s\\n' "\$scan_evidence_status" >"\$output_dir\/scanner-evidence-exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
+    /printf '%s\\n' "\$policy_status" >"\$output_dir\/policy-exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
+    /printf '%s\\n' "\$policy_evidence_status" >"\$output_dir\/policy-evidence-exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
+    /printf '%s\\n' "\$final_status" >"\$output_dir\/exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
+    /if \(\( scan_status != 0 \)\); then\s+final_status="\$scan_status"\s+elif \(\( scan_evidence_status != 0 \)\); then\s+final_status="\$scan_evidence_status"\s+elif \(\( policy_status != 0 \)\); then\s+final_status="\$policy_status"\s+elif \(\( policy_evidence_status != 0 \)\); then\s+final_status="\$policy_evidence_status"/,
+  );
+  assert.match(runner, /exit "\$final_status"/);
+
+  const scannerRun = runner.indexOf("docker run --rm");
+  const policyRun = runner.indexOf('"$tsx_cli" "$policy_validator" "$report_file"');
+  assert.ok(scannerRun >= 0 && policyRun > scannerRun);
 
   assert.doesNotMatch(runner, /^\s*-(?:I|i|a|j)(?:\s|$)/m);
   assert.doesNotMatch(runner, /zap-(?:full|api)-scan\.py/);
@@ -82,6 +131,11 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
     "zap-report.md",
     "zap-baseline.log",
     "run-metadata.txt",
+    "scanner-exit-code.txt",
+    "scanner-evidence-exit-code.txt",
+    "policy-exit-code.txt",
+    "policy-evidence-exit-code.txt",
+    "policy-validation.txt",
     "exit-code.txt",
   ]) {
     assert.ok(runner.includes(report), `Missing ZAP evidence: ${report}`);
@@ -102,7 +156,7 @@ test("ZAP context is valid XML and cannot crawl outside the disposable origin", 
   assert.doesNotMatch(context, /https?:\/\/(?!academy\\\.ci\\\.q-academy\\\.de:3000)/);
 });
 
-test("ZAP rule policy fails security findings and only demotes known information", () => {
+test("ZAP rule policy fails security findings and delegates only exact exceptions", () => {
   const policy = source("deploy/security/zap-baseline.conf");
   const rows = policy
     .split(/\r?\n/)
@@ -130,7 +184,6 @@ test("ZAP rule policy fails security findings and only demotes known information
     "10035",
     "10040",
     "10054",
-    "10055",
     "10063",
     "10098",
     "10110",
@@ -139,6 +192,22 @@ test("ZAP rule policy fails security findings and only demotes known information
   ]) {
     assert.ok(failures.has(ruleId), `Rule ${ruleId} must fail CI`);
   }
+
+  const informational = new Set(
+    rows
+      .filter((row) => row.includes("\tINFO\t"))
+      .map((row) => row.split("\t", 1)[0]),
+  );
+  for (const validatorReviewedRuleId of ["10055", "10202"]) {
+    assert.ok(
+      informational.has(validatorReviewedRuleId),
+      `Rule ${validatorReviewedRuleId} must be delegated to the JSON validator`,
+    );
+  }
+
+  const runner = source("scripts/ops/run-zap-baseline.sh");
+  assert.ok(runner.includes("scripts/ci/validate-zap-baseline.ts"));
+  assert.doesNotMatch(runner, /^\s*-(?:I|i)(?:\s|$)/m);
 });
 
 test("security documentation records DAST limits and immutable invocation", () => {

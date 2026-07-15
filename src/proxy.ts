@@ -5,6 +5,11 @@ import {
   createContentSecurityPolicyNonce,
 } from "@/lib/content-security-policy";
 
+const SESSION_COOKIE_NAMES = [
+  "q_academy_session",
+  "__Host-q_academy_session",
+] as const;
+
 function isSecureRequest(request: NextRequest) {
   const forwardedProtocol = request.headers
     .get("x-forwarded-proto")
@@ -12,6 +17,15 @@ function isSecureRequest(request: NextRequest) {
     ?.trim()
     .toLowerCase();
   return forwardedProtocol === "https" || request.nextUrl.protocol === "https:";
+}
+
+function hasPotentialSession(request: NextRequest) {
+  return SESSION_COOKIE_NAMES.some((name) => request.cookies.has(name));
+}
+
+function applyDocumentPolicy(response: NextResponse, policy: string) {
+  response.headers.set("Content-Security-Policy", policy);
+  return response;
 }
 
 export function proxy(request: NextRequest) {
@@ -25,9 +39,26 @@ export function proxy(request: NextRequest) {
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", contentSecurityPolicy);
 
+  if (
+    request.method === "GET" &&
+    request.nextUrl.pathname === "/" &&
+    !hasPotentialSession(request)
+  ) {
+    return applyDocumentPolicy(
+      new NextResponse(null, {
+        status: 307,
+        headers: {
+          Location: "/login",
+          "Cache-Control": "private, no-store, max-age=0, must-revalidate",
+          Vary: "Cookie",
+        },
+      }),
+      contentSecurityPolicy,
+    );
+  }
+
   const response = NextResponse.next({ request: { headers: requestHeaders } });
-  response.headers.set("Content-Security-Policy", contentSecurityPolicy);
-  return response;
+  return applyDocumentPolicy(response, contentSecurityPolicy);
 }
 
 export const config = {
