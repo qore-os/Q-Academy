@@ -4,6 +4,7 @@
   "description": "Private Zapier integration for the Q-Academy automation API.",
   "private": true,
   "type": "module",
+  "packageManager": "npm@10.9.8",
   "exports": "./dist/index.js",
   "engines": {
     "node": ">=22 <23"

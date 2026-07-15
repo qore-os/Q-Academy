@@ -39,7 +39,7 @@ ENV NODE_ENV=production
 COPY --from=dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --chown=nextjs:nodejs package.json ./package.json
 COPY --chown=nextjs:nodejs scripts/migrate.ts scripts/load-environment.ts ./scripts/
-COPY --chown=nextjs:nodejs src/lib/database-encoding.ts src/lib/encryption-keyring.ts src/lib/server-environment-validation.ts src/lib/operational-cleanup-policy.ts ./src/lib/
+COPY --chown=nextjs:nodejs src/lib/branding-host-policy.ts src/lib/database-encoding.ts src/lib/encryption-keyring.ts src/lib/migration-history-validation.ts src/lib/server-environment-validation.ts src/lib/operational-cleanup-policy.ts ./src/lib/
 COPY --chown=nextjs:nodejs src/lib/media/storage-configuration.ts ./src/lib/media/
 COPY --chown=nextjs:nodejs src/lib/push/configuration.ts ./src/lib/push/
 COPY --chown=nextjs:nodejs drizzle ./drizzle

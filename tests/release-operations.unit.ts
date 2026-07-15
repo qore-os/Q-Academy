@@ -44,6 +44,21 @@ const publishReleaseImages = readFileSync(
   "utf8",
 );
 const continuousIntegration = readFileSync(".github/workflows/ci.yml", "utf8");
+const packageManifest = JSON.parse(readFileSync("package.json", "utf8")) as {
+  packageManager?: string;
+};
+const zapierPackageManifest = JSON.parse(
+  readFileSync("integrations/automation-connectors/zapier/package.json", "utf8"),
+) as { packageManager?: string };
+
+test("CI and connector lockfiles share one pinned Node and npm toolchain", () => {
+  assert.equal(packageManifest.packageManager, "npm@10.9.8");
+  assert.equal(zapierPackageManifest.packageManager, "npm@10.9.8");
+  assert.equal(
+    continuousIntegration.match(/node-version: 22\.23\.1/g)?.length,
+    2,
+  );
+});
 
 test("release deployment is locked, backed up, immutable, and readiness-gated", () => {
   assert.match(deploy, /set -euo pipefail/);
@@ -443,16 +458,23 @@ test("release state and upstream image references fail closed", () => {
 });
 
 test("production migration and release verification images contain their runtime inputs", () => {
-  assert.match(dockerfile, /^FROM base AS migrator$/m);
+  const migratorStage = /^FROM base AS migrator\r?\n[\s\S]*?(?=^FROM )/m.exec(
+    dockerfile,
+  )?.[0];
+  assert.ok(migratorStage, "Missing production migrator stage");
   for (const path of [
+    "scripts/migrate.ts",
+    "scripts/load-environment.ts",
+    "src/lib/branding-host-policy.ts",
     "src/lib/database-encoding.ts",
     "src/lib/encryption-keyring.ts",
+    "src/lib/migration-history-validation.ts",
     "src/lib/server-environment-validation.ts",
     "src/lib/operational-cleanup-policy.ts",
     "src/lib/media/storage-configuration.ts",
     "src/lib/push/configuration.ts",
   ]) {
-    assert.match(dockerfile, new RegExp(path.replaceAll("/", "\\/")));
+    assert.match(migratorStage, new RegExp(path.replaceAll("/", "\\/")));
   }
   assert.match(dockerfile, /^FROM dependencies AS release-verifier$/m);
   assert.match(dockerfile, /^FROM dependencies AS media-preflight$/m);
