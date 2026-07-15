@@ -155,7 +155,7 @@ func main() {
 	}
 
 	arguments := append([]string{"/usr/bin/caddy"}, os.Args[1:]...)
-	if err := syscall.Exec(arguments[0], arguments, os.Environ()); err != nil {
+	if err := syscall.Exec("/usr/bin/caddy", arguments, os.Environ()); err != nil {
 		fail("the Caddy process could not be started")
 	}
 }
