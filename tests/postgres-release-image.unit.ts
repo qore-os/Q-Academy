@@ -103,6 +103,10 @@ test("CI smoke-tests and packages PostgreSQL with all release components", () =>
   );
   assert.match(continuousIntegration, /pg_isready --username=postgres/);
   assert.match(continuousIntegration, /select current_user, 6 \* 7/);
+  assert.match(
+    continuousIntegration,
+    /cat \/proc\/1\/comm[\s\S]*"postgres"[\s\S]*pg_isready[\s\S]*select current_user, 6 \* 7[\s\S]*postgres_image_ready=true/,
+  );
   const ciReleaseComponentLists = continuousIntegration.match(
     /image_components=\([^)]*\bpostgres\b[^)]*\)/g,
   );

@@ -380,9 +380,18 @@ jobs:
             "$postgres_image" >/dev/null
           postgres_image_ready=false
           for attempt in $(seq 1 90); do
-            if docker exec "$postgres_smoke_container" \
-              pg_isready --username=postgres --dbname=q_academy_image_smoke \
-              >/dev/null 2>&1; then
+            # pg_isready also accepts the temporary bootstrap server. Require
+            # the entrypoint to have exec'd the final PID 1 and prove a query
+            # before treating the immutable image as ready.
+            if [[ "$(docker exec "$postgres_smoke_container" \
+                cat /proc/1/comm 2>/dev/null || true)" == "postgres" ]] &&
+              docker exec "$postgres_smoke_container" \
+                pg_isready --username=postgres --dbname=q_academy_image_smoke \
+                >/dev/null 2>&1 &&
+              test "$(docker exec "$postgres_smoke_container" \
+                psql --username=postgres --dbname=q_academy_image_smoke \
+                  --tuples-only --no-align --command='select current_user, 6 * 7' \
+                  2>/dev/null)" = 'postgres|42'; then
               postgres_image_ready=true
               break
             fi
@@ -391,10 +400,6 @@ jobs:
           test "$postgres_image_ready" = true
           test "$(docker exec "$postgres_smoke_container" \
             awk '/^Uid:/ { print $2; exit }' /proc/1/status)" = 70
-          test "$(docker exec "$postgres_smoke_container" \
-            psql --username=postgres --dbname=q_academy_image_smoke \
-              --tuples-only --no-align --command='select current_user, 6 * 7')" \
-            = 'postgres|42'
           docker rm --force "$postgres_smoke_container" >/dev/null
           trap - EXIT
 
