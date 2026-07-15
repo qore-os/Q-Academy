@@ -134,10 +134,31 @@ test("unknown key IDs and modified ciphertext fail closed", () => {
       ),
     /unavailable key/,
   );
+  const modifiedCiphertext = Buffer.from(encrypted.ciphertext, "base64url");
+  modifiedCiphertext[0] = modifiedCiphertext[0]! ^ 0x01;
   assert.throws(
     () =>
       decryptPayloadWithKeyring(
-        { ...encrypted, ciphertext: `${encrypted.ciphertext.slice(0, -1)}A` },
+        { ...encrypted, ciphertext: modifiedCiphertext.toString("base64url") },
+        "row:7",
+        keyring,
+      ),
+    /authentication failed/,
+  );
+
+  const base64urlAlphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const tagSuffixIndex = base64urlAlphabet.indexOf(encrypted.tag.at(-1)!);
+  assert.equal(tagSuffixIndex % 16, 0);
+  const nonCanonicalTag = `${encrypted.tag.slice(0, -1)}${base64urlAlphabet[tagSuffixIndex + 1]}`;
+  assert.deepEqual(
+    Buffer.from(nonCanonicalTag, "base64url"),
+    Buffer.from(encrypted.tag, "base64url"),
+  );
+  assert.throws(
+    () =>
+      decryptPayloadWithKeyring(
+        { ...encrypted, tag: nonCanonicalTag },
         "row:7",
         keyring,
       ),

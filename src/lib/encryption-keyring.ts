@@ -157,6 +157,9 @@ function decodePart(value: string, expectedBytes: number | null) {
     throw new Error("Invalid encrypted value encoding.");
   }
   const decoded = Buffer.from(value, "base64url");
+  if (decoded.toString("base64url") !== value) {
+    throw new Error("Encrypted value encoding is not canonical.");
+  }
   if (expectedBytes !== null && decoded.length !== expectedBytes) {
     throw new Error("Invalid encrypted value length.");
   }
