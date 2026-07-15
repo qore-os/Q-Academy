@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    service: q-academy
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: q-academy-app
+    metrics_path: /api/internal/metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/app_metrics_token
+    static_configs:
+      - targets: ["app:3000"]
+        labels:
+          runtime: app
+
+  - job_name: q-academy-media-runner
+    metrics_path: /api/internal/metrics
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/media_metrics_token
+    static_configs:
+      - targets: ["media-runner:3000"]
+        labels:
+          runtime: media-worker
+
+  - job_name: q-academy-node
+    static_configs:
+      - targets: ["node-exporter:9100"]

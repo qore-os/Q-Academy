@@ -1,0 +1,175 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+function source(path: string) {
+  return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+}
+
+test("production Playwright smoke is isolated from every development server", () => {
+  const productionConfig = source("playwright.production-smoke.config.ts");
+  const developmentConfig = source("playwright.config.ts");
+
+  assert.match(
+    productionConfig,
+    /PLAYWRIGHT_PRODUCTION_BASE_URL[\s\S]*protocol !== "https:"/,
+  );
+  assert.match(
+    productionConfig,
+    /testMatch: \/production-artifact-smoke\\\.spec\\\.ts\//,
+  );
+  assert.match(productionConfig, /ignoreHTTPSErrors: true/);
+  assert.match(productionConfig, /Desktop Chrome/);
+  assert.match(
+    productionConfig,
+    /--host-resolver-rules=MAP \$\{productionOrigin\.hostname\} 127\.0\.0\.1/,
+  );
+  assert.doesNotMatch(productionConfig, /webServer|npm run dev/);
+  assert.match(
+    developmentConfig,
+    /testIgnore:[\s\S]*production-artifact-smoke\\\.spec\\\.ts/,
+  );
+});
+
+test("development Playwright suites require a ready app and a clean CI server", () => {
+  for (const configPath of [
+    "playwright.config.ts",
+    "playwright.cross-browser.config.ts",
+  ]) {
+    const config = source(configPath);
+    assert.match(
+      config,
+      /url: "http:\/\/127\.0\.0\.1:3000\/api\/v1\/health\/ready"/,
+    );
+    assert.match(config, /reuseExistingServer: !process\.env\.CI/);
+    assert.doesNotMatch(config, /reuseExistingServer: true/);
+  }
+});
+
+test("production artifact smoke covers login, both central routes, health, and API auth", () => {
+  const smoke = source("tests/production-artifact-smoke.spec.ts");
+
+  for (const environmentName of [
+    "PLAYWRIGHT_EXPECTED_RELEASE",
+    "PLAYWRIGHT_ADMIN_EMAIL",
+    "PLAYWRIGHT_MEMBER_EMAIL",
+    "PLAYWRIGHT_SEED_PASSWORD",
+    "PLAYWRIGHT_API_KEY",
+  ]) {
+    assert.ok(smoke.includes(environmentName));
+  }
+
+  assert.match(smoke, /page\.goto\("\/login"/);
+  assert.match(smoke, /input\[name="email"\]/);
+  assert.match(smoke, /input\[name="password"\]/);
+  assert.match(smoke, /passwordLogin\(page, adminEmail, "\/admin"\)/);
+  assert.match(smoke, /passwordLogin\(page, memberEmail, "\/academy"\)/);
+  assert.match(smoke, /\/api\/v1\/health\/ready/);
+  assert.match(smoke, /version: expectedRelease/);
+  assert.match(smoke, /\/api\/v1\/courses\?limit=1/);
+  assert.match(smoke, /expect\(anonymous\.status\(\)\)\.toBe\(401\)/);
+  assert.match(smoke, /Authorization: `Bearer \$\{apiKey\}`/);
+  assert.match(smoke, /expect\(authenticated\.status\(\)\)\.toBe\(200\)/);
+});
+
+test("CI smoke runs against the exact app image before the media worker replaces it", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const appReady = workflow.indexOf('if [[ "$app_ready" != true ]]');
+  const browserInstall = workflow.indexOf(
+    "- name: Install production smoke browser",
+  );
+  const smokeStart = workflow.indexOf(
+    "- name: Smoke-test exact production app image",
+  );
+  const mediaStart = workflow.indexOf(
+    "- name: Smoke-test production media worker",
+  );
+
+  assert.ok(
+    appReady >= 0 &&
+      browserInstall > appReady &&
+      smokeStart > browserInstall &&
+      mediaStart > smokeStart,
+  );
+
+  const installStep = workflow.slice(browserInstall, smokeStart);
+  assert.match(
+    installStep,
+    /npx playwright install --with-deps chromium/,
+  );
+
+  const smokeStep = workflow.slice(smokeStart, mediaStart);
+  assert.match(
+    smokeStep,
+    /PLAYWRIGHT_PRODUCTION_BASE_URL: https:\/\/academy\.ci\.q-academy\.de:3443/,
+  );
+  assert.match(
+    smokeStep,
+    /docker image inspect --format '\{\{\.Id\}\}' "\$image_reference"/,
+  );
+  assert.match(
+    smokeStep,
+    /docker inspect --format '\{\{\.Image\}\}' q-academy-ci-runtime/,
+  );
+  assert.match(
+    smokeStep,
+    /"\$running_image_id" != "\$expected_image_id"/,
+  );
+  assert.match(
+    smokeStep,
+    /"\$tagged_image_id" != "\$expected_image_id" \|\| "\$running_image_id" != "\$expected_image_id"/,
+  );
+  assert.match(
+    smokeStep,
+    /npx playwright test[\s\\]+--config=playwright\.production-smoke\.config\.ts/,
+  );
+  assert.doesNotMatch(smokeStep, /npm run dev|docker run[^\n]+q-academy-app/);
+
+  const mediaStep = workflow.slice(mediaStart);
+  assert.match(mediaStep, /docker rm --force q-academy-ci-runtime/);
+});
+
+test("CI provides canonical TLS and a non-development seeded API key", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const seed = source("scripts/seed.ts");
+  const proxy = source("scripts/ci/production-smoke-tls-proxy.mjs");
+  const keyMatch = workflow.match(/^\s+DEMO_API_KEY:\s*(\S+)\s*$/m);
+
+  assert.ok(keyMatch);
+  assert.notEqual(keyMatch[1], "qak_demo_qacademy_2026_local_development");
+  assert.match(keyMatch[1], /^qak_[A-Za-z0-9_]{24,}$/);
+  assert.match(seed, /process\.env\.DEMO_API_KEY/);
+
+  assert.match(
+    workflow,
+    /RUNTIME_APP_URL: https:\/\/academy\.ci\.q-academy\.de:3443/,
+  );
+  assert.match(workflow, /openssl req -x509 -newkey rsa:2048/);
+  assert.match(
+    workflow,
+    /127\.0\.0\.1 academy\.ci\.q-academy\.de\\n'[\s\\]+\| sudo tee -a \/etc\/hosts/,
+  );
+  assert.match(
+    workflow,
+    /PRODUCTION_SMOKE_UPSTREAM_ORIGIN=http:\/\/127\.0\.0\.1:3000/,
+  );
+  assert.match(workflow, /PRODUCTION_SMOKE_LISTEN_HOST=127\.0\.0\.1/);
+  assert.match(workflow, /PLAYWRIGHT_API_KEY: \$\{\{ env\.DEMO_API_KEY \}\}/);
+
+  assert.match(proxy, /createServer\(/);
+  assert.match(proxy, /createUpstreamRequest/);
+  assert.match(proxy, /"x-forwarded-host": publicOrigin\.host/);
+  assert.match(proxy, /"x-forwarded-proto": "https"/);
+  assert.match(proxy, /request\.pipe\(upstreamRequest\)/);
+});
+
+test("later browser suites reuse Chromium and install only remaining engines", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const installStart = workflow.indexOf("- name: Install browser engines");
+  const suiteStart = workflow.indexOf("- name: Run Playwright suite");
+
+  assert.ok(installStart >= 0 && suiteStart > installStart);
+  const installStep = workflow.slice(installStart, suiteStart);
+  assert.match(installStep, /playwright install --with-deps firefox webkit/);
+  assert.doesNotMatch(installStep, /chromium/);
+});

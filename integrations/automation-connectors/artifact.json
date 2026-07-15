@@ -1,0 +1,10 @@
+{
+  "$schema": "./artifact.schema.json",
+  "artifactVersion": "1.0.0",
+  "contract": "contract.v1.json",
+  "apiVersion": "v1",
+  "packages": {
+    "zapier": "zapier/package.json",
+    "make": "make/makecomapp.json"
+  }
+}

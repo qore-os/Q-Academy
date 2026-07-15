@@ -1,0 +1,82 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+
+	on_demand_tls {
+		ask http://127.0.0.1:9080/api/internal/caddy/tls-ask
+	}
+}
+
+(app_backend) {
+	encode zstd gzip
+
+	request_body {
+		max_size 16MB
+	}
+
+	header {
+		-Server
+	}
+
+	log {
+		output stdout
+		format filter {
+			request>uri regexp [?].*$ ""
+			wrap json
+		}
+	}
+
+	@internal_jobs path /api/internal/*
+	respond @internal_jobs 404
+
+	reverse_proxy app:3000 {
+		health_uri /api/v1/health/ready
+		health_interval 15s
+		health_timeout 5s
+		fail_duration 30s
+		flush_interval -1
+
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 60s
+			keepalive 30s
+		}
+	}
+}
+
+{$CADDY_SITE_ADDRESSES} {
+	import app_backend
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+
+	import app_backend
+}
+
+http://127.0.0.1:9080 {
+	bind 127.0.0.1
+
+	handle /api/internal/caddy/tls-ask {
+		reverse_proxy tls-ask-app:3000 {
+			header_up Host tls-ask-app
+			header_up Authorization "Bearer {$CADDY_TLS_ASK_SECRET}"
+			header_up -Cookie
+
+			transport http {
+				dial_timeout 1s
+				response_header_timeout 2s
+			}
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

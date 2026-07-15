@@ -1,0 +1,16 @@
+{
+  "url": "/api/v1/automation/members/upsert",
+  "method": "POST",
+  "headers": {
+    "idempotency-key": "{{parameters.idempotencyKey}}"
+  },
+  "body": {
+    "email": "{{parameters.email}}",
+    "bundleId": "{{parameters.bundleId}}",
+    "bundleAction": "revoke",
+    "sendInvitation": false
+  },
+  "response": {
+    "output": "{{body.data}}"
+  }
+}

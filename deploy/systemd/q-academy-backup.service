@@ -1,0 +1,35 @@
+[Unit]
+Description=Q-Academy verified PostgreSQL backup
+Documentation=file:/opt/q-academy/docs/ROOTSERVER_DEPLOYMENT.md
+Wants=docker.service
+After=docker.service
+ConditionPathExists=/opt/q-academy/scripts/ops/postgres-backup.sh
+ConditionFileNotEmpty=/etc/q-academy/production.env
+RequiresMountsFor=/opt/q-academy /var/backups/q-academy /var/lib/q-academy-observability
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/q-academy
+Environment=Q_ACADEMY_ENV_FILE=/etc/q-academy/production.env
+Environment=BACKUP_DIR=/var/backups/q-academy
+Environment=BACKUP_RETENTION_DAYS=30
+Environment=BACKUP_VERIFY_RESTORE=true
+Environment=BACKUP_METRICS_FILE=/var/lib/q-academy-observability/q-academy-backup.prom
+ExecStart=/opt/q-academy/scripts/ops/postgres-backup.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=6h
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/backups/q-academy /var/lib/q-academy-observability /var/lock
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true

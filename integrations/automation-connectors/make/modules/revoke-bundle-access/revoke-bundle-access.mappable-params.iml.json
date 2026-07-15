@@ -1,0 +1,19 @@
+[
+  { "name": "email", "type": "email", "label": "Email", "required": true },
+  {
+    "name": "bundleId",
+    "type": "select",
+    "label": "Bundle to revoke",
+    "required": true,
+    "options": "rpc://listBundles",
+    "mappable": true
+  },
+  {
+    "name": "idempotencyKey",
+    "type": "text",
+    "label": "Idempotency key",
+    "help": "Required stable 8-180 character key. Reuse it only when retrying the same request.",
+    "required": true,
+    "validate": { "min": 8, "max": 180 }
+  }
+]

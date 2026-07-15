@@ -1,0 +1,20 @@
+{
+  "url": "{{parameters.baseUrl}}/api/v1/automation/connector-status",
+  "method": "GET",
+  "headers": {
+    "authorization": "Bearer {{parameters.apiKey}}"
+  },
+  "response": {
+    "valid": "{{body.data.connected && statusCode === 200}}",
+    "error": {
+      "message": "[{{statusCode}}] {{ifempty(body.detail, body.title)}}"
+    },
+    "metadata": {
+      "type": "text",
+      "value": "{{body.data.apiKeyName}} @ {{parameters.baseUrl}}"
+    }
+  },
+  "log": {
+    "sanitize": ["request.headers.authorization"]
+  }
+}

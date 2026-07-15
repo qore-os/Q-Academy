@@ -1,0 +1,17 @@
+{
+  "url": "/api/v1/bundles",
+  "method": "GET",
+  "qs": {
+    "active": "true",
+    "limit": 100,
+    "sort": "name:asc"
+  },
+  "response": {
+    "iterate": "{{body.data}}",
+    "output": {
+      "label": "{{item.name}}",
+      "value": "{{item.id}}"
+    },
+    "limit": 100
+  }
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "name": "baseUrl",
+    "label": "Academy URL",
+    "type": "url",
+    "required": true,
+    "editable": true,
+    "help": "Credential-free HTTPS origin without a trailing path.",
+    "validate": {
+      "pattern": "^https://[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$"
+    }
+  },
+  {
+    "name": "apiKey",
+    "label": "API key",
+    "type": "password",
+    "required": true,
+    "editable": true,
+    "help": "Dedicated key with automations:write and bundles:read scopes."
+  }
+]

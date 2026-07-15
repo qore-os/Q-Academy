@@ -1,0 +1,9 @@
+[
+  { "name": "id", "type": "uuid", "label": "Member ID" },
+  { "name": "email", "type": "email", "label": "Email" },
+  { "name": "status", "type": "text", "label": "Member status" },
+  { "name": "created", "type": "boolean", "label": "Created" },
+  { "name": "bundleId", "type": "uuid", "label": "Bundle ID" },
+  { "name": "bundleAction", "type": "text", "label": "Bundle action" },
+  { "name": "bundleAccessChanged", "type": "boolean", "label": "Bundle access changed" }
+]

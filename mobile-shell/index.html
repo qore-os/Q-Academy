@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <title>Q-Academy</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f8fb;
+        color: #16202a;
+      }
+      body {
+        min-height: 100vh;
+        min-height: 100dvh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right)
+          env(safe-area-inset-bottom) env(safe-area-inset-left);
+        background: #f6f8fb;
+      }
+      main {
+        display: grid;
+        justify-items: center;
+        gap: 18px;
+      }
+      .mark {
+        width: 58px;
+        height: 58px;
+        display: grid;
+        place-items: center;
+        border-radius: 8px;
+        background: #145c68;
+        color: white;
+        font-size: 28px;
+        font-weight: 750;
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0;
+      }
+      p {
+        max-width: 280px;
+        margin: 0;
+        color: #53606c;
+        font-size: 14px;
+        line-height: 1.5;
+        text-align: center;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root,
+        body {
+          background: #101417;
+          color: #f4f7f8;
+        }
+        p {
+          color: #aeb9bf;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">Q</div>
+      <h1>Q-Academy</h1>
+      <p>Die sichere Verbindung zur Academy ist noch nicht konfiguriert.</p>
+    </main>
+  </body>
+</html>

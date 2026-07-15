@@ -1,0 +1,82 @@
+{
+  "$schema": "./contract.schema.json",
+  "contractVersion": "1.0.0",
+  "apiVersion": "v1",
+  "authentication": {
+    "type": "bearer-api-key",
+    "baseUrlPolicy": "credential-free-https-origin",
+    "requiredScopes": [
+      "automations:write",
+      "bundles:read"
+    ]
+  },
+  "connectionTest": {
+    "method": "GET",
+    "path": "/api/v1/automation/connector-status",
+    "query": {},
+    "outputField": "connected"
+  },
+  "bundleOptions": {
+    "method": "GET",
+    "path": "/api/v1/bundles",
+    "query": {
+      "active": "true",
+      "limit": "100",
+      "sort": "name:asc"
+    },
+    "valueField": "id",
+    "labelField": "name"
+  },
+  "actions": {
+    "upsertMember": {
+      "method": "POST",
+      "path": "/api/v1/automation/members/upsert",
+      "idempotencyHeader": "Idempotency-Key",
+      "successStatuses": [200, 201],
+      "fixedInputs": {
+        "bundleAction": "grant"
+      },
+      "inputs": {
+        "email": { "type": "email", "required": true },
+        "idempotencyKey": { "type": "string", "required": true, "minLength": 8, "maxLength": 180 },
+        "firstName": { "type": "string", "required": false, "default": "Mitglied" },
+        "lastName": { "type": "string", "required": false, "default": "" },
+        "bundleId": { "type": "uuid", "required": false, "nullable": true },
+        "sendInvitation": { "type": "boolean", "required": false, "default": true }
+      },
+      "outputs": [
+        "id",
+        "email",
+        "status",
+        "created",
+        "bundleId",
+        "bundleAction",
+        "bundleAccessChanged"
+      ]
+    },
+    "revokeBundleAccess": {
+      "method": "POST",
+      "path": "/api/v1/automation/members/upsert",
+      "idempotencyHeader": "Idempotency-Key",
+      "successStatuses": [200],
+      "fixedInputs": {
+        "bundleAction": "revoke",
+        "sendInvitation": false
+      },
+      "inputs": {
+        "email": { "type": "email", "required": true },
+        "idempotencyKey": { "type": "string", "required": true, "minLength": 8, "maxLength": 180 },
+        "bundleId": { "type": "uuid", "required": true, "nullable": false }
+      },
+      "outputs": [
+        "id",
+        "email",
+        "status",
+        "created",
+        "bundleId",
+        "bundleAction",
+        "bundleAccessChanged"
+      ]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<configuration>
+    <context>
+        <name>q-academy-ci</name>
+        <desc>Disposable, unauthenticated Q-Academy CI application only.</desc>
+        <inscope>true</inscope>
+        <incregexes>http://academy\.ci\.q-academy\.de:3000/.*</incregexes>
+        <excregexes>http://academy\.ci\.q-academy\.de:3000/api/internal/.*</excregexes>
+        <excregexes>http://academy\.ci\.q-academy\.de:3000/auth/oidc/callback.*</excregexes>
+        <tech>
+            <include>Framework</include>
+            <include>Framework.Next.js</include>
+            <include>Framework.React</include>
+            <include>Language</include>
+            <include>Language.JavaScript</include>
+        </tech>
+        <urlparser>
+            <class>org.zaproxy.zap.model.StandardParameterParser</class>
+            <config>{"kvps":"&amp;","kvs":"=","struct":[]}</config>
+        </urlparser>
+        <postparser>
+            <class>org.zaproxy.zap.model.StandardParameterParser</class>
+            <config>{"kvps":"&amp;","kvs":"=","struct":[]}</config>
+        </postparser>
+        <authentication>
+            <type>0</type>
+            <strategy>EACH_RESP</strategy>
+            <pollurl/>
+            <polldata/>
+            <pollfreq>60</pollfreq>
+            <pollunits>REQUESTS</pollunits>
+        </authentication>
+        <forceduser>-1</forceduser>
+        <session>
+            <type>0</type>
+        </session>
+    </context>
+</configuration>

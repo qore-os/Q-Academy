@@ -1,0 +1,201 @@
+groups:
+  - name: q-academy-runtime
+    rules:
+      - alert: QAcademyMetricsTargetDown
+        expr: up{job=~"q-academy-app|q-academy-media-runner"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy metrics target is unavailable"
+          description: "Prometheus cannot scrape {{ $labels.job }}."
+
+      - alert: QAcademyRuntimeNotReady
+        expr: q_academy_runtime_ready == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy runtime is not ready"
+          description: "Runtime {{ $labels.runtime }} cannot validate its database or schema."
+
+      - alert: QAcademyRuntimeRestarted
+        expr: time() - q_academy_runtime_start_time_seconds < 300
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy runtime restarted"
+          description: "Runtime {{ $labels.runtime }} started less than five minutes ago."
+
+  - name: q-academy-workers
+    rules:
+      - alert: QAcademySchedulerHeartbeatStale
+        expr: time() - q_academy_worker_last_success_timestamp_seconds{worker="scheduler"} > 180
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Scheduler heartbeat is stale"
+          description: "No successful scheduler dispatch has been observed within 180 seconds."
+
+      - alert: QAcademyMediaScanHeartbeatStale
+        expr: time() - q_academy_worker_last_success_timestamp_seconds{worker="media-scan"} > 1500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Media scan heartbeat is stale"
+          description: "No successful media scan dispatch has been observed within 1500 seconds."
+
+      - alert: QAcademyMediaMaintenanceHeartbeatStale
+        expr: time() - q_academy_worker_last_success_timestamp_seconds{worker="media-maintenance"} > 700
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Media maintenance heartbeat is stale"
+          description: "No successful media maintenance dispatch has been observed within 700 seconds."
+
+  - name: q-academy-service-levels
+    rules:
+      - alert: QAcademyApiErrorRateHigh
+        expr: q_academy_api_requests_5m >= 20 and (q_academy_api_errors_5m / q_academy_api_requests_5m) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy API error rate is high"
+          description: "More than five percent of authenticated API requests failed with 5xx responses."
+
+      - alert: QAcademyApiLatencyHigh
+        expr: q_academy_api_requests_5m >= 20 and q_academy_api_duration_p95_ms_5m > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy API latency is high"
+          description: "Authenticated API P95 latency has exceeded one second for ten minutes."
+
+      - alert: QAcademyDatabaseConnectionsHigh
+        expr: q_academy_database_connections > 40
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy database connection count is high"
+          description: "PostgreSQL connection usage requires capacity review."
+
+      - alert: QAcademyLoginFailuresHigh
+        expr: q_academy_auth_failed_attempts_active > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy login failures are elevated"
+          description: "Active failed-login buckets contain more than one hundred attempts."
+
+      - alert: QAcademyAiLatencyHigh
+        expr: q_academy_ai_messages_5m >= 5 and q_academy_ai_latency_p95_ms_5m > 15000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy AI latency is high"
+          description: "AI provider P95 latency has exceeded fifteen seconds for ten minutes."
+
+  - name: q-academy-clamav
+    rules:
+      - alert: QAcademyClamAvSignatureMetricsMissing
+        expr: absent(q_academy_clamav_signature_current)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ClamAV signature metrics are missing"
+          description: "The media runtime does not expose the fail-closed ClamAV signature-age gate."
+
+      - alert: QAcademyClamAvUpdaterStalled
+        expr: q_academy_clamav_signature_age_seconds > 108000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ClamAV signature updater appears stalled"
+          description: "The newest daily signature database is older than 30 hours."
+
+      - alert: QAcademyClamAvSignaturesStale
+        expr: q_academy_clamav_signature_current == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ClamAV signatures failed the age gate"
+          description: "Media scanning must remain fail closed until current daily signatures are available."
+
+  - name: q-academy-queues
+    rules:
+      - alert: QAcademyQueueBacklogHigh
+        expr: q_academy_queue_depth{queue=~"email|webhook|push|native_push"} > 500 or q_academy_queue_depth{queue="exam_deadline"} > 100 or q_academy_queue_depth{queue="media_scan"} > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy queue backlog is high"
+          description: "Queue {{ $labels.queue }} has a sustained depth of {{ $value }}."
+
+      - alert: QAcademyQueueOldestJobStale
+        expr: q_academy_queue_oldest_age_seconds{queue=~"email|webhook|push|native_push"} > 900 or q_academy_queue_oldest_age_seconds{queue="exam_deadline"} > 120 or q_academy_queue_oldest_age_seconds{queue="media_scan"} > 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy queue contains stale work"
+          description: "The oldest item in queue {{ $labels.queue }} is {{ $value }} seconds old."
+
+      - alert: QAcademyQueueHasFailedJobs
+        expr: q_academy_queue_failed > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Q-Academy queue has failed jobs"
+          description: "Queue {{ $labels.queue }} contains {{ $value }} failed jobs."
+
+  - name: q-academy-backups
+    rules:
+      - alert: QAcademyBackupMetricsMissing
+        expr: absent(q_academy_backup_last_success_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy backup metrics are missing"
+          description: "Node Exporter has not exposed a successful backup timestamp."
+
+      - alert: QAcademyBackupStale
+        expr: time() - q_academy_backup_last_success_timestamp_seconds > 108000
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy backup is stale"
+          description: "The latest successful PostgreSQL backup is older than 30 hours."
+
+      - alert: QAcademyBackupUnverified
+        expr: q_academy_backup_last_verified_timestamp_seconds == 0 or time() - q_academy_backup_last_verified_timestamp_seconds > 108000
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy backup restore verification is stale"
+          description: "No recent restore-verified PostgreSQL backup is available."
+
+      - alert: QAcademyBackupLastRunFailed
+        expr: q_academy_backup_last_run_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Q-Academy backup failed"
+          description: "The most recent PostgreSQL backup run did not complete successfully."

@@ -1,0 +1,405 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-07-14",
+  "scope": [
+    "src",
+    "public/sw.js",
+    "package.json"
+  ],
+  "firstPartyCookies": [
+    {
+      "id": "session",
+      "name": {
+        "production": "__Host-q_academy_session",
+        "nonProduction": "q_academy_session"
+      },
+      "sources": [
+        "src/lib/auth.ts"
+      ],
+      "writeSites": [
+        {
+          "source": "src/lib/auth.ts",
+          "operation": "set",
+          "nameExpression": "sessionCookieName()",
+          "occurrences": 1
+        },
+        {
+          "source": "src/lib/auth.ts",
+          "operation": "delete",
+          "nameExpression": "sessionCookieName()",
+          "occurrences": 1
+        }
+      ],
+      "purpose": "Authentifizierte Browser-Sitzung mit serverseitiger Widerrufs- und Provenienzpruefung.",
+      "lifetime": {
+        "cookie": "7 Tage nach Passwort-Login; 12 Stunden nach OIDC-Login",
+        "serverEnforcement": "OIDC-Sitzungen werden zusaetzlich nach 1 Stunde Inaktivitaet ungueltig. Widerruf, Rollen-, MFA- oder Provider-Aenderungen koennen frueher beenden."
+      },
+      "sameSite": "Lax",
+      "secure": "production-only",
+      "httpOnly": true,
+      "path": "/",
+      "domain": null,
+      "priority": "High",
+      "necessary": true,
+      "necessity": "strictly-necessary",
+      "category": "authentication"
+    },
+    {
+      "id": "mfa-login-challenge",
+      "name": {
+        "production": "__Host-q_academy_mfa_challenge",
+        "nonProduction": "q_academy_mfa_challenge"
+      },
+      "sources": [
+        "src/lib/mfa/login-challenge.ts"
+      ],
+      "writeSites": [
+        {
+          "source": "src/lib/mfa/login-challenge.ts",
+          "operation": "set",
+          "nameExpression": "cookieName()",
+          "occurrences": 1
+        },
+        {
+          "source": "src/lib/mfa/login-challenge.ts",
+          "operation": "delete",
+          "nameExpression": "cookieName()",
+          "occurrences": 2
+        }
+      ],
+      "purpose": "Bindet die kurzlebige MFA-Login- oder Enrollment-Challenge bis zum abgeschlossenen zweiten Faktor an den Browser.",
+      "lifetime": {
+        "cookie": "10 Minuten",
+        "serverEnforcement": "Verbrauch, Ablauf, Replay-Schutz oder explizites Abbrechen beendet die Challenge frueher."
+      },
+      "sameSite": "Lax",
+      "secure": "production-only",
+      "httpOnly": true,
+      "path": "/",
+      "domain": null,
+      "priority": "High",
+      "necessary": true,
+      "necessity": "strictly-necessary-when-mfa-is-used",
+      "category": "authentication-security"
+    },
+    {
+      "id": "oidc-transaction",
+      "name": {
+        "production": "__Host-q_academy_oidc_transaction",
+        "nonProduction": "q_academy_oidc_transaction"
+      },
+      "sources": [
+        "src/lib/oidc-cookie-policy.ts",
+        "src/app/api/v1/auth/oidc/start/route.ts",
+        "src/app/api/v1/auth/oidc/callback/route.ts"
+      ],
+      "writeSites": [
+        {
+          "source": "src/app/api/v1/auth/oidc/start/route.ts",
+          "operation": "set",
+          "nameExpression": "oidcTransactionCookieName()",
+          "occurrences": 1
+        },
+        {
+          "source": "src/app/api/v1/auth/oidc/callback/route.ts",
+          "operation": "set",
+          "nameExpression": "oidcTransactionCookieName()",
+          "occurrences": 1
+        }
+      ],
+      "purpose": "Bindet OIDC State, Nonce, PKCE und Callback-Kontext an den gestarteten Browser-Login und wird beim Callback geloescht.",
+      "lifetime": {
+        "cookie": "10 Minuten",
+        "serverEnforcement": "Der Callback setzt dasselbe Cookie mit Max-Age 0; kryptografischer Transaktionsablauf bleibt ebenfalls auf 10 Minuten begrenzt."
+      },
+      "sameSite": "Lax",
+      "secure": "production-only",
+      "httpOnly": true,
+      "path": "/",
+      "domain": null,
+      "priority": "High",
+      "necessary": true,
+      "necessity": "strictly-necessary-when-oidc-is-used",
+      "category": "authentication-security"
+    },
+    {
+      "id": "oidc-rate-client",
+      "name": {
+        "production": "__Host-q_academy_oidc_client",
+        "nonProduction": "q_academy_oidc_client"
+      },
+      "sources": [
+        "src/lib/oidc-cookie-policy.ts",
+        "src/app/api/v1/auth/oidc/start/route.ts"
+      ],
+      "writeSites": [
+        {
+          "source": "src/app/api/v1/auth/oidc/start/route.ts",
+          "operation": "set",
+          "nameExpression": "policy.name",
+          "occurrences": 1
+        }
+      ],
+      "purpose": "Stabile signierte Client-Kennung fuer das OIDC-Start-Ratenlimit, ohne die IP-Adresse im Browser abzulegen.",
+      "lifetime": {
+        "cookie": "15 Minuten",
+        "serverEnforcement": "Die Signatur und der persistente OIDC-Ratenlimit-Bucket werden serverseitig geprueft."
+      },
+      "sameSite": "Lax",
+      "secure": "production-only",
+      "httpOnly": true,
+      "path": "/",
+      "domain": null,
+      "priority": "High",
+      "necessary": true,
+      "necessity": "strictly-necessary-when-oidc-is-used",
+      "category": "security-rate-limit"
+    }
+  ],
+  "thirdPartyIntegrations": [
+    {
+      "id": "intercom",
+      "type": "browser-sdk",
+      "sources": [
+        "src/components/layout/support-launcher.tsx"
+      ],
+      "hosts": [
+        "api-iam.intercom.io",
+        "widget.intercom.io"
+      ],
+      "loadMode": "automatic-when-tenant-enabled",
+      "data": [
+        "Intercom App-ID",
+        "Nutzer-ID",
+        "E-Mail",
+        "Name",
+        "optionaler nutzergebundener HMAC"
+      ],
+      "cookieStorage": "Provider-kontrolliert; Cookies, Browser-Speicher, konkrete Lebensdauern und Empfaenger muessen mit realer Tenant-Konfiguration erhoben werden.",
+      "necessary": false,
+      "necessity": "optional-support",
+      "legalDecision": "open"
+    },
+    {
+      "id": "youtube",
+      "type": "course-iframe",
+      "sources": [
+        "src/lib/content-blocks/integration-catalog.ts",
+        "src/components/academy/course-integration-embed.tsx"
+      ],
+      "hosts": [
+        "www.youtube-nocookie.com"
+      ],
+      "loadMode": "click-to-load",
+      "data": [
+        "Browser-Verbindungsdaten nach explizitem Laden"
+      ],
+      "cookieStorage": "Provider-kontrolliert ab dem expliziten Laden des Iframes.",
+      "necessary": false,
+      "necessity": "optional-course-content",
+      "legalDecision": "open"
+    },
+    {
+      "id": "vimeo",
+      "type": "course-iframe",
+      "sources": [
+        "src/lib/content-blocks/integration-catalog.ts",
+        "src/components/academy/course-integration-embed.tsx"
+      ],
+      "hosts": [
+        "player.vimeo.com"
+      ],
+      "loadMode": "click-to-load",
+      "data": [
+        "Browser-Verbindungsdaten nach explizitem Laden"
+      ],
+      "cookieStorage": "Provider-kontrolliert ab dem expliziten Laden des Iframes.",
+      "necessary": false,
+      "necessity": "optional-course-content",
+      "legalDecision": "open"
+    },
+    {
+      "id": "loom",
+      "type": "course-iframe",
+      "sources": [
+        "src/lib/content-blocks/integration-catalog.ts",
+        "src/components/academy/course-integration-embed.tsx"
+      ],
+      "hosts": [
+        "www.loom.com"
+      ],
+      "loadMode": "click-to-load",
+      "data": [
+        "Browser-Verbindungsdaten nach explizitem Laden"
+      ],
+      "cookieStorage": "Provider-kontrolliert ab dem expliziten Laden des Iframes.",
+      "necessary": false,
+      "necessity": "optional-course-content",
+      "legalDecision": "open"
+    },
+    {
+      "id": "microsoft_forms",
+      "type": "course-iframe",
+      "sources": [
+        "src/lib/content-blocks/integration-catalog.ts",
+        "src/components/academy/course-integration-embed.tsx"
+      ],
+      "hosts": [
+        "forms.office.com"
+      ],
+      "loadMode": "click-to-load",
+      "data": [
+        "Browser-Verbindungsdaten und Formulareingaben nach explizitem Laden"
+      ],
+      "cookieStorage": "Provider-kontrolliert ab dem expliziten Laden des Iframes.",
+      "necessary": false,
+      "necessity": "optional-course-content",
+      "legalDecision": "open"
+    },
+    {
+      "id": "google_forms",
+      "type": "course-iframe",
+      "sources": [
+        "src/lib/content-blocks/integration-catalog.ts",
+        "src/components/academy/course-integration-embed.tsx"
+      ],
+      "hosts": [
+        "docs.google.com"
+      ],
+      "loadMode": "click-to-load",
+      "data": [
+        "Browser-Verbindungsdaten und Formulareingaben nach explizitem Laden"
+      ],
+      "cookieStorage": "Provider-kontrolliert ab dem expliziten Laden des Iframes.",
+      "necessary": false,
+      "necessity": "optional-course-content",
+      "legalDecision": "open"
+    }
+  ],
+  "configurableThirdPartySurfaces": [
+    {
+      "id": "platform-custom-code",
+      "sources": [
+        "src/lib/platform-custom-code.ts",
+        "src/components/shared/platform-custom-code-slot.tsx",
+        "src/lib/i18n/platform-custom-code.ts"
+      ],
+      "hosts": [
+        "owner-configured-https-origins"
+      ],
+      "loadMode": "automatic-when-owner-enabled",
+      "isolation": "Default aus; Owner-only; hoechstens 8 explizite HTTPS-Origins; Opaque-Origin-Iframe mit sandbox=allow-scripts, ohne allow-same-origin, Referrer oder Zugriff auf Cookies und Storage der Q-Academy-Origin.",
+      "necessary": false,
+      "necessity": "optional-owner-configured-code",
+      "legalDecision": "open"
+    }
+  ],
+  "browserStorage": [
+    {
+      "id": "remembered-accounts",
+      "technology": "localStorage",
+      "key": "q-academy:remembered-accounts:<tenant>",
+      "sources": [
+        "src/components/layout/navigation-shell.tsx"
+      ],
+      "purpose": "Kontowechsel-Anzeige mit bis zu fuenf E-Mail-Adressen auf dem jeweiligen Browser.",
+      "lifetime": "Persistent bis zum Ueberschreiben oder Loeschen der Website-Daten.",
+      "necessary": false,
+      "necessity": "functional",
+      "legalDecision": "open"
+    },
+    {
+      "id": "video-volume",
+      "technology": "localStorage",
+      "key": "q-academy:video-volume:v1",
+      "sources": [
+        "src/lib/media/video-volume-preference.ts",
+        "src/components/academy/video-transcript-player.tsx"
+      ],
+      "purpose": "Lokale Lautstaerke- und Stummschaltungs-Praeferenz.",
+      "lifetime": "Persistent bis zum Ueberschreiben oder Loeschen der Website-Daten.",
+      "necessary": false,
+      "necessity": "functional",
+      "legalDecision": "open"
+    },
+    {
+      "id": "video-playback-rate",
+      "technology": "sessionStorage",
+      "key": "q-academy:video-playback-rate:v1",
+      "sources": [
+        "src/lib/media/video-playback-rate-preference.ts",
+        "src/components/academy/video-transcript-player.tsx"
+      ],
+      "purpose": "Wiedergabegeschwindigkeit innerhalb des aktuellen Browser-Tabs.",
+      "lifetime": "Bis zum Ende der Browser-Tab-Sitzung.",
+      "necessary": false,
+      "necessity": "functional",
+      "legalDecision": "open"
+    },
+    {
+      "id": "native-start-resolved",
+      "technology": "sessionStorage",
+      "key": "q-academy:native-start:<tenant>",
+      "sources": [
+        "src/components/mobile/native-runtime-bridge.tsx"
+      ],
+      "purpose": "Verhindert doppelte initiale Deep-Link-Navigation in der nativen WebView-Sitzung.",
+      "lifetime": "Bis zum Ende der WebView-/Browser-Tab-Sitzung.",
+      "necessary": true,
+      "necessity": "strictly-necessary-in-native-runtime",
+      "legalDecision": "open"
+    },
+    {
+      "id": "pwa-public-cache",
+      "technology": "CacheStorage",
+      "key": "q-academy-public-v1",
+      "sources": [
+        "public/sw.js"
+      ],
+      "purpose": "Neutrale Offline-Seite, versionierte App-Icons und unveraenderliche Next.js-Assets.",
+      "lifetime": "Bis zum Versionswechsel des Service Workers oder Loeschen der Website-Daten.",
+      "necessary": false,
+      "necessity": "functional-offline",
+      "legalDecision": "open"
+    }
+  ],
+  "browserSdkLoaders": [
+    {
+      "id": "intercom",
+      "source": "src/components/layout/support-launcher.tsx",
+      "occurrences": 1,
+      "hosts": [
+        "widget.intercom.io"
+      ],
+      "loadMode": "automatic-when-tenant-enabled"
+    }
+  ],
+  "knownTrackerSourceMarkers": [
+    {
+      "marker": "api-iam.intercom.io",
+      "source": "src/components/layout/support-launcher.tsx",
+      "occurrences": 1,
+      "kind": "runtime-sdk"
+    },
+    {
+      "marker": "widget.intercom.io",
+      "source": "src/components/layout/support-launcher.tsx",
+      "occurrences": 1,
+      "kind": "runtime-sdk"
+    },
+    {
+      "marker": "google-analytics.com",
+      "source": "src/lib/i18n/platform-custom-code.ts",
+      "occurrences": 5,
+      "kind": "admin-placeholder-only"
+    },
+    {
+      "marker": "googletagmanager.com",
+      "source": "src/lib/i18n/platform-custom-code.ts",
+      "occurrences": 5,
+      "kind": "admin-placeholder-only"
+    }
+  ],
+  "knownTrackerDependencies": []
+}

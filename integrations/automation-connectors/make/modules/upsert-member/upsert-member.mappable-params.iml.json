@@ -1,0 +1,21 @@
+[
+  { "name": "email", "type": "email", "label": "Email", "required": true },
+  { "name": "firstName", "type": "text", "label": "First name", "default": "Mitglied", "validate": { "max": 100 } },
+  { "name": "lastName", "type": "text", "label": "Last name", "default": "", "validate": { "max": 100 } },
+  {
+    "name": "bundleId",
+    "type": "select",
+    "label": "Bundle to grant",
+    "options": "rpc://listBundles",
+    "mappable": true
+  },
+  { "name": "sendInvitation", "type": "boolean", "label": "Send invitation", "default": true },
+  {
+    "name": "idempotencyKey",
+    "type": "text",
+    "label": "Idempotency key",
+    "help": "Required stable 8-180 character key. Reuse it only when retrying the same request.",
+    "required": true,
+    "validate": { "min": 8, "max": 180 }
+  }
+]

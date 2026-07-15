@@ -1,0 +1,19 @@
+{
+  "format": "q-academy-tenant-erasure-policy-v1",
+  "organizationSlug": "acme",
+  "requestReference": "ERASURE-2030-0042",
+  "approvedBy": "privacy-owner@example.org",
+  "legalBasis": "Approved customer termination and deletion instruction after contract and legal review.",
+  "requestedAt": "2030-01-01T00:00:00.000Z",
+  "customerExportDeliveredAt": "2030-01-05T00:00:00.000Z",
+  "executeAfter": "2030-02-01T00:00:00.000Z",
+  "backupExpiresAt": "2030-03-15T00:00:00.000Z",
+  "customerExportSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "retentionDecisions": {
+    "auditEvidence": "The encrypted deletion evidence archive is retained for the approved accountability period.",
+    "backups": "Every backup generation containing tenant data expires no later than backupExpiresAt.",
+    "billing": "Required accounting evidence remains only in the approved external accounting system.",
+    "certificates": "Certificate evidence was transferred in the customer export and approved for primary deletion.",
+    "learningRecords": "Learning records were transferred in the customer export and approved for primary deletion."
+  }
+}

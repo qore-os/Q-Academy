@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://q-academy.local/schemas/automation-connector-contract.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contractVersion", "apiVersion", "authentication", "connectionTest", "bundleOptions", "actions"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "contractVersion": { "type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$" },
+    "apiVersion": { "const": "v1" },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "baseUrlPolicy", "requiredScopes"],
+      "properties": {
+        "type": { "const": "bearer-api-key" },
+        "baseUrlPolicy": { "const": "credential-free-https-origin" },
+        "requiredScopes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["automations:write", "bundles:read"] },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "connectionTest": {
+      "allOf": [
+        { "$ref": "#/$defs/request" },
+        {
+          "type": "object",
+          "required": ["outputField"],
+          "properties": { "outputField": { "const": "connected" } }
+        }
+      ]
+    },
+    "bundleOptions": {
+      "allOf": [
+        { "$ref": "#/$defs/request" },
+        {
+          "type": "object",
+          "required": ["valueField", "labelField"],
+          "properties": {
+            "valueField": { "const": "id" },
+            "labelField": { "const": "name" }
+          }
+        }
+      ]
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upsertMember", "revokeBundleAccess"],
+      "properties": {
+        "upsertMember": { "$ref": "#/$defs/action" },
+        "revokeBundleAccess": { "$ref": "#/$defs/action" }
+      }
+    }
+  },
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": ["method", "path", "query"],
+      "properties": {
+        "method": { "const": "GET" },
+        "path": {
+          "enum": [
+            "/api/v1/automation/connector-status",
+            "/api/v1/bundles"
+          ]
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "path",
+        "idempotencyHeader",
+        "successStatuses",
+        "fixedInputs",
+        "inputs",
+        "outputs"
+      ],
+      "properties": {
+        "method": { "const": "POST" },
+        "path": { "const": "/api/v1/automation/members/upsert" },
+        "idempotencyHeader": { "const": "Idempotency-Key" },
+        "successStatuses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": [200, 201] }
+        },
+        "fixedInputs": { "type": "object" },
+        "inputs": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "required"],
+            "properties": {
+              "type": { "enum": ["email", "string", "uuid", "boolean"] },
+              "required": { "type": "boolean" },
+              "default": {},
+              "nullable": { "type": "boolean" },
+              "minLength": { "type": "integer", "minimum": 1 },
+              "maxLength": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "outputs": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

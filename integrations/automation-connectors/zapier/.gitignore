@@ -1,0 +1,8 @@
+node_modules/
+.zapierapprc
+.env
+.env.*
+!.env.example
+build/
+dist/
+*.zip

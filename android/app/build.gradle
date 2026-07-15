@@ -1,0 +1,82 @@
+apply plugin: 'com.android.application'
+
+def mobileVersionCode = (project.findProperty("mobileVersionCode") ?: System.getenv("MOBILE_BUILD_NUMBER") ?: "1").toInteger()
+def mobileVersionName = project.findProperty("mobileVersionName") ?: System.getenv("MOBILE_VERSION") ?: "1.0.0"
+def mobileAppName = project.findProperty("mobileAppName") ?: System.getenv("MOBILE_APP_NAME") ?: "Q-Academy"
+def mobileAppId = project.findProperty("mobileAppId") ?: System.getenv("MOBILE_APP_BUNDLE_ID") ?: "com.qacademy.mobile"
+def academyHost = project.findProperty("academyHost") ?: System.getenv("MOBILE_ASSOCIATED_DOMAIN") ?: "academy.example.invalid"
+def academyScheme = project.findProperty("academyScheme") ?: System.getenv("MOBILE_APP_URL_SCHEME") ?: "qacademy"
+def releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+def hasReleaseSigning = releaseKeystorePath && System.getenv("ANDROID_KEY_ALIAS") && System.getenv("ANDROID_KEYSTORE_PASSWORD") && System.getenv("ANDROID_KEY_PASSWORD")
+
+android {
+    namespace = "com.qacademy.mobile"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId mobileAppId
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode mobileVersionCode
+        versionName mobileVersionName
+        manifestPlaceholders = [
+            academyAppName: mobileAppName,
+            academyHost: academyHost,
+            academyScheme: academyScheme
+        ]
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

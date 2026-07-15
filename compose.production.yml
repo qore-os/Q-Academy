@@ -1,0 +1,1190 @@
+name: ${COMPOSE_PROJECT_NAME:-q-academy}
+
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-tenant-ops-runtime: &tenant-ops-runtime
+  profiles: ["operations"]
+  image: q-academy-tenant-ops:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: tenant-ops
+    args:
+      NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+  restart: "no"
+  init: true
+  user: "1001:1001"
+  working_dir: /app
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  pids_limit: 128
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: none
+
+services:
+  release-verifier:
+    profiles: ["operations"]
+    image: q-academy-release-verifier:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: release-verifier
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+        read_only: true
+        bind:
+          create_host_path: false
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  database-config-preflight:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a digest-pinned reference}
+    restart: "no"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-q_academy}
+      POSTGRES_BOOTSTRAP_USER: ${POSTGRES_BOOTSTRAP_USER:-q_academy_bootstrap}
+      POSTGRES_BOOTSTRAP_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?Set POSTGRES_BOOTSTRAP_PASSWORD in the production env file}
+      OWNER_POSTGRES_USER: ${OWNER_POSTGRES_USER:-q_academy_owner}
+      OWNER_POSTGRES_PASSWORD: ${OWNER_POSTGRES_PASSWORD:?Set OWNER_POSTGRES_PASSWORD in the production env file}
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER:-q_academy_app}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}
+      MEDIA_POSTGRES_USER: ${MEDIA_POSTGRES_USER:-q_academy_media}
+      MEDIA_POSTGRES_PASSWORD: ${MEDIA_POSTGRES_PASSWORD:?Set MEDIA_POSTGRES_PASSWORD in the production env file}
+    command: ["/bin/sh", "/opt/q-academy/database-config-preflight.sh"]
+    configs:
+      - source: database-config-preflight
+        target: /opt/q-academy/database-config-preflight.sh
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-q_academy}
+      POSTGRES_USER: ${POSTGRES_BOOTSTRAP_USER:-q_academy_bootstrap}
+      POSTGRES_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?Set POSTGRES_BOOTSTRAP_PASSWORD in the production env file}
+      POSTGRES_INITDB_ARGS: "--data-checksums --encoding=UTF8"
+    command: ["postgres", "-c", "password_encryption=scram-sha-256"]
+    depends_on:
+      database-config-preflight:
+        condition: service_completed_successfully
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - database
+      - media-database
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready --username=$${POSTGRES_USER} --dbname=$${POSTGRES_DB}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 1m
+    shm_size: 256mb
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  database-role:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a digest-pinned reference}
+    restart: "no"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-q_academy}
+      POSTGRES_BOOTSTRAP_USER: ${POSTGRES_BOOTSTRAP_USER:-q_academy_bootstrap}
+      POSTGRES_BOOTSTRAP_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?Set POSTGRES_BOOTSTRAP_PASSWORD in the production env file}
+      OWNER_POSTGRES_USER: ${OWNER_POSTGRES_USER:-q_academy_owner}
+      OWNER_POSTGRES_PASSWORD: ${OWNER_POSTGRES_PASSWORD:?Set OWNER_POSTGRES_PASSWORD in the production env file}
+      APP_POSTGRES_USER: ${APP_POSTGRES_USER:-q_academy_app}
+      APP_POSTGRES_PASSWORD: ${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}
+      MEDIA_POSTGRES_USER: ${MEDIA_POSTGRES_USER:-q_academy_media}
+      MEDIA_POSTGRES_PASSWORD: ${MEDIA_POSTGRES_PASSWORD:?Set MEDIA_POSTGRES_PASSWORD in the production env file}
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:-q_academy}
+      PGUSER: ${POSTGRES_BOOTSTRAP_USER:-q_academy_bootstrap}
+      PGPASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:?Set POSTGRES_BOOTSTRAP_PASSWORD in the production env file}
+      OWNER_DATABASE_USER: ${OWNER_POSTGRES_USER:-q_academy_owner}
+      OWNER_DATABASE_PASSWORD: ${OWNER_POSTGRES_PASSWORD:?Set OWNER_POSTGRES_PASSWORD in the production env file}
+      APP_DATABASE_USER: ${APP_POSTGRES_USER:-q_academy_app}
+      APP_DATABASE_PASSWORD: ${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}
+      MEDIA_DATABASE_USER: ${MEDIA_POSTGRES_USER:-q_academy_media}
+      MEDIA_DATABASE_PASSWORD: ${MEDIA_POSTGRES_PASSWORD:?Set MEDIA_POSTGRES_PASSWORD in the production env file}
+    command: ["/bin/sh", "/opt/q-academy/database-role-entrypoint.sh"]
+    configs:
+      - source: database-config-preflight
+        target: /opt/q-academy/database-config-preflight.sh
+      - source: database-role-entrypoint
+        target: /opt/q-academy/database-role-entrypoint.sh
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  migrate:
+    image: q-academy-migrator:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${OWNER_POSTGRES_USER:-q_academy_owner}:${OWNER_POSTGRES_PASSWORD:?Set OWNER_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+    depends_on:
+      database-role:
+        condition: service_completed_successfully
+    networks:
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  database-permissions:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a digest-pinned reference}
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGDATABASE: ${POSTGRES_DB:-q_academy}
+      PGUSER: ${OWNER_POSTGRES_USER:-q_academy_owner}
+      PGPASSWORD: ${OWNER_POSTGRES_PASSWORD:?Set OWNER_POSTGRES_PASSWORD in the production env file}
+      OWNER_DATABASE_USER: ${OWNER_POSTGRES_USER:-q_academy_owner}
+      APP_DATABASE_USER: ${APP_POSTGRES_USER:-q_academy_app}
+      MEDIA_DATABASE_USER: ${MEDIA_POSTGRES_USER:-q_academy_media}
+    command: ["/bin/sh", "/opt/q-academy/database-permissions-entrypoint.sh"]
+    configs:
+      - source: database-permissions-entrypoint
+        target: /opt/q-academy/database-permissions-entrypoint.sh
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  key-rotation:
+    profiles: ["operations"]
+    image: q-academy-key-rotation:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: key-rotation
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+    restart: "no"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${APP_POSTGRES_USER:-q_academy_app}:${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?Set WEBHOOK_ENCRYPTION_KEY in the production env file}
+      WEBHOOK_ENCRYPTION_KEY_ID: ${WEBHOOK_ENCRYPTION_KEY_ID:?Set WEBHOOK_ENCRYPTION_KEY_ID in the production env file}
+      WEBHOOK_ENCRYPTION_PREVIOUS_KEYS: ${WEBHOOK_ENCRYPTION_PREVIOUS_KEYS:-}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in the production env file}
+      DATA_ENCRYPTION_KEY_ID: ${DATA_ENCRYPTION_KEY_ID:?Set DATA_ENCRYPTION_KEY_ID in the production env file}
+      DATA_ENCRYPTION_PREVIOUS_KEYS: ${DATA_ENCRYPTION_PREVIOUS_KEYS:-}
+    depends_on:
+      database-permissions:
+        condition: service_completed_successfully
+    networks:
+      - database
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  tenant-admin-ops:
+    <<: *tenant-ops-runtime
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_OPS_SCOPE: admin
+      DATABASE_URL: postgresql://${APP_POSTGRES_USER:-q_academy_app}:${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in the production env file}
+      DATA_ENCRYPTION_KEY_ID: ${DATA_ENCRYPTION_KEY_ID:?Set DATA_ENCRYPTION_KEY_ID in the production env file}
+    depends_on:
+      database-permissions:
+        condition: service_completed_successfully
+    networks:
+      - database
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  tenant-export-ops:
+    <<: *tenant-ops-runtime
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_OPS_SCOPE: export
+      DATABASE_URL: postgresql://${APP_POSTGRES_USER:-q_academy_app}:${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      AUDIT_EXPORT_HMAC_KEY: ${AUDIT_EXPORT_HMAC_KEY:-}
+      AUDIT_EXPORT_HMAC_KEY_ID: ${AUDIT_EXPORT_HMAC_KEY_ID:-}
+    depends_on:
+      database-permissions:
+        condition: service_completed_successfully
+    networks:
+      - database
+    volumes:
+      - type: bind
+        source: ${OPERATIONS_EXPORT_DIR:-/var/lib/q-academy/operations-exports}
+        target: /operations/output
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  tenant-erasure-ops:
+    <<: *tenant-ops-runtime
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_OPS_SCOPE: erasure
+      DATABASE_URL: postgresql://${OWNER_POSTGRES_USER:-q_academy_owner}:${OWNER_POSTGRES_PASSWORD:?Set OWNER_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in the production env file}
+      DATA_ENCRYPTION_KEY_ID: ${DATA_ENCRYPTION_KEY_ID:?Set DATA_ENCRYPTION_KEY_ID in the production env file}
+      DATA_ENCRYPTION_PREVIOUS_KEYS: ${DATA_ENCRYPTION_PREVIOUS_KEYS:-}
+      AUDIT_EXPORT_HMAC_KEY: ${AUDIT_EXPORT_HMAC_KEY:-}
+      AUDIT_EXPORT_HMAC_KEY_ID: ${AUDIT_EXPORT_HMAC_KEY_ID:-}
+      TENANT_ERASURE_MIN_WAIT_DAYS: ${TENANT_ERASURE_MIN_WAIT_DAYS:-30}
+      MEDIA_STORAGE_DRIVER: "s3"
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:?Set MEDIA_S3_REGION in the production env file}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_CLAMAV_HOST: clamav
+    depends_on:
+      database-permissions:
+        condition: service_completed_successfully
+    networks:
+      - database
+      - egress
+    volumes:
+      - type: bind
+        source: ${OPERATIONS_INPUT_DIR:-/var/lib/q-academy/operations-input}
+        target: /operations/input
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OPERATIONS_EXPORT_DIR:-/var/lib/q-academy/operations-exports}
+        target: /operations/output
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  artifact-verify-ops:
+    <<: *tenant-ops-runtime
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_OPS_SCOPE: verify
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in the production env file}
+      DATA_ENCRYPTION_KEY_ID: ${DATA_ENCRYPTION_KEY_ID:?Set DATA_ENCRYPTION_KEY_ID in the production env file}
+      DATA_ENCRYPTION_PREVIOUS_KEYS: ${DATA_ENCRYPTION_PREVIOUS_KEYS:-}
+      AUDIT_EXPORT_HMAC_KEY: ${AUDIT_EXPORT_HMAC_KEY:-}
+      AUDIT_EXPORT_HMAC_KEY_ID: ${AUDIT_EXPORT_HMAC_KEY_ID:-}
+    network_mode: none
+    volumes:
+      - type: bind
+        source: ${OPERATIONS_EXPORT_DIR:-/var/lib/q-academy/operations-exports}
+        target: /operations/input
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  http-slo-ops:
+    <<: *tenant-ops-runtime
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_OPS_SCOPE: http-slo
+      HTTP_SLO_API_KEY_FILE: /run/secrets/http_slo_api_key
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - proxy
+    volumes:
+      - type: bind
+        source: ${HTTP_SLO_API_KEY_SOURCE_FILE:-/etc/q-academy/http-slo-api-key}
+        target: /run/secrets/http_slo_api_key
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  app: &app-runtime
+    image: q-academy-app:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+        NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+        NEXT_PUBLIC_ENABLE_PWA: "true"
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_RUNTIME_ROLE: app
+      Q_ACADEMY_APP_VERSION: ${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      DATABASE_URL: postgresql://${APP_POSTGRES_USER:-q_academy_app}:${APP_POSTGRES_PASSWORD:?Set APP_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the production env file}
+      AUTH_RATE_LIMIT_SECRET: ${AUTH_RATE_LIMIT_SECRET:?Set AUTH_RATE_LIMIT_SECRET in the production env file}
+      CADDY_TLS_ASK_SECRET: ${CADDY_TLS_ASK_SECRET:?Set CADDY_TLS_ASK_SECRET in the production env file}
+      TRUST_PROXY_HEADERS: "true"
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+      NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+      NEXT_PUBLIC_ENABLE_PWA: "true"
+      WEB_PUSH_VAPID_PUBLIC_KEY: ${WEB_PUSH_VAPID_PUBLIC_KEY:?Set WEB_PUSH_VAPID_PUBLIC_KEY in the production env file}
+      WEB_PUSH_VAPID_PRIVATE_KEY: ${WEB_PUSH_VAPID_PRIVATE_KEY:?Set WEB_PUSH_VAPID_PRIVATE_KEY in the production env file}
+      WEB_PUSH_VAPID_SUBJECT: ${WEB_PUSH_VAPID_SUBJECT:?Set WEB_PUSH_VAPID_SUBJECT in the production env file}
+      DEFAULT_ORGANIZATION_SLUG: ${DEFAULT_ORGANIZATION_SLUG:-q-academy}
+      TENANT_BASE_DOMAIN: ${TENANT_BASE_DOMAIN:-}
+      API_ALLOWED_ORIGIN: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+      ENABLE_DEMO_LOGIN: "false"
+      WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?Set WEBHOOK_ENCRYPTION_KEY in the production env file}
+      WEBHOOK_ENCRYPTION_KEY_ID: ${WEBHOOK_ENCRYPTION_KEY_ID:?Set WEBHOOK_ENCRYPTION_KEY_ID in the production env file}
+      WEBHOOK_ENCRYPTION_PREVIOUS_KEYS: ${WEBHOOK_ENCRYPTION_PREVIOUS_KEYS:-}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY in the production env file}
+      DATA_ENCRYPTION_KEY_ID: ${DATA_ENCRYPTION_KEY_ID:?Set DATA_ENCRYPTION_KEY_ID in the production env file}
+      DATA_ENCRYPTION_PREVIOUS_KEYS: ${DATA_ENCRYPTION_PREVIOUS_KEYS:-}
+      MFA_RECOVERY_PEPPER: ${MFA_RECOVERY_PEPPER:?Set MFA_RECOVERY_PEPPER in the production env file}
+      MFA_RECOVERY_PEPPER_ID: ${MFA_RECOVERY_PEPPER_ID:?Set MFA_RECOVERY_PEPPER_ID in the production env file}
+      MFA_RECOVERY_PREVIOUS_PEPPERS: ${MFA_RECOVERY_PREVIOUS_PEPPERS:-}
+      PRIVACY_SUBJECT_HMAC_SECRET: ${PRIVACY_SUBJECT_HMAC_SECRET:?Set PRIVACY_SUBJECT_HMAC_SECRET in the production env file}
+      EXAM_SELECTION_SECRET: ${EXAM_SELECTION_SECRET:?Set EXAM_SELECTION_SECRET in the production env file}
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in the production env file}
+      METRICS_SECRET: ${METRICS_SECRET:?Set METRICS_SECRET in the production env file}
+      EMAIL_DELIVERY_REQUIRED: "true"
+      EMAIL_DELIVERY_WEBHOOK_URL: ${EMAIL_DELIVERY_WEBHOOK_URL:?Set EMAIL_DELIVERY_WEBHOOK_URL in the production env file}
+      EMAIL_DELIVERY_WEBHOOK_SECRET: ${EMAIL_DELIVERY_WEBHOOK_SECRET:?Set EMAIL_DELIVERY_WEBHOOK_SECRET in the production env file}
+      EMAIL_DELIVERY_INBOUND_SECRET: ${EMAIL_DELIVERY_INBOUND_SECRET:?Set EMAIL_DELIVERY_INBOUND_SECRET in the production env file}
+      EMAIL_DELIVERY_RETENTION_DAYS: ${EMAIL_DELIVERY_RETENTION_DAYS:-90}
+      WEBHOOK_DELIVERY_RETENTION_DAYS: ${WEBHOOK_DELIVERY_RETENTION_DAYS:-90}
+      PUSH_DELIVERY_RETENTION_DAYS: ${PUSH_DELIVERY_RETENTION_DAYS:-90}
+      COMMUNITY_AUTHOR_BOOST_RETENTION_DAYS: ${COMMUNITY_AUTHOR_BOOST_RETENTION_DAYS:-90}
+      LEGAL_IMPRINT_URL: ${LEGAL_IMPRINT_URL:?Set LEGAL_IMPRINT_URL in the production env file}
+      LEGAL_PRIVACY_URL: ${LEGAL_PRIVACY_URL:?Set LEGAL_PRIVACY_URL in the production env file}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:?Set SUPPORT_EMAIL in the production env file}
+      MEDIA_STORAGE_DRIVER: "s3"
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:?Set MEDIA_S3_REGION in the production env file}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_APP_ACCESS_KEY_ID:?Set MEDIA_S3_APP_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_APP_SECRET_ACCESS_KEY:?Set MEDIA_S3_APP_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
+      MEDIA_TENANT_QUOTA_BYTES: ${MEDIA_TENANT_QUOTA_BYTES:-536870912000}
+      MEDIA_SIGNED_UPLOAD_TTL_SECONDS: ${MEDIA_SIGNED_UPLOAD_TTL_SECONDS:-900}
+      MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS: ${MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS:-900}
+      MEDIA_CLAMAV_HOST: clamav
+      MEDIA_CLAMAV_PORT: "3310"
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
+      STOCK_IMAGE_PROVIDER_NAME: ${STOCK_IMAGE_PROVIDER_NAME:-}
+      STOCK_IMAGE_PROVIDER_BASE_URL: ${STOCK_IMAGE_PROVIDER_BASE_URL:-}
+      STOCK_IMAGE_PROVIDER_API_KEY: ${STOCK_IMAGE_PROVIDER_API_KEY:-}
+      STOCK_IMAGE_ALLOWED_HOSTS: ${STOCK_IMAGE_ALLOWED_HOSTS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      database-permissions:
+        condition: service_completed_successfully
+    networks:
+      proxy:
+      database:
+      tls-ask:
+        aliases:
+          - tls-ask-app
+    volumes:
+      - next_cache:/app/.next/cache
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    # The app admits one in-memory DSAR operation at a time (32 MiB plaintext,
+    # 64 MiB envelope); 2 GiB leaves headroom for AES/base64 and normal traffic.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/v1/health/ready').then((response)=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 30s
+    logging: *default-logging
+
+  media-runner:
+    <<: *app-runtime
+    image: q-academy-media-runner:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: media-runner
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+        NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+        NEXT_PUBLIC_ENABLE_PWA: "true"
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_RUNTIME_ROLE: media-worker
+      Q_ACADEMY_APP_VERSION: ${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      DATABASE_URL: postgresql://${MEDIA_POSTGRES_USER:-q_academy_media}:${MEDIA_POSTGRES_PASSWORD:?Set MEDIA_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
+      METRICS_SECRET: ${MEDIA_METRICS_SECRET:?Set MEDIA_METRICS_SECRET in the production env file}
+      MEDIA_STORAGE_DRIVER: "s3"
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:?Set MEDIA_S3_REGION in the production env file}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
+      MEDIA_TENANT_QUOTA_BYTES: ${MEDIA_TENANT_QUOTA_BYTES:-536870912000}
+      MEDIA_SIGNED_UPLOAD_TTL_SECONDS: ${MEDIA_SIGNED_UPLOAD_TTL_SECONDS:-900}
+      MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS: ${MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS:-900}
+      MEDIA_CLAMAV_HOST: clamav
+      MEDIA_CLAMAV_PORT: "3310"
+      MEDIA_CLAMAV_SIGNATURE_DIRECTORY: /var/lib/q-academy-clamav-signatures
+      CLAMAV_SIGNATURE_MAX_AGE_SECONDS: ${CLAMAV_SIGNATURE_MAX_AGE_SECONDS:-129600}
+      MEDIA_PROCESSING_WORK_ROOT: /var/lib/q-academy-media-processing/work
+      MEDIA_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
+      MEDIA_TRANSCRIPT_COMMAND: ${MEDIA_TRANSCRIPT_COMMAND:-}
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: ${MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON:-}
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: ${MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      database-permissions:
+        condition: service_completed_successfully
+      clamav:
+        condition: service_healthy
+    networks:
+      - media-database
+      - media
+      - jobs
+      - egress
+    volumes:
+      - media_next_cache:/app/.next/cache
+      - type: bind
+        source: ${MEDIA_PROCESSING_WORK_DIR:?Set MEDIA_PROCESSING_WORK_DIR to the bounded host filesystem}
+        target: /var/lib/q-academy-media-processing
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: volume
+        source: clamav_signatures
+        target: /var/lib/q-academy-clamav-signatures
+        read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  s3-app-principal-preflight:
+    profiles: ["operations"]
+    image: q-academy-s3-app-principal-preflight:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: s3-app-principal-preflight
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+    environment:
+      NODE_ENV: production
+      MEDIA_STORAGE_DRIVER: "s3"
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:?Set MEDIA_S3_REGION in the production env file}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      MEDIA_S3_APP_ACCESS_KEY_ID: ${MEDIA_S3_APP_ACCESS_KEY_ID:?Set MEDIA_S3_APP_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_APP_SECRET_ACCESS_KEY: ${MEDIA_S3_APP_SECRET_ACCESS_KEY:?Set MEDIA_S3_APP_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+    networks:
+      - egress
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  media-preflight:
+    profiles: ["operations"]
+    image: q-academy-media-preflight:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: media-preflight
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_RUNTIME_ROLE: media-worker
+      DATABASE_URL: postgresql://${MEDIA_POSTGRES_USER:-q_academy_media}:${MEDIA_POSTGRES_PASSWORD:?Set MEDIA_POSTGRES_PASSWORD in the production env file}@postgres:5432/${POSTGRES_DB:-q_academy}
+      CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
+      METRICS_SECRET: ${MEDIA_METRICS_SECRET:?Set MEDIA_METRICS_SECRET in the production env file}
+      MEDIA_STORAGE_DRIVER: "s3"
+      MEDIA_S3_ENDPOINT: ${MEDIA_S3_ENDPOINT:?Set MEDIA_S3_ENDPOINT in the production env file}
+      MEDIA_S3_REGION: ${MEDIA_S3_REGION:?Set MEDIA_S3_REGION in the production env file}
+      MEDIA_S3_BUCKET: ${MEDIA_S3_BUCKET:?Set MEDIA_S3_BUCKET in the production env file}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:?Set MEDIA_S3_ACCESS_KEY_ID in the production env file}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:?Set MEDIA_S3_SECRET_ACCESS_KEY in the production env file}
+      MEDIA_S3_FORCE_PATH_STYLE: ${MEDIA_S3_FORCE_PATH_STYLE:-false}
+      MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
+      MEDIA_TENANT_QUOTA_BYTES: ${MEDIA_TENANT_QUOTA_BYTES:-536870912000}
+      MEDIA_SIGNED_UPLOAD_TTL_SECONDS: ${MEDIA_SIGNED_UPLOAD_TTL_SECONDS:-900}
+      MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS: ${MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS:-900}
+      MEDIA_CLAMAV_HOST: clamav
+      MEDIA_CLAMAV_PORT: "3310"
+      MEDIA_PROCESSING_WORK_ROOT: /var/lib/q-academy-media-processing/work
+      MEDIA_FFMPEG_PATH: /usr/bin/ffmpeg
+      MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
+      MEDIA_TRANSCRIPT_COMMAND: ${MEDIA_TRANSCRIPT_COMMAND:-}
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: ${MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON:-}
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: ${MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON:-}
+    networks:
+      - egress
+      - media
+    volumes:
+      - type: bind
+        source: ${MEDIA_PROCESSING_WORK_DIR:?Set MEDIA_PROCESSING_WORK_DIR to the bounded host filesystem}
+        target: /var/lib/q-academy-media-processing
+        read_only: false
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  clamav-freshclam:
+    image: ${CLAMAV_IMAGE:?Set CLAMAV_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    user: clamav
+    entrypoint: ["/init-unprivileged"]
+    environment:
+      CLAMAV_NO_CLAMD: "true"
+      CLAMAV_NO_FRESHCLAMD: "false"
+      FRESHCLAM_CHECKS: ${FRESHCLAM_CHECKS:-12}
+      CLAMAV_SIGNATURE_MAX_AGE_SECONDS: ${CLAMAV_SIGNATURE_MAX_AGE_SECONDS:-129600}
+    volumes:
+      - clamav_signatures:/var/lib/clamav
+    configs:
+      - source: clamav-signature-health
+        target: /opt/q-academy/clamav-signature-health.sh
+    networks:
+      - egress
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run/clamav:size=8m,mode=1777
+      - /var/log/clamav:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/opt/q-academy/clamav-signature-health.sh", "updater"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 15m
+    logging: *default-logging
+
+  clamav:
+    image: ${CLAMAV_IMAGE:?Set CLAMAV_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    user: clamav
+    entrypoint: ["/init-unprivileged"]
+    command: ["/bin/sh", "/opt/q-academy/clamav-daemon-entrypoint.sh"]
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+      MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
+      CLAMAV_SIGNATURE_MAX_AGE_SECONDS: ${CLAMAV_SIGNATURE_MAX_AGE_SECONDS:-129600}
+    depends_on:
+      clamav-freshclam:
+        condition: service_healthy
+    volumes:
+      - clamav_signatures:/var/lib/clamav:ro
+    configs:
+      - source: clamav-signature-health
+        target: /opt/q-academy/clamav-signature-health.sh
+      - source: clamav-daemon-entrypoint
+        target: /opt/q-academy/clamav-daemon-entrypoint.sh
+      - source: clamav-render-config
+        target: /opt/q-academy/clamav-render-config.sh
+    networks:
+      - media
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /run/clamav:size=8m,mode=1777
+      - /var/log/clamav:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "3.0"
+          memory: 5G
+        reservations:
+          memory: 3G
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/opt/q-academy/clamav-signature-health.sh", "clamd"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 10m
+    stop_grace_period: 1m
+    logging: *default-logging
+
+  scheduler:
+    image: ${CURL_IMAGE:?Set CURL_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    environment:
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in the production env file}
+      JOB_DISPATCH_INTERVAL_SECONDS: ${JOB_DISPATCH_INTERVAL_SECONDS:-15}
+      MAINTENANCE_CLEANUP_INTERVAL_SECONDS: ${MAINTENANCE_CLEANUP_INTERVAL_SECONDS:-3600}
+      WORKER_MAX_CONSECUTIVE_FAILURES: ${SCHEDULER_MAX_CONSECUTIVE_FAILURES:-5}
+      WORKER_HEARTBEAT_STALE_SECONDS: ${SCHEDULER_HEARTBEAT_STALE_SECONDS:-180}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$${JOB_DISPATCH_INTERVAL_SECONDS}:$${MAINTENANCE_CLEANUP_INTERVAL_SECONDS}" in
+          *[!0-9:]*) printf 'Scheduler intervals must be whole seconds.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${JOB_DISPATCH_INTERVAL_SECONDS}" -lt 5 ] || [ "$${MAINTENANCE_CLEANUP_INTERVAL_SECONDS}" -lt 300 ]; then
+          printf 'Scheduler intervals are below their safe minimum.\n' >&2; exit 1
+        fi
+        case "$${WORKER_MAX_CONSECUTIVE_FAILURES}:$${WORKER_HEARTBEAT_STALE_SECONDS}" in
+          *[!0-9:]*) printf 'Scheduler health limits must be whole seconds/counts.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 2 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -lt 1 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 20 ]; then
+          printf 'Scheduler failure limit must be between 1 and 20.\n' >&2; exit 1
+        fi
+        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 60 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
+          printf 'Scheduler heartbeat age must be between 60 and 86400 seconds.\n' >&2; exit 1
+        fi
+        minimum_heartbeat_age="$$((JOB_DISPATCH_INTERVAL_SECONDS + 45 + 60))"
+        if [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt "$${minimum_heartbeat_age}" ]; then
+          printf 'Scheduler heartbeat age is shorter than one dispatch cycle.\n' >&2; exit 1
+        fi
+        case "$${CRON_SECRET}" in
+          ""|*[!a-fA-F0-9]*) printf 'CRON_SECRET must be hexadecimal.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#CRON_SECRET}" -lt 32 ]; then
+          printf 'CRON_SECRET is too short.\n' >&2; exit 1
+        fi
+        authorization_header="Authorization: Bearer $${CRON_SECRET}"
+        unset CRON_SECRET
+        last_cleanup=0
+        consecutive_failures=0
+        success_marker=/tmp/scheduler.last-success
+        while true; do
+          now="$$(date +%s)"
+          endpoint="http://app:3000/api/internal/jobs/dispatch"
+          cleanup_due=false
+          if [ "$$((now - last_cleanup))" -ge "$${MAINTENANCE_CLEANUP_INTERVAL_SECONDS}" ]; then
+            endpoint="$${endpoint}?cleanup=run&cleanupLimit=1000"
+            cleanup_due=true
+          fi
+          if status="$$(
+            printf 'header = "%s"\n' "$${authorization_header}" |
+              curl --config - --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 45 --request POST "$${endpoint}"
+          )"; then :; else status=000; fi
+          case "$${status}" in
+            2??)
+              consecutive_failures=0
+              printf '%s\n' "$${now}" > "$${success_marker}.tmp"
+              mv "$${success_marker}.tmp" "$${success_marker}"
+              if [ "$${cleanup_due}" = true ]; then last_cleanup="$${now}"; fi
+              ;;
+            *)
+              consecutive_failures="$$((consecutive_failures + 1))"
+              printf '%s job dispatch failure %s/%s, HTTP %s\n' "$$(date -u +%FT%TZ)" "$${consecutive_failures}" "$${WORKER_MAX_CONSECUTIVE_FAILURES}" "$${status:-000}" >&2
+              if [ "$${consecutive_failures}" -ge "$${WORKER_MAX_CONSECUTIVE_FAILURES}" ]; then exit 1; fi
+              ;;
+          esac
+          sleep "$${JOB_DISPATCH_INTERVAL_SECONDS}"
+        done
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - proxy
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -s /tmp/scheduler.last-success && last_success=$$(cat /tmp/scheduler.last-success) && now=$$(date +%s) && test \"$${last_success}\" -le \"$${now}\" && test \"$$((now - last_success))\" -le \"$${WORKER_HEARTBEAT_STALE_SECONDS}\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 90s
+    logging: *default-logging
+
+  media-worker:
+    image: ${CURL_IMAGE:?Set CURL_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    deploy:
+      replicas: 2
+    environment:
+      CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
+      MEDIA_WORKER_POLL_SECONDS: ${MEDIA_WORKER_POLL_SECONDS:-10}
+      WORKER_MAX_CONSECUTIVE_FAILURES: ${MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES:-3}
+      WORKER_HEARTBEAT_STALE_SECONDS: ${MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-1500}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$${MEDIA_WORKER_POLL_SECONDS}" in
+          ""|*[!0-9]*) printf 'MEDIA_WORKER_POLL_SECONDS must be whole seconds.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${MEDIA_WORKER_POLL_SECONDS}" -lt 5 ]; then
+          printf 'MEDIA_WORKER_POLL_SECONDS is below its safe minimum.\n' >&2; exit 1
+        fi
+        case "$${WORKER_MAX_CONSECUTIVE_FAILURES}:$${WORKER_HEARTBEAT_STALE_SECONDS}" in
+          *[!0-9:]*) printf 'Media worker health limits must be whole seconds/counts.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 2 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -lt 1 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 20 ]; then
+          printf 'Media worker failure limit must be between 1 and 20.\n' >&2; exit 1
+        fi
+        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 1400 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
+          printf 'Media worker heartbeat age must be between 1400 and 86400 seconds.\n' >&2; exit 1
+        fi
+        minimum_heartbeat_age="$$((MEDIA_WORKER_POLL_SECONDS + 1300 + 60))"
+        if [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt "$${minimum_heartbeat_age}" ]; then
+          printf 'Media worker heartbeat age is shorter than one scan cycle.\n' >&2; exit 1
+        fi
+        case "$${CRON_SECRET}" in
+          ""|*[!a-fA-F0-9]*) printf 'CRON_SECRET must be hexadecimal.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#CRON_SECRET}" -lt 32 ]; then
+          printf 'CRON_SECRET is too short.\n' >&2; exit 1
+        fi
+        authorization_header="Authorization: Bearer $${CRON_SECRET}"
+        unset CRON_SECRET
+        consecutive_failures=0
+        success_marker=/tmp/media-worker.last-success
+        while true; do
+          response_file=/tmp/media-dispatch.json
+          if status="$$(
+            printf 'header = "%s"\n' "$${authorization_header}" |
+              curl --config - --silent --show-error --output "$${response_file}" --write-out '%{http_code}' --max-time 1300 --request POST 'http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1'
+          )"; then :; else status=000; fi
+          body=""
+          if [ -f "$${response_file}" ]; then body="$$(cat "$${response_file}")"; fi
+          rm -f "$${response_file}"
+          case "$${status}" in
+            2??)
+              consecutive_failures=0
+              now="$$(date +%s)"
+              printf '%s\n' "$${now}" > "$${success_marker}.tmp"
+              mv "$${success_marker}.tmp" "$${success_marker}"
+              case "$${body}" in
+                *'"processed":0'*'"depth":0'*) ;;
+                *) printf '%s media dispatch completed\n' "$$(date -u +%FT%TZ)" ;;
+              esac
+              ;;
+            *)
+              consecutive_failures="$$((consecutive_failures + 1))"
+              printf '%s media dispatch failure %s/%s, HTTP %s\n' "$$(date -u +%FT%TZ)" "$${consecutive_failures}" "$${WORKER_MAX_CONSECUTIVE_FAILURES}" "$${status:-000}" >&2
+              if [ "$${consecutive_failures}" -ge "$${WORKER_MAX_CONSECUTIVE_FAILURES}" ]; then exit 1; fi
+              ;;
+          esac
+          sleep "$${MEDIA_WORKER_POLL_SECONDS}"
+        done
+    depends_on:
+      media-runner:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    networks:
+      - jobs
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -s /tmp/media-worker.last-success && last_success=$$(cat /tmp/media-worker.last-success) && now=$$(date +%s) && test \"$${last_success}\" -le \"$${now}\" && test \"$$((now - last_success))\" -le \"$${WORKER_HEARTBEAT_STALE_SECONDS}\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 25m
+    logging: *default-logging
+
+  media-maintenance:
+    image: ${CURL_IMAGE:?Set CURL_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    deploy:
+      replicas: 1
+    environment:
+      CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
+      MEDIA_MAINTENANCE_INTERVAL_SECONDS: ${MEDIA_MAINTENANCE_INTERVAL_SECONDS:-60}
+      WORKER_MAX_CONSECUTIVE_FAILURES: ${MEDIA_MAINTENANCE_MAX_CONSECUTIVE_FAILURES:-3}
+      WORKER_HEARTBEAT_STALE_SECONDS: ${MEDIA_MAINTENANCE_HEARTBEAT_STALE_SECONDS:-700}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        case "$${MEDIA_MAINTENANCE_INTERVAL_SECONDS}" in
+          ""|*[!0-9]*) printf 'MEDIA_MAINTENANCE_INTERVAL_SECONDS must be whole seconds.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${MEDIA_MAINTENANCE_INTERVAL_SECONDS}" -lt 30 ] || [ "$${MEDIA_MAINTENANCE_INTERVAL_SECONDS}" -gt 3600 ]; then
+          printf 'MEDIA_MAINTENANCE_INTERVAL_SECONDS must be between 30 and 3600.\n' >&2; exit 1
+        fi
+        case "$${WORKER_MAX_CONSECUTIVE_FAILURES}:$${WORKER_HEARTBEAT_STALE_SECONDS}" in
+          *[!0-9:]*) printf 'Media maintenance health limits must be whole seconds/counts.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 2 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -lt 1 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 20 ]; then
+          printf 'Media maintenance failure limit must be between 1 and 20.\n' >&2; exit 1
+        fi
+        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 600 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
+          printf 'Media maintenance heartbeat age must be between 600 and 86400 seconds.\n' >&2; exit 1
+        fi
+        minimum_heartbeat_age="$$((MEDIA_MAINTENANCE_INTERVAL_SECONDS + 550 + 60))"
+        if [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt "$${minimum_heartbeat_age}" ]; then
+          printf 'Media maintenance heartbeat age is shorter than one maintenance cycle.\n' >&2; exit 1
+        fi
+        case "$${CRON_SECRET}" in
+          ""|*[!a-fA-F0-9]*) printf 'CRON_SECRET must be hexadecimal.\n' >&2; exit 1 ;;
+        esac
+        if [ "$${#CRON_SECRET}" -lt 32 ]; then
+          printf 'CRON_SECRET is too short.\n' >&2; exit 1
+        fi
+        authorization_header="Authorization: Bearer $${CRON_SECRET}"
+        unset CRON_SECRET
+        consecutive_failures=0
+        success_marker=/tmp/media-maintenance.last-success
+        while true; do
+          response_file=/tmp/media-maintenance.json
+          if status="$$(
+            printf 'header = "%s"\n' "$${authorization_header}" |
+              curl --config - --silent --show-error --output "$${response_file}" --write-out '%{http_code}' --max-time 550 --request POST 'http://media-runner:3000/api/internal/jobs/media/maintenance?limit=5'
+          )"; then :; else status=000; fi
+          body=""
+          if [ -f "$${response_file}" ]; then body="$$(cat "$${response_file}")"; fi
+          rm -f "$${response_file}"
+          case "$${status}" in
+            2??)
+              consecutive_failures=0
+              now="$$(date +%s)"
+              printf '%s\n' "$${now}" > "$${success_marker}.tmp"
+              mv "$${success_marker}.tmp" "$${success_marker}"
+              case "$${body}" in
+                *'"processed":0'*) ;;
+                *) printf '%s media maintenance completed\n' "$$(date -u +%FT%TZ)" ;;
+              esac
+              ;;
+            *)
+              consecutive_failures="$$((consecutive_failures + 1))"
+              printf '%s media maintenance failure %s/%s, HTTP %s\n' "$$(date -u +%FT%TZ)" "$${consecutive_failures}" "$${WORKER_MAX_CONSECUTIVE_FAILURES}" "$${status:-000}" >&2
+              if [ "$${consecutive_failures}" -ge "$${WORKER_MAX_CONSECUTIVE_FAILURES}" ]; then exit 1; fi
+              ;;
+          esac
+          sleep "$${MEDIA_MAINTENANCE_INTERVAL_SECONDS}"
+        done
+    depends_on:
+      media-runner:
+        condition: service_healthy
+    networks:
+      - jobs
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -s /tmp/media-maintenance.last-success && last_success=$$(cat /tmp/media-maintenance.last-success) && now=$$(date +%s) && test \"$${last_success}\" -le \"$${now}\" && test \"$$((now - last_success))\" -le \"$${WORKER_HEARTBEAT_STALE_SECONDS}\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 12m
+    logging: *default-logging
+
+  prometheus:
+    profiles: ["monitoring"]
+    image: ${PROMETHEUS_IMAGE:?Set PROMETHEUS_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-30d}
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ${PROMETHEUS_APP_BEARER_TOKEN_FILE:-/etc/q-academy/prometheus-app-token}:/run/secrets/app_metrics_token:ro
+      - ${PROMETHEUS_MEDIA_BEARER_TOKEN_FILE:-/etc/q-academy/prometheus-media-token}:/run/secrets/media_metrics_token:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+      media-runner:
+        condition: service_healthy
+      node-exporter:
+        condition: service_started
+    networks:
+      - proxy
+      - jobs
+      - observability
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/bin/promtool", "check", "ready", "--url=http://127.0.0.1:9090"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  node-exporter:
+    profiles: ["monitoring"]
+    image: ${NODE_EXPORTER_IMAGE:?Set NODE_EXPORTER_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    init: true
+    command:
+      - --path.rootfs=/host/root
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+    volumes:
+      - /:/host/root:ro,rslave
+      - ${BACKUP_METRICS_DIR:-/var/lib/q-academy-observability}:/var/lib/node_exporter/textfile_collector:ro
+    networks:
+      - observability
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  caddy:
+    image: ${CADDY_IMAGE:?Set CADDY_IMAGE to a digest-pinned reference}
+    restart: unless-stopped
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in the production env file}
+      CADDY_SITE_ADDRESSES: ${CADDY_SITE_ADDRESSES:?Set CADDY_SITE_ADDRESSES in the production env file}
+      CADDY_TLS_ASK_SECRET: ${CADDY_TLS_ASK_SECRET:?Set CADDY_TLS_ASK_SECRET in the production env file}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      proxy:
+        aliases:
+          - ${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
+      tls-ask:
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+configs:
+  clamav-daemon-entrypoint:
+    file: ./scripts/ops/clamav-daemon-entrypoint.sh
+  clamav-render-config:
+    file: ./scripts/ops/clamav-render-config.sh
+  clamav-signature-health:
+    file: ./scripts/ops/clamav-signature-health.sh
+  database-config-preflight:
+    file: ./scripts/ops/database-config-preflight.sh
+  database-role-entrypoint:
+    file: ./scripts/ops/database-role-entrypoint.sh
+  database-permissions-entrypoint:
+    file: ./scripts/ops/database-permissions-entrypoint.sh
+
+networks:
+  proxy:
+    driver: bridge
+  tls-ask:
+    driver: bridge
+    internal: true
+  database:
+    driver: bridge
+    internal: true
+  media-database:
+    driver: bridge
+    internal: true
+  media:
+    driver: bridge
+    internal: true
+  jobs:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
+  observability:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  next_cache:
+  media_next_cache:
+  caddy_data:
+  caddy_config:
+  clamav_signatures:
+  prometheus_data:

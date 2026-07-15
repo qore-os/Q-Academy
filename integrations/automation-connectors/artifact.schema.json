@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://q-academy.local/schemas/automation-connector-artifact.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["artifactVersion", "contract", "apiVersion", "packages"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "artifactVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "contract": { "const": "contract.v1.json" },
+    "apiVersion": { "const": "v1" },
+    "packages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["zapier", "make"],
+      "properties": {
+        "zapier": { "const": "zapier/package.json" },
+        "make": { "const": "make/makecomapp.json" }
+      }
+    }
+  }
+}

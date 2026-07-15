@@ -1,0 +1,1 @@
+export const HUB_CUSTOM_CODE_MAX_LENGTH = 20_000;

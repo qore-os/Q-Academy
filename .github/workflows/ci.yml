@@ -1,0 +1,815 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Quality, migrations, and E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CI_NODE_IMAGE: node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
+      CI_ZAP_IMAGE: zaproxy/zap-stable:2.17.0@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2
+      CI_DEBIAN_SNAPSHOT: 20260701T000000Z
+      CI_FFMPEG_VERSION: 7:5.1.9-0+deb12u1
+      Q_ACADEMY_CI_RELEASE_TAG: git-${{ github.sha }}
+      DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@127.0.0.1:54329/q_academy
+      POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:54329/postgres
+      MIGRATION_TEST_DATABASE: q_academy_ci_migration_test
+      NEXT_PUBLIC_APP_URL: http://127.0.0.1:3000
+      NEXT_PUBLIC_ENABLE_PWA: "false"
+      API_ALLOWED_ORIGIN: http://127.0.0.1:3000
+      DEFAULT_ORGANIZATION_SLUG: q-academy
+      ENABLE_DEMO_LOGIN: "false"
+      DEMO_API_KEY: qak_ci_release_smoke_qacademy_2026_7f4e2d8c9a1b
+      TRUST_PROXY_HEADERS: "false"
+      SESSION_SECRET: CiSession-7QwE2rT8yU4iO9pA1sD5fG6hJ0kLzXcV
+      AUTH_RATE_LIMIT_SECRET: CiRate-8WqE3rT9yU5iO0pA2sD6fG7hJ1kLzXcV
+      CADDY_TLS_ASK_SECRET: CiCaddyAsk-4TyU0iO6pA2sD8fG3hJ9kL5zX1cVbNmQ
+      WEBHOOK_ENCRYPTION_KEY: CiWebhook-9ErT4yU0iO6pA1sD3fG7hJ8kL2zXcVbN
+      WEBHOOK_ENCRYPTION_KEY_ID: webhook-ci-v1
+      WEBHOOK_ENCRYPTION_PREVIOUS_KEYS: '{"webhook-ci-v0":"CiWebhookLegacy-3ErT9yU5iO1pA7sD2fG8hJ4kL0zXcVbN"}'
+      DATA_ENCRYPTION_KEY: CiData-0RtY5uI1oP7aS2dF4gH8jK9lZ3xCvBnM
+      DATA_ENCRYPTION_KEY_ID: data-ci-v1
+      DATA_ENCRYPTION_PREVIOUS_KEYS: '{"data-ci-v0":"CiDataLegacy-4RtY0uI6oP2aS8dF3gH9jK5lZ1xCvBnM"}'
+      MFA_RECOVERY_PEPPER: CiMfaRecovery-5TyU1iO7pA3sD9fG4hJ0kL6zX2cVbNmQ
+      MFA_RECOVERY_PEPPER_ID: mfa-recovery-ci-v1
+      MFA_RECOVERY_PREVIOUS_PEPPERS: '{"mfa-recovery-ci-v0":"CiMfaLegacy-6YuI2oP8aS4dF0gH5jK1lZ7xC3vBnMqR"}'
+      PRIVACY_SUBJECT_HMAC_SECRET: CiPrivacy-1TyU6iO2pA8sD4fG0hJ5kL9zX3cVbNmQ
+      EXAM_SELECTION_SECRET: CiExamPick-2UyI7oP3aS9dF5gH1jK6lZ0xC4vBnMqR
+      CRON_SECRET: 6c5d4e3f2a1b00998877665544332211aabbccddeeff00112233445566778899
+      METRICS_SECRET: 8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aacc
+      EMAIL_DELIVERY_REQUIRED: "false"
+      WEB_PUSH_VAPID_SUBJECT: mailto:push@ci.q-academy.de
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            integrations/automation-connectors/zapier/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Zapier connector dependencies
+        run: npm ci --prefix integrations/automation-connectors/zapier
+
+      - name: Generate disposable CI VAPID keys
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import webPush from "web-push";
+          const keys = webPush.generateVAPIDKeys();
+          appendFileSync(
+            process.env.GITHUB_ENV,
+            `WEB_PUSH_VAPID_PUBLIC_KEY=${keys.publicKey}\nWEB_PUSH_VAPID_PRIVATE_KEY=${keys.privateKey}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      - name: Verify Zapier connector package
+        shell: bash
+        run: |
+          npm --prefix integrations/automation-connectors/zapier test
+          npm --prefix integrations/automation-connectors/zapier run typecheck
+          npm --prefix integrations/automation-connectors/zapier run validate
+          npm --prefix integrations/automation-connectors/zapier run build
+          npm --prefix integrations/automation-connectors/zapier audit --omit=dev --audit-level=moderate
+
+      - name: Scan tracked files and complete Git history for committed secrets
+        run: npm run security:scan-secrets:history
+
+      - name: Verify third-party notices
+        run: npm run notices:check
+
+      - name: Start isolated PostgreSQL
+        shell: bash
+        run: |
+          mkdir -p .data
+          ./node_modules/.bin/tsx scripts/dev-postgres.ts >.data/postgres-ci.log 2>&1 &
+          echo "$!" >.data/postgres-ci.pid
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
+
+          const adminUrl = "postgresql://postgres:postgres@127.0.0.1:54329/postgres";
+          const applicationUrl = "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
+          let ready = false;
+
+          for (let attempt = 0; attempt < 90; attempt += 1) {
+            const probe = postgres(applicationUrl, { connect_timeout: 1, max: 1 });
+            try {
+              await probe`select 1`;
+              ready = true;
+              await probe.end();
+              break;
+            } catch {
+              await probe.end().catch(() => undefined);
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+            }
+          }
+
+          if (!ready) throw new Error("PostgreSQL did not become ready within 90 seconds.");
+
+          const admin = postgres(adminUrl, { max: 1 });
+          await admin.unsafe(
+            "create role q_academy_ci login password 'CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV'",
+          );
+          await admin.unsafe("alter database q_academy owner to q_academy_ci");
+          await admin.end();
+          NODE
+
+      - name: Check migration metadata
+        run: npx drizzle-kit check
+
+      - name: Verify schema migrations are committed
+        shell: bash
+        run: |
+          npm run db:generate
+          git diff --exit-code -- drizzle
+
+      - name: Test migrations on a fresh database
+        run: npm run db:test-migrations
+
+      - name: Apply application migrations
+        run: npm run db:migrate
+
+      - name: Seed disposable CI database
+        env:
+          NODE_ENV: test
+          ALLOW_DESTRUCTIVE_SEED: "true"
+          SEED_EXPECTED_DATABASE: q_academy
+        run: npm run db:seed
+
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run PostgreSQL integration tests
+        run: npm run test:integration
+
+      - name: Check OpenAPI contract
+        run: npm run api:check-contract
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Add production database hostname
+        shell: bash
+        run: echo "127.0.0.1 ci-postgres.internal" | sudo tee -a /etc/hosts
+
+      - name: Build production application
+        env:
+          DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@ci-postgres.internal:54329/q_academy
+          NEXT_PUBLIC_APP_URL: https://academy.ci.q-academy.de
+          NEXT_PUBLIC_ENABLE_PWA: "true"
+          API_ALLOWED_ORIGIN: https://academy.ci.q-academy.de
+          TRUST_PROXY_HEADERS: "true"
+        run: npm run build
+
+      - name: Validate production Compose configuration
+        env:
+          APP_IMAGE_TAG: ci-${{ github.sha }}
+          NODE_IMAGE: registry.invalid/q-academy/node-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          POSTGRES_IMAGE: registry.invalid/q-academy/postgres-ci@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          CLAMAV_IMAGE: registry.invalid/q-academy/clamav-ci@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          CURL_IMAGE: registry.invalid/q-academy/curl-ci@sha256:3333333333333333333333333333333333333333333333333333333333333333
+          PROMETHEUS_IMAGE: registry.invalid/q-academy/prometheus-ci@sha256:4444444444444444444444444444444444444444444444444444444444444444
+          NODE_EXPORTER_IMAGE: registry.invalid/q-academy/node-exporter-ci@sha256:5555555555555555555555555555555555555555555555555555555555555555
+          CADDY_IMAGE: registry.invalid/q-academy/caddy-ci@sha256:6666666666666666666666666666666666666666666666666666666666666666
+          APP_DOMAIN: academy.ci.q-academy.de
+          CADDY_SITE_ADDRESSES: academy.ci.q-academy.de
+          ACME_EMAIL: ops@ci.q-academy.de
+          POSTGRES_BOOTSTRAP_USER: q_academy_ci_bootstrap
+          POSTGRES_BOOTSTRAP_PASSWORD: 6a5b4c3d2e1f00998877665544332211aabbccddeeff00112233445566778800
+          OWNER_POSTGRES_USER: q_academy_ci_owner
+          OWNER_POSTGRES_PASSWORD: 7b6c5d4e3f2a11009988776655443322bbccddeeff00112233445566778899aa
+          APP_POSTGRES_PASSWORD: 4a3b2c1d0e9f8877665544332211aabbccddeeff00112233445566778899aabb
+          MEDIA_POSTGRES_PASSWORD: 5b4c3d2e1f0a9988776655443322bbccddeeff00112233445566778899aabbcc
+          MEDIA_CRON_SECRET: 7d6e5f4a3b2c11009988776655443322bbccddeeff00112233445566778899aa
+          MEDIA_METRICS_SECRET: 9f8e7d6c5b4a33221100998877665544ddeeff00112233445566778899aabbdd
+          WEBHOOK_ENCRYPTION_KEY_ID: webhook-ci-v1
+          DATA_ENCRYPTION_KEY_ID: data-ci-v1
+          EMAIL_DELIVERY_WEBHOOK_URL: https://mailer.ci.q-academy.de/q-academy
+          EMAIL_DELIVERY_WEBHOOK_SECRET: CiMail-4ErT0yU6iO2pA8sD3fG5hJ9kL1zXcVb
+          EMAIL_DELIVERY_INBOUND_SECRET: CiMailInbound-8RwT4yU0iO6pA3sD9fG5hJ1kL7zXcVb
+          LEGAL_IMPRINT_URL: https://legal.ci.q-academy.de/impressum
+          LEGAL_PRIVACY_URL: https://legal.ci.q-academy.de/datenschutz
+          SUPPORT_EMAIL: support@ci.q-academy.de
+          MEDIA_S3_ENDPOINT: https://objects.ci.q-academy.de
+          MEDIA_S3_REGION: eu-central-1
+          MEDIA_S3_BUCKET: q-academy-ci-media
+          MEDIA_S3_APP_ACCESS_KEY_ID: QACADEMYCIMEDIAAPP
+          MEDIA_S3_APP_SECRET_ACCESS_KEY: CiMediaApp-6TyU2iO8pA4sD0fG5hJ7kL1zX3cVbNmQ
+          MEDIA_S3_ACCESS_KEY_ID: QACADEMYCIMEDIA
+          MEDIA_S3_SECRET_ACCESS_KEY: CiMedia-5RtY1uI7oP3aS9dF4gH6jK0lZ2xCvBnM
+          MEDIA_PROCESSING_WORK_DIR: /tmp/q-academy-media-processing-ci
+        run: docker compose -f compose.production.yml config --quiet
+
+      - name: Validate Prometheus configuration and alert rules
+        shell: bash
+        run: |
+          mkdir -p .data/prometheus-secrets
+          printf '%064d' 0 >.data/prometheus-secrets/app_metrics_token
+          printf '%064d' 1 >.data/prometheus-secrets/media_metrics_token
+          docker run --rm \
+            --entrypoint /bin/promtool \
+            --volume "$PWD/deploy/observability:/etc/prometheus:ro" \
+            --volume "$PWD/.data/prometheus-secrets:/run/secrets:ro" \
+            prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac \
+            check rules /etc/prometheus/alerts.yml
+          docker run --rm \
+            --entrypoint /bin/promtool \
+            --volume "$PWD/deploy/observability:/etc/prometheus:ro" \
+            --volume "$PWD/.data/prometheus-secrets:/run/secrets:ro" \
+            prom/prometheus:v3.12.0@sha256:69f5241418838263316593f7274a304b095c40bcf22e57272865da91bd60a8ac \
+            check config /etc/prometheus/prometheus.yml
+
+      - name: Build and start production containers
+        shell: bash
+        env:
+          RUNTIME_OWNER_DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@ci-postgres.internal:54329/q_academy
+          RUNTIME_DATABASE_URL: postgresql://q_academy_ci_app:4a3b2c1d0e9f8877665544332211aabbccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
+          RUNTIME_MEDIA_DATABASE_URL: postgresql://q_academy_ci_media:8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
+          RUNTIME_APP_URL: https://academy.ci.q-academy.de:3443
+          RUNTIME_MAIL_SECRET: CiMail-4ErT0yU6iO2pA8sD3fG5hJ9kL1zXcVb
+          RUNTIME_MAIL_INBOUND_SECRET: CiMailInbound-8RwT4yU0iO6pA3sD9fG5hJ1kL7zXcVb
+          RUNTIME_MEDIA_CRON_SECRET: 7d6e5f4a3b2c11009988776655443322bbccddeeff00112233445566778899aa
+          RUNTIME_MEDIA_METRICS_SECRET: 9f8e7d6c5b4a33221100998877665544ddeeff00112233445566778899aabbdd
+        run: |
+          docker build \
+            --target migrator \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            -t "q-academy-migrator:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target key-rotation \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            -t "q-academy-key-rotation:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target tenant-ops \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            -t "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target runner \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
+            --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
+            -t "q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target media-runner \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
+            --build-arg FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
+            --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
+            --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
+            -t "q-academy-media-runner:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target media-preflight \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
+            --build-arg FFMPEG_VERSION="$CI_FFMPEG_VERSION" \
+            -t "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target s3-app-principal-preflight \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            -t "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker run --rm --entrypoint /bin/sh \
+            "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
+            'test "$(id -u)" = 1001 && test -r scripts/media-processing-preflight.ts && test -r scripts/clamav-preflight.ts && /usr/bin/ffmpeg -version >/dev/null && /usr/bin/ffprobe -version >/dev/null'
+          docker run --rm --entrypoint /bin/sh \
+            "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
+            'test "$(id -u)" = 1001 && test -r scripts/s3-app-principal-preflight.ts'
+          docker run --rm \
+            "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" help
+          if docker run --rm \
+            "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" definitely-not-allowed; then
+            echo "tenant-ops accepted a command outside its allowlist" >&2
+            exit 1
+          fi
+          docker run --rm --network host \
+            --add-host ci-postgres.internal:127.0.0.1 \
+            -e DATABASE_URL="$RUNTIME_OWNER_DATABASE_URL" \
+            "q-academy-migrator:$Q_ACADEMY_CI_RELEASE_TAG"
+
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
+
+          const admin = postgres(process.env.POSTGRES_ADMIN_URL, { max: 1 });
+          await admin.unsafe(
+            "alter role q_academy_ci nosuperuser nocreatedb nocreaterole noreplication nobypassrls noinherit",
+          );
+          await admin.unsafe(
+            "create role q_academy_ci_app login password '4a3b2c1d0e9f8877665544332211aabbccddeeff00112233445566778899aabb' nosuperuser nocreatedb nocreaterole noreplication nobypassrls noinherit",
+          );
+          await admin.unsafe(
+            "create role q_academy_ci_media login password '8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aabb' nosuperuser nocreatedb nocreaterole noreplication nobypassrls noinherit",
+          );
+          await admin.unsafe("revoke all on database q_academy from public, q_academy_ci_app, q_academy_ci_media");
+          await admin.unsafe("grant connect on database q_academy to q_academy_ci_app");
+          await admin.unsafe("revoke all on schema public, drizzle from public, q_academy_ci_app, q_academy_ci_media");
+          await admin.unsafe("grant usage on schema public, drizzle to q_academy_ci_app");
+          await admin.unsafe("revoke all on all tables in schema public, drizzle from public");
+          await admin.unsafe("revoke all on all sequences in schema public, drizzle from public");
+          await admin.unsafe("revoke all on all functions in schema public, drizzle from public, q_academy_ci_app, q_academy_ci_media");
+          await admin.unsafe("grant select, insert, update, delete on all tables in schema public to q_academy_ci_app");
+          await admin.unsafe("grant usage, select, update on all sequences in schema public to q_academy_ci_app");
+          await admin.unsafe("grant select on all tables in schema drizzle to q_academy_ci_app");
+          await admin.unsafe("grant execute on function public.q_academy_lock_course_link_graph(uuid) to q_academy_ci_app");
+          await admin.unsafe("grant connect on database q_academy to q_academy_ci_media");
+          await admin.unsafe("grant usage on schema public, drizzle to q_academy_ci_media");
+          await admin.unsafe("revoke all on all tables in schema public from q_academy_ci_media");
+          await admin.unsafe("revoke all on all sequences in schema public from q_academy_ci_media");
+          await admin.unsafe("alter table public.custom_field_values enable row level security");
+          await admin.unsafe("create policy q_academy_ci_app_full_access on public.custom_field_values to q_academy_ci_app using (true) with check (true)");
+          await admin.unsafe("drop policy if exists q_academy_ci_media_bindings_only on public.custom_field_values");
+          await admin.unsafe("create policy q_academy_ci_media_bindings_only on public.custom_field_values to q_academy_ci_media using (exists (select 1 from public.custom_field_definitions definition where definition.id = custom_field_values.field_id and definition.organization_id = custom_field_values.organization_id and definition.type = 'media'))");
+          await admin.unsafe("alter table public.data_profile_values enable row level security");
+          await admin.unsafe("create policy q_academy_ci_app_full_access on public.data_profile_values to q_academy_ci_app using (true) with check (true)");
+          await admin.unsafe("drop policy if exists q_academy_ci_media_bindings_only on public.data_profile_values");
+          await admin.unsafe("create policy q_academy_ci_media_bindings_only on public.data_profile_values to q_academy_ci_media using (exists (select 1 from public.custom_field_definitions definition where definition.id = data_profile_values.field_id and definition.organization_id = data_profile_values.organization_id and definition.type = 'media'))");
+          await admin.unsafe("alter table public.platform_settings enable row level security");
+          await admin.unsafe("create policy q_academy_ci_app_full_access on public.platform_settings to q_academy_ci_app using (true) with check (true)");
+          await admin.unsafe("drop policy if exists q_academy_ci_media_design_only on public.platform_settings");
+          await admin.unsafe("create policy q_academy_ci_media_design_only on public.platform_settings to q_academy_ci_media using (key = 'design')");
+          await admin.unsafe("grant select, update, delete on table public.media_assets to q_academy_ci_media");
+          await admin.unsafe("grant select, insert, update, delete on table public.media_processing_jobs to q_academy_ci_media");
+          await admin.unsafe("grant select, insert, update, delete on table public.media_asset_derivatives to q_academy_ci_media");
+          await admin.unsafe("grant select, insert, update, delete on table public.media_asset_transcripts to q_academy_ci_media");
+          await admin.unsafe("grant select (id, default_locale) on table public.organizations to q_academy_ci_media");
+          await admin.unsafe("grant select (id, organization_id, avatar_url) on table public.users to q_academy_ci_media");
+          await admin.unsafe("grant select (id, organization_id, type) on table public.custom_field_definitions to q_academy_ci_media");
+          await admin.unsafe("grant select (id, organization_id, user_id, field_id, value) on table public.custom_field_values to q_academy_ci_media");
+          await admin.unsafe("grant select (id, organization_id, user_id, field_id, value) on table public.data_profile_values to q_academy_ci_media");
+          await admin.unsafe("grant select (id, organization_id, key, value) on table public.platform_settings to q_academy_ci_media");
+          await admin.unsafe("grant select (id, organization_id, media_asset_id) on table public.submission_attachments to q_academy_ci_media");
+          await admin.unsafe("grant select (course_id, organization_id, media_asset_id) on table public.course_media_assets to q_academy_ci_media");
+          await admin.unsafe("grant select (media_asset_id, organization_id) on table public.community_asset_bindings to q_academy_ci_media");
+          await admin.unsafe("grant select on all tables in schema drizzle to q_academy_ci_media");
+          for (const functionName of [
+            "q_academy_enforce_media_asset_storage_limit",
+            "q_academy_enforce_media_derivative_storage_limit",
+          ]) {
+            await admin.unsafe(`alter function public.${functionName}() owner to q_academy_ci`);
+            await admin.unsafe(`alter function public.${functionName}() security definer`);
+            await admin.unsafe(`alter function public.${functionName}() set search_path to pg_catalog, public`);
+            await admin.unsafe(`revoke all on function public.${functionName}() from public`);
+            await admin.unsafe(`grant execute on function public.${functionName}() to q_academy_ci_app, q_academy_ci_media`);
+          }
+          const [catalog] = await admin.unsafe(`
+            select
+              count(*) filter (
+                where procedure_record.prosecdef
+                  and pg_get_userbyid(procedure_record.proowner) = 'q_academy_ci'
+                  and procedure_record.proconfig = array['search_path=pg_catalog, public']
+              )::integer as hardened_functions,
+              count(*)::integer as storage_functions
+            from pg_proc procedure_record
+            join pg_namespace namespace_record on namespace_record.oid = procedure_record.pronamespace
+            where namespace_record.nspname = 'public'
+              and procedure_record.proname in (
+                'q_academy_enforce_media_asset_storage_limit',
+                'q_academy_enforce_media_derivative_storage_limit'
+              )
+          `);
+          if (catalog.hardened_functions !== 2 || catalog.storage_functions !== 2) {
+            throw new Error("Production storage trigger catalog hardening failed.");
+          }
+          await admin.end();
+
+          const media = postgres(process.env.RUNTIME_MEDIA_DATABASE_URL, { max: 1 });
+          await media.unsafe("select id, organization_id, avatar_url from public.users limit 1");
+          let sensitiveUserColumnsDenied = false;
+          try {
+            await media.unsafe("select email, password_hash from public.users limit 1");
+          } catch {
+            sensitiveUserColumnsDenied = true;
+          }
+          if (!sensitiveUserColumnsDenied) {
+            throw new Error("Media database role can read sensitive user columns.");
+          }
+          const visibleSettings = await media.unsafe("select key from public.platform_settings");
+          if (visibleSettings.some((row) => row.key !== "design")) {
+            throw new Error("Media database role can read non-design platform settings.");
+          }
+          await media.end();
+          NODE
+
+          rotation_output="$(docker run --rm --network host \
+            --add-host ci-postgres.internal:127.0.0.1 \
+            -e DATABASE_URL="$RUNTIME_DATABASE_URL" \
+            -e DATA_ENCRYPTION_KEY_ID="$DATA_ENCRYPTION_KEY_ID" \
+            -e DATA_ENCRYPTION_PREVIOUS_KEYS="$DATA_ENCRYPTION_PREVIOUS_KEYS" \
+            -e DATA_ENCRYPTION_KEY="$DATA_ENCRYPTION_KEY" \
+            -e WEBHOOK_ENCRYPTION_KEY_ID="$WEBHOOK_ENCRYPTION_KEY_ID" \
+            -e WEBHOOK_ENCRYPTION_KEY="$WEBHOOK_ENCRYPTION_KEY" \
+            -e WEBHOOK_ENCRYPTION_PREVIOUS_KEYS="$WEBHOOK_ENCRYPTION_PREVIOUS_KEYS" \
+            "q-academy-key-rotation:$Q_ACADEMY_CI_RELEASE_TAG" --check)"
+          printf '%s\n' "$rotation_output"
+          grep --quiet '"mfaTotpSecrets":0' <<<"$rotation_output"
+          grep --quiet '"verified":true' <<<"$rotation_output"
+
+          cleanup() {
+            docker rm --force q-academy-ci-runtime >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name q-academy-ci-runtime --network host \
+            --add-host ci-postgres.internal:127.0.0.1 \
+            -e Q_ACADEMY_RUNTIME_ROLE=app \
+            -e Q_ACADEMY_APP_VERSION="$Q_ACADEMY_CI_RELEASE_TAG" \
+            -e DATABASE_URL="$RUNTIME_DATABASE_URL" \
+            -e NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
+            -e APP_DOMAIN=academy.ci.q-academy.de \
+            -e DEFAULT_ORGANIZATION_SLUG=q-academy \
+            -e API_ALLOWED_ORIGIN="$RUNTIME_APP_URL" \
+            -e SESSION_SECRET="$SESSION_SECRET" \
+            -e AUTH_RATE_LIMIT_SECRET="$AUTH_RATE_LIMIT_SECRET" \
+            -e CADDY_TLS_ASK_SECRET="$CADDY_TLS_ASK_SECRET" \
+            -e WEBHOOK_ENCRYPTION_KEY="$WEBHOOK_ENCRYPTION_KEY" \
+            -e WEBHOOK_ENCRYPTION_KEY_ID="$WEBHOOK_ENCRYPTION_KEY_ID" \
+            -e WEBHOOK_ENCRYPTION_PREVIOUS_KEYS="$WEBHOOK_ENCRYPTION_PREVIOUS_KEYS" \
+            -e DATA_ENCRYPTION_KEY="$DATA_ENCRYPTION_KEY" \
+            -e DATA_ENCRYPTION_KEY_ID="$DATA_ENCRYPTION_KEY_ID" \
+            -e DATA_ENCRYPTION_PREVIOUS_KEYS="$DATA_ENCRYPTION_PREVIOUS_KEYS" \
+            -e MFA_RECOVERY_PEPPER="$MFA_RECOVERY_PEPPER" \
+            -e MFA_RECOVERY_PEPPER_ID="$MFA_RECOVERY_PEPPER_ID" \
+            -e MFA_RECOVERY_PREVIOUS_PEPPERS="$MFA_RECOVERY_PREVIOUS_PEPPERS" \
+            -e PRIVACY_SUBJECT_HMAC_SECRET="$PRIVACY_SUBJECT_HMAC_SECRET" \
+            -e EXAM_SELECTION_SECRET="$EXAM_SELECTION_SECRET" \
+            -e CRON_SECRET="$CRON_SECRET" \
+            -e METRICS_SECRET="$METRICS_SECRET" \
+            -e TRUST_PROXY_HEADERS=true \
+            -e ENABLE_DEMO_LOGIN=false \
+            -e EMAIL_DELIVERY_REQUIRED=true \
+            -e EMAIL_DELIVERY_WEBHOOK_URL=https://mailer.ci.q-academy.de/q-academy \
+            -e EMAIL_DELIVERY_WEBHOOK_SECRET="$RUNTIME_MAIL_SECRET" \
+            -e EMAIL_DELIVERY_INBOUND_SECRET="$RUNTIME_MAIL_INBOUND_SECRET" \
+            -e WEB_PUSH_VAPID_PUBLIC_KEY="$WEB_PUSH_VAPID_PUBLIC_KEY" \
+            -e WEB_PUSH_VAPID_PRIVATE_KEY="$WEB_PUSH_VAPID_PRIVATE_KEY" \
+            -e WEB_PUSH_VAPID_SUBJECT="$WEB_PUSH_VAPID_SUBJECT" \
+            -e LEGAL_IMPRINT_URL=https://legal.ci.q-academy.de/impressum \
+            -e LEGAL_PRIVACY_URL=https://legal.ci.q-academy.de/datenschutz \
+            -e SUPPORT_EMAIL=support@ci.q-academy.de \
+            -e MEDIA_STORAGE_DRIVER=s3 \
+            -e MEDIA_S3_ENDPOINT=https://objects.ci.q-academy.de \
+            -e MEDIA_S3_REGION=eu-central-1 \
+            -e MEDIA_S3_BUCKET=q-academy-ci-media \
+            -e MEDIA_S3_ACCESS_KEY_ID=QACADEMYCIMEDIA \
+            -e MEDIA_S3_SECRET_ACCESS_KEY=CiMedia-5RtY1uI7oP3aS9dF4gH6jK0lZ2xCvBnM \
+            -e MEDIA_S3_FORCE_PATH_STYLE=false \
+            -e MEDIA_CLAMAV_HOST=127.0.0.1 \
+            -e MEDIA_CLAMAV_PORT=3310 \
+            "q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG"
+
+          app_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:3000/api/v1/health/ready \
+              | node -e "let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',(chunk)=>input+=chunk);process.stdin.on('end',()=>{try{const body=JSON.parse(input);if(body?.data?.schema!=='current'||body?.data?.version!==process.env.Q_ACADEMY_CI_RELEASE_TAG)process.exitCode=1}catch{process.exitCode=1}})"; then
+              app_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$app_ready" != true ]]; then
+            docker logs q-academy-ci-runtime
+            exit 1
+          fi
+
+          trap - EXIT
+
+      - name: Run passive OWASP ZAP baseline
+        id: zap_baseline
+        shell: bash
+        run: bash scripts/ops/run-zap-baseline.sh
+
+      - name: Upload OWASP ZAP baseline evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: q-academy-zap-baseline-${{ github.sha }}
+          path: .artifacts/zap-baseline
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Install production smoke browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke-test exact production app image
+        shell: bash
+        env:
+          PLAYWRIGHT_PRODUCTION_BASE_URL: https://academy.ci.q-academy.de:3443
+          PLAYWRIGHT_EXPECTED_RELEASE: ${{ env.Q_ACADEMY_CI_RELEASE_TAG }}
+          PLAYWRIGHT_ADMIN_EMAIL: admin@q-academy.de
+          PLAYWRIGHT_MEMBER_EMAIL: lea@q-academy.de
+          PLAYWRIGHT_SEED_PASSWORD: Demo123!
+          PLAYWRIGHT_API_KEY: ${{ env.DEMO_API_KEY }}
+        run: |
+          image_reference="q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG"
+          expected_image_id="$(docker image inspect --format '{{.Id}}' "$image_reference")"
+          running_image_id="$(docker inspect --format '{{.Image}}' q-academy-ci-runtime)"
+          if [[ "$running_image_id" != "$expected_image_id" ]]; then
+            echo "Running app container does not use the exact tested image ID." >&2
+            exit 1
+          fi
+          printf 'Production app image ID: %s\n' "$expected_image_id"
+
+          certificate_file="$RUNNER_TEMP/q-academy-production-smoke.crt"
+          private_key_file="$RUNNER_TEMP/q-academy-production-smoke.key"
+          openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+            -keyout "$private_key_file" \
+            -out "$certificate_file" \
+            -days 1 \
+            -subj '/CN=academy.ci.q-academy.de' \
+            -addext 'subjectAltName=DNS:academy.ci.q-academy.de'
+          printf '127.0.0.1 academy.ci.q-academy.de\n' \
+            | sudo tee -a /etc/hosts >/dev/null
+
+          cleanup_proxy() {
+            if [[ -n "${proxy_pid:-}" ]]; then
+              kill "$proxy_pid" >/dev/null 2>&1 || true
+              wait "$proxy_pid" >/dev/null 2>&1 || true
+            fi
+            rm -f "$certificate_file" "$private_key_file"
+          }
+          trap cleanup_proxy EXIT
+
+          PRODUCTION_SMOKE_PUBLIC_ORIGIN="$PLAYWRIGHT_PRODUCTION_BASE_URL" \
+          PRODUCTION_SMOKE_UPSTREAM_ORIGIN=http://127.0.0.1:3000 \
+          PRODUCTION_SMOKE_LISTEN_HOST=127.0.0.1 \
+          PRODUCTION_SMOKE_LISTEN_PORT=3443 \
+          PRODUCTION_SMOKE_CERT_FILE="$certificate_file" \
+          PRODUCTION_SMOKE_KEY_FILE="$private_key_file" \
+            node scripts/ci/production-smoke-tls-proxy.mjs \
+              >.data/production-smoke-tls-proxy.log 2>&1 &
+          proxy_pid=$!
+
+          proxy_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error --insecure --noproxy '*' \
+              --resolve academy.ci.q-academy.de:3443:127.0.0.1 \
+              "$PLAYWRIGHT_PRODUCTION_BASE_URL/api/v1/health/ready" \
+              >/dev/null; then
+              proxy_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$proxy_ready" != true ]]; then
+            cat .data/production-smoke-tls-proxy.log
+            exit 1
+          fi
+
+          smoke_status=0
+          npx playwright test \
+            --config=playwright.production-smoke.config.ts || smoke_status=$?
+
+          tagged_image_id="$(docker image inspect --format '{{.Id}}' "$image_reference")"
+          running_image_id="$(docker inspect --format '{{.Image}}' q-academy-ci-runtime)"
+          if [[ "$tagged_image_id" != "$expected_image_id" || "$running_image_id" != "$expected_image_id" ]]; then
+            echo "Production app image identity changed during the browser smoke." >&2
+            exit 1
+          fi
+          exit "$smoke_status"
+
+      - name: Smoke-test production media worker
+        shell: bash
+        env:
+          RUNTIME_MEDIA_DATABASE_URL: postgresql://q_academy_ci_media:8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
+          RUNTIME_MEDIA_CRON_SECRET: 7d6e5f4a3b2c11009988776655443322bbccddeeff00112233445566778899aa
+          RUNTIME_MEDIA_METRICS_SECRET: 9f8e7d6c5b4a33221100998877665544ddeeff00112233445566778899aabbdd
+        run: |
+          cleanup() {
+            docker rm --force q-academy-ci-runtime >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          media_work_root="$RUNNER_TEMP/q-academy-media-processing"
+          sudo install -d -o root -g root -m 0755 "$media_work_root"
+          sudo install -d -o 1001 -g 1001 -m 0700 "$media_work_root/work"
+          printf '%s\n' q-academy-media-processing-v1 \
+            | sudo tee "$media_work_root/.q-academy-media-work-root" >/dev/null
+          sudo chown root:root "$media_work_root/.q-academy-media-work-root"
+          sudo chmod 0444 "$media_work_root/.q-academy-media-work-root"
+
+          docker rm --force q-academy-ci-runtime >/dev/null
+          docker run --detach --name q-academy-ci-runtime --network host \
+            --add-host ci-postgres.internal:127.0.0.1 \
+            -e Q_ACADEMY_RUNTIME_ROLE=media-worker \
+            -e Q_ACADEMY_APP_VERSION="$Q_ACADEMY_CI_RELEASE_TAG" \
+            -e DATABASE_URL="$RUNTIME_MEDIA_DATABASE_URL" \
+            -e CRON_SECRET="$RUNTIME_MEDIA_CRON_SECRET" \
+            -e METRICS_SECRET="$RUNTIME_MEDIA_METRICS_SECRET" \
+            -e MEDIA_STORAGE_DRIVER=s3 \
+            -e MEDIA_S3_ENDPOINT=https://objects.ci.q-academy.de \
+            -e MEDIA_S3_REGION=eu-central-1 \
+            -e MEDIA_S3_BUCKET=q-academy-ci-media \
+            -e MEDIA_S3_ACCESS_KEY_ID=QACADEMYCIMEDIAWORKER \
+            -e MEDIA_S3_SECRET_ACCESS_KEY=CiMediaWorker-7YuI3oP9aS5dF1gH6jK8lZ2xC4vBnMqW \
+            -e MEDIA_S3_FORCE_PATH_STYLE=false \
+            -e MEDIA_CLAMAV_HOST=127.0.0.1 \
+            -e MEDIA_CLAMAV_PORT=3310 \
+            -e MEDIA_PROCESSING_WORK_ROOT=/var/lib/q-academy-media-processing/work \
+            --volume "$media_work_root:/var/lib/q-academy-media-processing" \
+            "q-academy-media-runner:$Q_ACADEMY_CI_RELEASE_TAG"
+
+          media_ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              http://127.0.0.1:3000/api/v1/health/ready \
+              | node -e "let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',(chunk)=>input+=chunk);process.stdin.on('end',()=>{try{const body=JSON.parse(input);if(body?.data?.schema!=='current'||body?.data?.version!==process.env.Q_ACADEMY_CI_RELEASE_TAG)process.exitCode=1}catch{process.exitCode=1}})"; then
+              media_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$media_ready" != true ]]; then
+            docker logs q-academy-ci-runtime
+            exit 1
+          fi
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $RUNTIME_MEDIA_CRON_SECRET" \
+            --request POST \
+            'http://127.0.0.1:3000/api/internal/jobs/media/dispatch?limit=1' \
+            | grep --quiet '"processed"'
+
+      - name: Stop disposable CI runtime
+        if: always()
+        shell: bash
+        run: docker rm --force q-academy-ci-runtime >/dev/null 2>&1 || true
+
+      - name: Install pinned Trivy scanner
+        shell: bash
+        env:
+          TRIVY_VERSION: 0.70.0
+          TRIVY_LINUX_AMD64_SHA256: 8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9
+        run: |
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/$archive"
+          printf '%s  %s\n' "$TRIVY_LINUX_AMD64_SHA256" "$RUNNER_TEMP/$archive" \
+            | sha256sum --check --strict
+          sudo tar --extract --gzip --file "$RUNNER_TEMP/$archive" \
+            --directory /usr/local/bin trivy
+          trivy --version
+
+      - name: Scan images, generate SBOMs, and package tested images
+        shell: bash
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: |
+          bash scripts/ops/create-release-artifact.sh \
+            "$Q_ACADEMY_CI_RELEASE_TAG" .artifacts/release
+
+      - name: Install browser engines
+        run: npx playwright install --with-deps firefox webkit
+
+      - name: Run Playwright suite
+        env:
+          ENABLE_DEMO_LOGIN: "true"
+        run: npm run test:e2e
+
+      - name: Run Firefox and WebKit core flows
+        env:
+          ENABLE_DEMO_LOGIN: "true"
+        run: npm run test:e2e:cross-browser
+
+      - name: Upload tested release artifact and evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: q-academy-release-${{ github.sha }}
+          path: .artifacts/release
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ci-failure-diagnostics
+          path: |
+            .data/postgres-ci.log
+            .data/production-smoke-tls-proxy.log
+            .artifacts/release/evidence
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop PostgreSQL
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f .data/postgres-ci.pid ]]; then
+            kill -TERM "$(cat .data/postgres-ci.pid)" || true
+          fi
+
+  backup-restore-drill:
+    name: Disposable production backup/restore drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      Q_ACADEMY_DRILL_NODE_IMAGE: node:22-bookworm-slim@sha256:53ada149d435c38b14476cb57e4a7da73c15595aba79bd6971b547ceb6d018bf
+      Q_ACADEMY_DRILL_POSTGRES_IMAGE: postgres:16.14-alpine3.23@sha256:c95dee655b8a0743021bdbd2d21abb7ef2fd520c5df39bd328798769c049648f
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run required production backup/restore drill
+        run: npm run test:backup-restore-drill:required
+
+  publish-release:
+    name: Publish immutable release images
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: [verify, backup-restore-drill]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      Q_ACADEMY_CI_RELEASE_TAG: git-${{ github.sha }}
+    steps:
+      - name: Check out tested source
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Download tested release artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: q-academy-release-${{ github.sha }}
+          path: .artifacts/release
+
+      - name: Authenticate to GitHub Container Registry
+        shell: bash
+        run: |
+          printf '%s' "${{ github.token }}" \
+            | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Publish the exact tested image IDs
+        shell: bash
+        run: |
+          registry_root="ghcr.io/${GITHUB_REPOSITORY,,}"
+          bash scripts/ops/publish-release-images.sh \
+            "$Q_ACADEMY_CI_RELEASE_TAG" \
+            .artifacts/release \
+            "$registry_root" \
+            .artifacts/published/release-images.env
+
+      - name: Attest the digest-pinned release manifest
+        id: provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: .artifacts/published/release-images.env
+
+      - name: Collect provenance bundle
+        shell: bash
+        run: |
+          cp -- "${{ steps.provenance.outputs.bundle-path }}" \
+            .artifacts/published/release-images.intoto.jsonl
+
+      - name: Upload published manifest and provenance
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: q-academy-published-release-${{ github.sha }}
+          path: |
+            .artifacts/published/release-images.env
+            .artifacts/published/release-images.env.sha256
+            .artifacts/published/release-images.intoto.jsonl
+          if-no-files-found: error
+          retention-days: 90

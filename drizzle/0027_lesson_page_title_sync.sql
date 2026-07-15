@@ -1,0 +1,2 @@
+ALTER TABLE "lesson_pages" ADD COLUMN "title_synced_with_lesson" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "lesson_pages_one_title_sync_idx" ON "lesson_pages" USING btree ("lesson_id") WHERE "lesson_pages"."title_synced_with_lesson" = true;

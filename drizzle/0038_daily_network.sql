@@ -1,0 +1,2 @@
+ALTER TABLE "content_blocks" ADD COLUMN "revision" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
+ALTER TABLE "content_blocks" ADD CONSTRAINT "content_blocks_revision_check" CHECK ("content_blocks"."revision" > 0);

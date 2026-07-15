@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#17324d" />
+    <title>Offline | Q-Academy</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #f7f9fb;
+        color: #17324d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 0;
+        min-height: 100vh;
+        min-height: 100svh;
+        margin: 0;
+        background: #f7f9fb;
+      }
+
+      main {
+        display: grid;
+        min-height: 100vh;
+        min-height: 100svh;
+        place-items: center;
+        padding: 32px 24px;
+      }
+
+      section {
+        width: min(100%, 440px);
+        text-align: center;
+      }
+
+      img {
+        display: block;
+        width: 72px;
+        height: 72px;
+        margin: 0 auto 28px;
+        border-radius: 12px;
+      }
+
+      h1 {
+        margin: 0;
+        color: #17324d;
+        font-size: 32px;
+        line-height: 1.15;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 16px auto 0;
+        color: #526779;
+        font-size: 16px;
+        line-height: 1.65;
+      }
+
+      a {
+        display: inline-flex;
+        min-height: 44px;
+        align-items: center;
+        justify-content: center;
+        margin-top: 28px;
+        border-radius: 8px;
+        background: #2bb7a9;
+        color: #102a43;
+        font-size: 15px;
+        font-weight: 700;
+        padding: 11px 20px;
+        text-decoration: none;
+      }
+
+      a:focus-visible {
+        outline: 3px solid #d4553f;
+        outline-offset: 3px;
+      }
+
+      @media (max-width: 480px) {
+        main {
+          align-items: start;
+          padding: 20vh 20px 32px;
+        }
+
+        img {
+          width: 64px;
+          height: 64px;
+          margin-bottom: 24px;
+        }
+
+        h1 {
+          font-size: 28px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section aria-labelledby="offline-title">
+        <img src="/pwa/q-academy-v1-192.svg" alt="Q-Academy" width="72" height="72" />
+        <h1 id="offline-title">Keine Verbindung</h1>
+        <p>
+          Q-Academy ist gerade nicht erreichbar. Sobald die Verbindung wieder
+          steht, kannst du deine Lerninhalte erneut aufrufen.
+        </p>
+        <a href="/">Erneut versuchen</a>
+      </section>
+    </main>
+  </body>
+</html>

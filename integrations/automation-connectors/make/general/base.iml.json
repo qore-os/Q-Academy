@@ -1,0 +1,20 @@
+{
+  "baseUrl": "{{connection.baseUrl}}",
+  "headers": {
+    "authorization": "Bearer {{connection.apiKey}}",
+    "content-type": "application/json"
+  },
+  "response": {
+    "error": {
+      "400": { "type": "DataError", "message": "{{ifempty(body.detail, body.title)}}" },
+      "401": { "type": "InvalidAccessTokenError", "message": "{{ifempty(body.detail, body.title)}}" },
+      "403": { "type": "InvalidConfigurationError", "message": "{{ifempty(body.detail, body.title)}}" },
+      "422": { "type": "DataError", "message": "{{ifempty(body.detail, body.title)}}" },
+      "429": { "type": "RateLimitError", "message": "{{ifempty(body.detail, body.title)}}" },
+      "message": "[{{statusCode}}] {{ifempty(body.detail, body.title)}}"
+    }
+  },
+  "log": {
+    "sanitize": ["request.headers.authorization"]
+  }
+}

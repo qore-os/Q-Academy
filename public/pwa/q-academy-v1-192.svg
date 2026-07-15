@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="Q-Academy">
+  <rect width="192" height="192" rx="32" fill="#17324d"/>
+  <rect x="24" y="24" width="12" height="144" rx="6" fill="#2bb7a9"/>
+  <circle cx="104" cy="91" r="45" fill="none" stroke="#ffffff" stroke-width="18"/>
+  <path d="M131 124l27 26" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/>
+</svg>

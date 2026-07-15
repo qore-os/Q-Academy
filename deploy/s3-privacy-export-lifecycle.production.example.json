@@ -1,0 +1,35 @@
+{
+  "Rules": [
+    {
+      "ID": "q-academy-privacy-export-expiration-v1",
+      "Filter": {
+        "And": {
+          "Prefix": "tenants/",
+          "Tags": [
+            {
+              "Key": "q-academy-lifecycle",
+              "Value": "privacy-export-v1"
+            }
+          ]
+        }
+      },
+      "Status": "Enabled",
+      "Expiration": {
+        "Days": 8
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 8
+      }
+    },
+    {
+      "ID": "q-academy-tenant-expired-delete-markers-v1",
+      "Filter": {
+        "Prefix": "tenants/"
+      },
+      "Status": "Enabled",
+      "Expiration": {
+        "ExpiredObjectDeleteMarker": true
+      }
+    }
+  ]
+}
