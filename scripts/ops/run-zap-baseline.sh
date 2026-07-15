@@ -7,6 +7,7 @@ readonly zap_image="${CI_ZAP_IMAGE:?CI_ZAP_IMAGE must be an immutable ZAP image 
 readonly output_dir="$repository_root/.artifacts/zap-baseline"
 readonly policy_file="$repository_root/deploy/security/zap-baseline.conf"
 readonly context_file="$repository_root/deploy/security/zap-ci.context"
+readonly hook_file="$repository_root/deploy/security/zap-baseline-hooks.py"
 readonly report_file="$output_dir/zap-report.json"
 readonly policy_validator="$repository_root/scripts/ci/validate-zap-baseline.ts"
 readonly tsx_cli="$repository_root/node_modules/.bin/tsx"
@@ -16,7 +17,7 @@ if [[ ! "$zap_image" =~ ^zaproxy/zap-stable:2\.17\.0@sha256:[a-f0-9]{64}$ ]]; th
   exit 64
 fi
 
-for required_file in "$policy_file" "$context_file" "$policy_validator"; do
+for required_file in "$policy_file" "$context_file" "$hook_file" "$policy_validator"; do
   if [[ ! -r "$required_file" ]]; then
     echo "Required ZAP input is not readable: $required_file" >&2
     exit 66
@@ -38,9 +39,13 @@ rm -f -- \
   "$output_dir/exit-code.txt" \
   "$output_dir/scanner-exit-code.txt" \
   "$output_dir/scanner-evidence-exit-code.txt" \
+  "$output_dir/coverage-exit-code.txt" \
+  "$output_dir/coverage-evidence-exit-code.txt" \
+  "$output_dir/coverage-validation.txt" \
   "$output_dir/policy-exit-code.txt" \
   "$output_dir/policy-evidence-exit-code.txt" \
   "$output_dir/policy-validation.txt" \
+  "$output_dir/zap-baseline-hooks.py" \
   "$output_dir/zap-baseline.log" \
   "$output_dir/zap-report.html" \
   "$output_dir/zap-report.json" \
@@ -48,6 +53,7 @@ rm -f -- \
   "$output_dir/zap.out"
 install -m 0444 "$policy_file" "$output_dir/zap-baseline.conf"
 install -m 0444 "$context_file" "$output_dir/zap-ci.context"
+install -m 0444 "$hook_file" "$output_dir/zap-baseline-hooks.py"
 printf 'image=%s\ntarget=%s\nmode=baseline-passive\n' \
   "$zap_image" "$target_url" >"$output_dir/run-metadata.txt"
 
@@ -69,6 +75,7 @@ docker run --rm \
   "$zap_image" \
   zap-baseline.py \
   --autooff \
+  --hook=/zap/wrk/zap-baseline-hooks.py \
   -t "$target_url" \
   -n zap-ci.context \
   -c zap-baseline.conf \
@@ -89,6 +96,29 @@ set -e
 
 printf '%s\n' "$scan_status" >"$output_dir/scanner-exit-code.txt"
 printf '%s\n' "$scan_evidence_status" >"$output_dir/scanner-evidence-exit-code.txt"
+
+validate_passive_scan_coverage() {
+  if [[ ! -s "$output_dir/zap.out" ]]; then
+    echo "ZAP coverage validation failed: zap.out is missing or empty." >&2
+    return 1
+  fi
+  if grep -Fq "Disabling passive scan rule" "$output_dir/zap.out"; then
+    echo "ZAP coverage validation failed: a passive rule was disabled before coverage completed." >&2
+    return 1
+  fi
+  echo "ZAP coverage validation passed: no passive rule was truncated."
+}
+
+set +e
+validate_passive_scan_coverage \
+  2>&1 | tee "$output_dir/coverage-validation.txt"
+coverage_pipeline_status=("${PIPESTATUS[@]}")
+coverage_status="${coverage_pipeline_status[0]}"
+coverage_evidence_status="${coverage_pipeline_status[1]}"
+set -e
+
+printf '%s\n' "$coverage_status" >"$output_dir/coverage-exit-code.txt"
+printf '%s\n' "$coverage_evidence_status" >"$output_dir/coverage-evidence-exit-code.txt"
 
 # The ZAP baseline configuration can only classify whole rule families. The
 # report validator restores sub-alert granularity and therefore runs even when
@@ -111,6 +141,10 @@ if (( scan_status != 0 )); then
   final_status="$scan_status"
 elif (( scan_evidence_status != 0 )); then
   final_status="$scan_evidence_status"
+elif (( coverage_status != 0 )); then
+  final_status="$coverage_status"
+elif (( coverage_evidence_status != 0 )); then
+  final_status="$coverage_evidence_status"
 elif (( policy_status != 0 )); then
   final_status="$policy_status"
 elif (( policy_evidence_status != 0 )); then

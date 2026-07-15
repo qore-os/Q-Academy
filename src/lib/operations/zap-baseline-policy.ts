@@ -1,13 +1,25 @@
 const EXPECTED_ZAP_VERSION = "2.17.0";
 const EXPECTED_ORIGIN = "http://academy.ci.q-academy.de:3000";
+const EXPECTED_LOGIN_URI = `${EXPECTED_ORIGIN}/login`;
 const NONCE_SOURCE_PATTERN = /'nonce-[A-Za-z0-9_-]{32,128}'/g;
-const EXPECTED_CSP_PATHS = [
-  "/",
-  "/",
-  "/login",
-  "/robots.txt",
-  "/sitemap.xml",
-];
+const ZAP_NEXT_IMAGE_ARTIFACT_PATH =
+  "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75";
+const EXPECTED_CSP_ROUTE_PROFILES = [
+  {
+    id: "legacy-root-page",
+    paths: ["/", "/", "/login", "/robots.txt", "/sitemap.xml"],
+  },
+  {
+    id: "fixed-proxy-redirect",
+    paths: [
+      ZAP_NEXT_IMAGE_ARTIFACT_PATH,
+      "/login",
+      "/login",
+      "/robots.txt",
+      "/sitemap.xml",
+    ],
+  },
+] as const;
 const EXPECTED_WILDCARD_DETAIL =
   "The following directives either allow wildcard sources (or ancestors), are not defined, or are overly broadly defined:\n" +
   "img-src, connect-src, frame-src, media-src";
@@ -128,24 +140,35 @@ function validateEmptyRequestMetadata(instance: JsonRecord, label: string) {
   exact(instance.attack, "", `${label}.attack`);
 }
 
-function exactPathMultiset(
+function validateCspRouteCoverage(
   instances: JsonRecord[],
-  expectedPaths: string[],
   label: string,
 ) {
-  const actual = instances
+  const actualUris = instances
     .map((instance, index) => {
-      const url = instanceUrl(instance, `${label}.instances[${index}]`);
+      const instanceLabel = `${label}.instances[${index}]`;
+      const rawUri = string(instance.uri, `${instanceLabel}.uri`);
+      const url = instanceUrl(instance, instanceLabel);
       if (url.search || url.hash) {
-        fail(`${label}.instances[${index}].uri must not contain query or fragment data.`);
+        fail(`${instanceLabel}.uri must not contain query or fragment data.`);
       }
-      return url.pathname;
+      return rawUri;
     })
     .sort();
-  const expected = [...expectedPaths].sort();
-  if (actual.length !== expected.length || actual.some((path, index) => path !== expected[index])) {
-    fail(`${label}.instances does not match the reviewed route set.`);
+
+  for (const profile of EXPECTED_CSP_ROUTE_PROFILES) {
+    const expectedUris = profile.paths
+      .map((path) => `${EXPECTED_ORIGIN}${path}`)
+      .sort();
+    if (
+      actualUris.length === expectedUris.length &&
+      actualUris.every((uri, index) => uri === expectedUris[index])
+    ) {
+      return profile.id;
+    }
   }
+
+  fail(`${label}.instances does not match a reviewed CSP route profile.`);
 }
 
 function belongsToRuleFamily(
@@ -172,10 +195,7 @@ function validateCspException(
       : "CSP: style-src unsafe-inline",
     `${label}.alert`,
   );
-  if (instances.length !== EXPECTED_CSP_PATHS.length) {
-    fail(`${label} must contain the reviewed CSP route count.`);
-  }
-  exactPathMultiset(instances, EXPECTED_CSP_PATHS, label);
+  const routeSignature = validateCspRouteCoverage(instances, label);
 
   for (const [index, instance] of instances.entries()) {
     const instanceLabel = `${label}.instances[${index}]`;
@@ -198,6 +218,8 @@ function validateCspException(
       fail(`${instanceLabel}.evidence is not the reviewed CSP.`);
     }
   }
+
+  return routeSignature;
 }
 
 function validateServerActionCsrfException(
@@ -223,10 +245,8 @@ function validateServerActionCsrfException(
 
   for (const [index, instance] of instances.entries()) {
     const instanceLabel = `${label}.instances[${index}]`;
-    const url = instanceUrl(instance, instanceLabel);
-    if (url.pathname !== "/login" || url.search || url.hash) {
-      fail(`${instanceLabel} is not limited to the login Server Action.`);
-    }
+    instanceUrl(instance, instanceLabel);
+    exact(instance.uri, EXPECTED_LOGIN_URI, `${instanceLabel}.uri`);
     validateEmptyRequestMetadata(instance, instanceLabel);
     exact(instance.evidence, EXPECTED_SERVER_ACTION_FORM, `${instanceLabel}.evidence`);
     const otherInfo = string(instance.otherinfo, `${instanceLabel}.otherinfo`);
@@ -268,6 +288,7 @@ export function validateZapBaselineReport(
   let informationalAlertCount = 0;
   let acceptedExceptionAlertCount = 0;
   let acceptedExceptionInstanceCount = 0;
+  let cspRouteSignature: string | null = null;
   const seenAlertRefs = new Set<string>();
 
   for (const [index, rawAlert] of alerts.entries()) {
@@ -292,7 +313,17 @@ export function validateZapBaselineReport(
       if (alertRef !== "10055-4" && alertRef !== "10055-6") {
         fail(`Unexpected CSP ZAP alert reference: ${alertRef}.`);
       }
-      validateCspException(alert, alertRef, instances, label);
+      const routeSignature = validateCspException(
+        alert,
+        alertRef,
+        instances,
+        label,
+      );
+      if (cspRouteSignature === null) {
+        cspRouteSignature = routeSignature;
+      } else if (routeSignature !== cspRouteSignature) {
+        fail("The reviewed CSP alerts must cover the same route multiset.");
+      }
     } else if (belongsToRuleFamily(pluginId, alertRef, "10202")) {
       if (alertRef !== "10202") {
         fail(`Unexpected anti-CSRF ZAP alert reference: ${alertRef}.`);

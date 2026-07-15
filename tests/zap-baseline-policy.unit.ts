@@ -78,6 +78,15 @@ function cspAlert(
   };
 }
 
+function setCspPaths(alert: TestAlert, paths: string[]) {
+  const sourceInstances = structuredClone(alert.instances);
+  alert.instances = paths.map((path, index) => ({
+    ...sourceInstances[index % sourceInstances.length]!,
+    uri: `${origin}${path}`,
+  }));
+  alert.count = String(alert.instances.length);
+}
+
 function csrfAlert(): TestAlert {
   const evidence =
     '<form class="space-y-4" action="" encType="multipart/form-data" method="POST">';
@@ -169,6 +178,37 @@ test("accepts the reviewed ZAP 2.17.0 report contract", () => {
   });
 });
 
+test("accepts reversed GET and POST login instance order", () => {
+  const report = cloneReport();
+  report.site[0]!.alerts[0]!.instances.reverse();
+
+  assert.doesNotThrow(() => validateZapBaselineReport(report));
+});
+
+test("accepts the fixed Proxy redirect crawl in any instance order", () => {
+  const report = cloneReport();
+  const paths = [
+    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75",
+    "/login",
+    "/login",
+    "/robots.txt",
+    "/sitemap.xml",
+  ];
+  for (const [index, alert] of report.site[0]!.alerts
+    .filter((candidate) => candidate.alertRef.startsWith("10055-"))
+    .entries()) {
+    setCspPaths(alert, index === 0 ? paths : [...paths].reverse());
+  }
+
+  assert.deepEqual(validateZapBaselineReport(report), {
+    alertCount: 4,
+    instanceCount: 13,
+    informationalAlertCount: 1,
+    acceptedExceptionAlertCount: 3,
+    acceptedExceptionInstanceCount: 12,
+  });
+});
+
 test("rejects an unexpected ZAP version or disposable site identity", async (t) => {
   await t.test("wrong ZAP version", () => {
     const report = cloneReport();
@@ -224,6 +264,14 @@ test("rejects missing or malformed report structure", async (t) => {
       (() => {
         const report = cloneReport();
         report.site[0]!.alerts[0]!.instances[0]!.uri = "not a URL";
+        return report;
+      })(),
+    ],
+    [
+      "mismatched reported alert count",
+      (() => {
+        const report = cloneReport();
+        report.site[0]!.alerts[0]!.count = "99";
         return report;
       })(),
     ],
@@ -299,9 +347,63 @@ test("rejects foreign origins, unreviewed paths, and methods", async (t) => {
     assertPolicyRejects(report);
   });
 
+  await t.test("raw path normalization cannot enter a reviewed profile", () => {
+    const report = cloneReport();
+    report.site[0]!.alerts[1]!.instances[0]!.uri =
+      `${origin}/admin/../`;
+    assertPolicyRejects(report);
+  });
+
+  await t.test("unreviewed Next image crawler variant", () => {
+    const report = cloneReport();
+    report.site[0]!.alerts[1]!.instances[0]!.uri =
+      `${origin}/%2Fimages%2Fcourses%2Fworkflows.webp&w=750&q=75`;
+    assertPolicyRejects(report);
+  });
+
   await t.test("unreviewed CSP method", () => {
     const report = cloneReport();
     report.site[0]!.alerts[1]!.instances[0]!.method = "POST";
+    assertPolicyRejects(report);
+  });
+});
+
+test("rejects hybrid, excessive, or inconsistent CSP route profiles", async (t) => {
+  await t.test("missing required sitemap coverage", () => {
+    const report = cloneReport();
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      setCspPaths(alert, ["/", "/", "/login", "/login", "/robots.txt"]);
+    }
+    assertPolicyRejects(report);
+  });
+
+  await t.test("unreviewed login duplicate count", () => {
+    const report = cloneReport();
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      setCspPaths(alert, [
+        "/login",
+        "/login",
+        "/login",
+        "/robots.txt",
+        "/sitemap.xml",
+      ]);
+    }
+    assertPolicyRejects(report);
+  });
+
+  await t.test("different route multisets between CSP alerts", () => {
+    const report = cloneReport();
+    setCspPaths(report.site[0]!.alerts[1]!, [
+      "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75",
+      "/login",
+      "/login",
+      "/robots.txt",
+      "/sitemap.xml",
+    ]);
     assertPolicyRejects(report);
   });
 });
@@ -322,6 +424,19 @@ test("rejects an extra login form field or a foreign CSRF path", async (t) => {
     report.site[0]!.alerts[0]!.instances[0]!.uri = `${origin}/register`;
     assertPolicyRejects(report);
   });
+
+  for (const [name, uri] of [
+    ["normalized path alias", `${origin}/admin/../login`],
+    ["host casing alias", "http://ACADEMY.CI.Q-ACADEMY.DE:3000/login"],
+    ["query variant", `${origin}/login?next=/`],
+    ["fragment variant", `${origin}/login#form`],
+  ] as const) {
+    await t.test(name, () => {
+      const report = cloneReport();
+      report.site[0]!.alerts[0]!.instances[0]!.uri = uri;
+      assertPolicyRejects(report);
+    });
+  }
 });
 
 test("rejects a report containing only informational alerts as incomplete coverage", () => {

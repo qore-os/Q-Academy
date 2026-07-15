@@ -46,6 +46,14 @@ excludes internal job and OIDC callback routes. The scan has no credentials and
 does not enable the Ajax spider, alpha rules, API scan, full scan, or active
 scanner.
 
+The packaged ZAP scan normally stops each passive rule after ten alerts. The
+reviewed `zap-baseline-hooks.py` hook runs after that built-in tuning, sets the
+per-rule limit to unlimited, and reads the setting back before crawling starts.
+This prevents a noisy CSP rule from silently truncating coverage of later
+responses. A rejected or ineffective hook fails the scanner operationally. The
+runner also fails if `zap.out` is missing or reports that any passive rule was
+disabled, and preserves that independent coverage check as release evidence.
+
 `deploy/security/zap-baseline.conf` promotes browser-policy, cookie,
 information-disclosure, mixed-content, vulnerable-library, and application-error
 alerts to `FAIL`. Unlisted alerts retain ZAP's `WARN` default. The runner does not
@@ -56,13 +64,18 @@ ZAP can configure only a whole rule family, while CSP rule `10055` contains
 separate sub-alerts. Rules `10055` and `10202` are therefore marked `INFO` only
 at the scanner layer and passed to
 `scripts/ci/validate-zap-baseline.ts`. That validator pins the exact ZAP version,
-origin, alert references, routes, methods, counts, evidence, and request details.
-Its independently pinned CSP literal is not derived from the application's CSP
-builder. It accepts only the exact login Server Action form, CSP `10055-4`, and
-style-only `10055-6`. Script `unsafe-inline`, `unsafe-eval`, a changed CSP, an
-extra form field, an unknown sub-alert, malformed JSON, or a second target remains
-a hard failure. Exit codes from the scanner, validator, and both evidence writers
-are preserved separately; none can mask another.
+origin, alert references, one of two complete reviewed route multisets, methods,
+counts, evidence, and request details. The two CSP alerts must use the same
+profile. One profile records the former root-page crawl; the other records the
+fixed Proxy redirect plus one exact ZAP/Next-image crawler artifact. Raw URIs are
+compared for both CSP and login instances, so arbitrary paths, normalization
+tricks, crawler variants, and mixed profiles fail. Its independently pinned CSP
+literal is not derived from the application's CSP builder. It accepts only the
+exact login Server Action form, CSP `10055-4`, and style-only `10055-6`. Script
+`unsafe-inline`, `unsafe-eval`, a changed CSP, an extra form field, an unknown
+sub-alert, malformed JSON, or a second target remains a hard failure. Exit codes
+from the scanner, coverage check, validator, and their evidence writers are
+preserved separately; none can mask another.
 
 The scanner exceptions are narrowly bounded, but the underlying CSP network
 sources are not host-bounded: the browser may load images, media and frames from
@@ -96,8 +109,8 @@ The container runs read-only without Linux capabilities or new privileges, with
 CPU, memory, process, and writable-tmpfs limits. Its only writable bind mount is
 `.artifacts/zap-baseline`. ZAP runs with `-silent`, so the rules bundled into the
 pinned image are not updated over the network during CI. HTML, JSON, Markdown,
-log, exact policy/context snapshots, metadata, and exit-code evidence is uploaded
-with `if: always()`, including failed scans.
+log, exact policy/context/hook snapshots, metadata, and exit-code evidence is
+uploaded with `if: always()`, including failed scans.
 
 Run the identical scan locally while the disposable CI production image is
 listening on port 3000 and Docker is available:
