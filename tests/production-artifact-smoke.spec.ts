@@ -110,13 +110,18 @@ test("login Server Action rejects a foreign Origin before creating a session", a
       return;
     }
     interceptedActionRequests += 1;
-    await route.continue({
+    // Chromium recalculates protected request headers after route.continue().
+    // route.fetch() performs the replay with the explicit foreign Origin, and
+    // fulfilling the intercepted browser request preserves the real response.
+    const forwardedResponse = await route.fetch({
+      maxRedirects: 0,
       headers: {
         ...request.headers(),
         origin: "https://foreign-origin.example",
         "sec-fetch-site": "cross-site",
       },
     });
+    await route.fulfill({ response: forwardedResponse });
   });
 
   const actionResponsePromise = page.waitForResponse(

@@ -74,6 +74,10 @@ test("production artifact smoke covers login, both central routes, health, and A
   assert.match(smoke, /toContain\("cookie"\)/);
   assert.match(smoke, /headers\(\)\["x-powered-by"\]/);
   assert.match(smoke, /origin: "https:\/\/foreign-origin\.example"/);
+  assert.match(smoke, /const forwardedResponse = await route\.fetch\(/);
+  assert.match(smoke, /route\.fetch\(\{[\s\S]*maxRedirects: 0/);
+  assert.match(smoke, /await route\.fulfill\(\{ response: forwardedResponse \}\)/);
+  assert.doesNotMatch(smoke, /route\.continue\(\{[\s\S]*origin:/);
   assert.match(smoke, /expect\(actionResponse\.status\(\)\)\.toBe\(500\)/);
   assert.match(smoke, /cookie\.name\.endsWith\("q_academy_session"\)/);
   assert.match(smoke, /\/api\/v1\/health\/ready/);
@@ -167,12 +171,67 @@ test("CI provides canonical TLS and a non-development seeded API key", () => {
   );
   assert.match(workflow, /PRODUCTION_SMOKE_LISTEN_HOST=127\.0\.0\.1/);
   assert.match(workflow, /PLAYWRIGHT_API_KEY: \$\{\{ env\.DEMO_API_KEY \}\}/);
+  assert.doesNotMatch(
+    workflow,
+    /PLAYWRIGHT_SEED_PASSWORD:\s*Demo123!/,
+  );
 
   assert.match(proxy, /createServer\(/);
   assert.match(proxy, /createUpstreamRequest/);
   assert.match(proxy, /"x-forwarded-host": publicOrigin\.host/);
   assert.match(proxy, /"x-forwarded-proto": "https"/);
   assert.match(proxy, /request\.pipe\(upstreamRequest\)/);
+});
+
+test("CI rotates and always restores only disposable production-smoke credentials", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const credentials = source(
+    "scripts/ci/production-smoke-credentials.ts",
+  );
+  const installStart = workflow.indexOf(
+    "- name: Install production smoke browser",
+  );
+  const prepareStart = workflow.indexOf(
+    "- name: Prepare ephemeral production-smoke credentials",
+  );
+  const smokeStart = workflow.indexOf(
+    "- name: Smoke-test exact production app image",
+  );
+  const restoreStart = workflow.indexOf(
+    "- name: Restore disposable demo credentials",
+  );
+  const mediaStart = workflow.indexOf(
+    "- name: Smoke-test production media worker",
+  );
+
+  assert.ok(
+    installStart >= 0 &&
+      prepareStart > installStart &&
+      smokeStart > prepareStart &&
+      restoreStart > smokeStart &&
+      mediaStart > restoreStart,
+  );
+  assert.match(
+    workflow.slice(prepareStart, smokeStart),
+    /production-smoke-credentials\.ts prepare/,
+  );
+  const restoreStep = workflow.slice(restoreStart, mediaStart);
+  assert.match(restoreStep, /if: always\(\)/);
+  assert.match(restoreStep, /production-smoke-credentials\.ts restore/);
+
+  assert.match(credentials, /CI !== "true" \|\| environment\.GITHUB_ACTIONS !== "true"/);
+  assert.match(credentials, /assertDestructiveSeedAllowed\(environment\)/);
+  assert.match(credentials, /assertSeedDatabaseIdentity\(\{/);
+  assert.match(credentials, /const BCRYPT_ROUNDS = 12/);
+  assert.match(credentials, /hash\(password, BCRYPT_ROUNDS\)/);
+  assert.match(credentials, /status !== "active"/);
+  assert.match(credentials, /organizationSlug !== EXPECTED_ORGANIZATION/);
+  assert.match(credentials, /for update of users/);
+  assert.match(credentials, /PLAYWRIGHT_SEED_PASSWORD=\$\{password\}\\n/);
+  assert.ok(
+    credentials.indexOf("::add-mask::${password}") <
+      credentials.indexOf("hash(password, BCRYPT_ROUNDS)"),
+  );
 });
 
 test("later browser suites reuse Chromium and install only remaining engines", () => {

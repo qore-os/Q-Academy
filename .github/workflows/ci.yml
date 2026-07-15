@@ -528,6 +528,14 @@ jobs:
       - name: Install production smoke browser
         run: npx playwright install --with-deps chromium
 
+      - name: Prepare ephemeral production-smoke credentials
+        shell: bash
+        env:
+          NODE_ENV: test
+          ALLOW_DESTRUCTIVE_SEED: "true"
+          SEED_EXPECTED_DATABASE: q_academy
+        run: npx tsx scripts/ci/production-smoke-credentials.ts prepare
+
       - name: Smoke-test exact production app image
         shell: bash
         env:
@@ -535,7 +543,6 @@ jobs:
           PLAYWRIGHT_EXPECTED_RELEASE: ${{ env.Q_ACADEMY_CI_RELEASE_TAG }}
           PLAYWRIGHT_ADMIN_EMAIL: admin@q-academy.de
           PLAYWRIGHT_MEMBER_EMAIL: lea@q-academy.de
-          PLAYWRIGHT_SEED_PASSWORD: Demo123!
           PLAYWRIGHT_API_KEY: ${{ env.DEMO_API_KEY }}
         run: |
           image_reference="q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG"
@@ -604,6 +611,15 @@ jobs:
             exit 1
           fi
           exit "$smoke_status"
+
+      - name: Restore disposable demo credentials
+        if: always()
+        shell: bash
+        env:
+          NODE_ENV: test
+          ALLOW_DESTRUCTIVE_SEED: "true"
+          SEED_EXPECTED_DATABASE: q_academy
+        run: npx tsx scripts/ci/production-smoke-credentials.ts restore
 
       - name: Smoke-test production media worker
         shell: bash
