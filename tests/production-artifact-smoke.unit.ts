@@ -222,6 +222,8 @@ test("CI rotates and always restores only disposable production-smoke credential
   assert.match(credentials, /CI !== "true" \|\| environment\.GITHUB_ACTIONS !== "true"/);
   assert.match(credentials, /assertDestructiveSeedAllowed\(environment\)/);
   assert.match(credentials, /assertSeedDatabaseIdentity\(\{/);
+  assert.match(credentials, /host\(inet_server_addr\(\)\) as "serverAddress"/);
+  assert.doesNotMatch(credentials, /inet_server_addr\(\)::text/);
   assert.match(credentials, /const BCRYPT_ROUNDS = 12/);
   assert.match(credentials, /hash\(password, BCRYPT_ROUNDS\)/);
   assert.match(credentials, /status !== "active"/);

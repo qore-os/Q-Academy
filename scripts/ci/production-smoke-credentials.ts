@@ -95,7 +95,7 @@ async function rotateCredentials(mode: Mode, environment: Environment) {
     }>>`
       select
         current_database() as "databaseName",
-        inet_server_addr()::text as "serverAddress"
+        host(inet_server_addr()) as "serverAddress"
     `;
     assertSeedDatabaseIdentity({
       expectedDatabaseName: seedTarget.databaseName,
