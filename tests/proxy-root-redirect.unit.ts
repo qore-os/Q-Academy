@@ -5,11 +5,14 @@ import { NextRequest } from "next/server";
 
 import { proxy } from "@/proxy";
 
-test("proxy returns a bodyless login redirect for an anonymous root request", async () => {
+test("proxy creates an absolute login redirect for an anonymous root request", async () => {
   const response = proxy(new NextRequest("https://academy.example/"));
 
   assert.equal(response.status, 307);
-  assert.equal(response.headers.get("location"), "/login");
+  assert.equal(
+    response.headers.get("location"),
+    "https://academy.example/login",
+  );
   assert.equal(
     response.headers.get("cache-control"),
     "private, no-store, max-age=0, must-revalidate",

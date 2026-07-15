@@ -86,9 +86,11 @@ real login action to a foreign Origin and requires HTTP 500 with no session
 cookie. This is the counter-test for ZAP `10202`, which looks only for a hidden
 token. Anonymous `GET /` requests are redirected in Proxy before page rendering;
 unit and exact-production smoke tests require status 307, `Location: /login`, no
-session cookie, an empty response body, `private, no-store` caching, and
-`Vary: Cookie`. ZAP `10044` is not demoted and remains a normal blocking finding
-if that contract regresses.
+session cookie, `private, no-store` caching, and `Vary: Cookie`. Next.js 16 emits
+the relative destination as the redirect body, so the exact-production smoke
+test pins that body to the six bytes `/login`; rendered page data or any other
+content fails the gate. ZAP `10044` is not demoted and remains a normal blocking
+finding if that contract regresses.
 
 The container runs read-only without Linux capabilities or new privileges, with
 CPU, memory, process, and writable-tmpfs limits. Its only writable bind mount is

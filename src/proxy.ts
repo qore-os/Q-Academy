@@ -44,11 +44,17 @@ export function proxy(request: NextRequest) {
     request.nextUrl.pathname === "/" &&
     !hasPotentialSession(request)
   ) {
+    // Next.js 16 reparses Proxy Location headers without a base URL, then
+    // relativizes same-origin redirects for the client. Keep this URL absolute.
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.search = "";
+    loginUrl.hash = "";
+
     return applyDocumentPolicy(
-      new NextResponse(null, {
+      NextResponse.redirect(loginUrl, {
         status: 307,
         headers: {
-          Location: "/login",
           "Cache-Control": "private, no-store, max-age=0, must-revalidate",
           Vary: "Cookie",
         },

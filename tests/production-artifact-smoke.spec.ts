@@ -51,7 +51,7 @@ test("production login renders without development-only access", async ({
   await expect(page.getByRole("button", { name: /testen|demo/i })).toHaveCount(0);
 });
 
-test("unauthenticated root redirect has no body or session", async ({
+test("unauthenticated root redirect has only the bounded destination body", async ({
   request,
 }) => {
   const response = await request.get("/", { maxRedirects: 0 });
@@ -70,7 +70,10 @@ test("unauthenticated root redirect has no body or session", async ({
     "q_academy_session",
   );
 
-  expect(await response.text()).toBe("");
+  // Next.js serializes Proxy redirects with the relative destination as the
+  // response body. Pin it exactly so no rendered page or sensitive content can
+  // reappear and trigger ZAP's big-redirect disclosure rule.
+  expect(await response.text()).toBe("/login");
 });
 
 test("seed owner can sign in with a real password and render admin", async ({
