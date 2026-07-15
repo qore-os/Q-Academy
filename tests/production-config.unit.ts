@@ -30,6 +30,18 @@ const dockerfile = readFileSync(
   new URL("../Dockerfile", import.meta.url),
   "utf8",
 );
+const caddyfile = readFileSync(
+  new URL("../deploy/Caddyfile", import.meta.url),
+  "utf8",
+);
+const caddyRuntimeEntrypoint = readFileSync(
+  new URL("../scripts/ops/caddy-runtime-entrypoint.go", import.meta.url),
+  "utf8",
+);
+const dispatcherHttpPost = readFileSync(
+  new URL("../scripts/ops/dispatcher-http-post.mjs", import.meta.url),
+  "utf8",
+);
 const localEnvironmentExample = readFileSync(
   new URL("../.env.example", import.meta.url),
   "utf8",
@@ -371,6 +383,110 @@ test("STRATO privacy exports have an isolated continuous retention sweeper", () 
   );
 });
 
+test("production uses release-bound hardened dispatcher and Caddy runtimes", () => {
+  const dispatcherServices = [
+    composeServiceBlock("scheduler"),
+    composeServiceBlock("media-worker"),
+    composeServiceBlock("media-maintenance"),
+  ];
+  for (const service of dispatcherServices) {
+    assert.match(
+      service,
+      /image: q-academy-dispatcher:\$\{APP_IMAGE_TAG:\?Set APP_IMAGE_TAG to the release commit\}/,
+    );
+    assert.match(service, /target: dispatcher/);
+    assert.match(service, /user: "1001:1001"/);
+    assert.match(service, /node \/opt\/q-academy\/dispatcher-http-post[.]mjs/);
+    assert.match(service, /read_only: true/);
+    assert.match(service, /cap_drop:\s+- ALL/);
+    assert.match(service, /no-new-privileges:true/);
+    assert.doesNotMatch(service, /\bcurl\b/);
+  }
+  assert.equal(
+    productionCompose.match(/image: q-academy-dispatcher:/g)?.length,
+    3,
+  );
+  assert.doesNotMatch(productionCompose, /\$\{CURL_IMAGE:/);
+
+  const caddyVolumeInit = composeServiceBlock("caddy-volume-init");
+  assert.match(
+    caddyVolumeInit,
+    /image: q-academy-caddy:\$\{APP_IMAGE_TAG:\?Set APP_IMAGE_TAG to the release commit\}/,
+  );
+  assert.match(caddyVolumeInit, /user: "0:0"/);
+  assert.match(caddyVolumeInit, /command: \["initialize-volumes"\]/);
+  assert.match(caddyVolumeInit, /network_mode: none/);
+  assert.match(caddyVolumeInit, /cap_drop:\s+- ALL/);
+  assert.match(caddyVolumeInit, /cap_add:\s+- CHOWN\s+- DAC_READ_SEARCH/);
+  assert.match(caddyVolumeInit, /no-new-privileges:true/);
+  assert.doesNotMatch(caddyVolumeInit, /environment:/);
+
+  const caddy = composeServiceBlock("caddy");
+  assert.match(
+    caddy,
+    /image: q-academy-caddy:\$\{APP_IMAGE_TAG:\?Set APP_IMAGE_TAG to the release commit\}/,
+  );
+  assert.match(caddy, /target: caddy/);
+  assert.match(caddy, /user: "10001:10001"/);
+  assert.match(caddy, /"80:8080"/);
+  assert.match(caddy, /"443:8443"/);
+  assert.match(caddy, /"443:8443\/udp"/);
+  assert.match(caddy, /read_only: true/);
+  assert.match(caddy, /\/tmp:size=32m,mode=1777,uid=10001,gid=10001/);
+  assert.match(caddy, /cap_drop:\s+- ALL/);
+  assert.match(caddy, /no-new-privileges:true/);
+  assert.doesNotMatch(caddy, /cap_add:/);
+  assert.match(
+    caddy,
+    /caddy-volume-init:\s+condition: service_completed_successfully/,
+  );
+  assert.doesNotMatch(productionCompose, /\$\{CADDY_IMAGE:/);
+
+  assert.match(caddyfile, /^\thttp_port 8080$/m);
+  assert.match(caddyfile, /^\thttps_port 8443$/m);
+  assert.match(
+    dockerfile,
+    /ARG CADDY_BUILDER_IMAGE=golang:1[.]26[.]5-bookworm@sha256:[a-f0-9]{64}/,
+  );
+  assert.match(
+    dockerfile,
+    /ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187/,
+  );
+  assert.match(dockerfile, /^FROM scratch AS caddy$/m);
+  assert.match(dockerfile, /^USER 10001:10001$/m);
+  assert.match(dockerfile, /CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build/);
+  assert.match(dockerfile, /-mod=vendor/);
+  assert.match(dockerfile, /-buildvcs=false/);
+  assert.match(dockerfile, /Caddy must be statically linked/);
+  assert.match(dockerfile, /\/out\/rootfs\/etc\/caddy/);
+  assert.match(
+    dockerfile,
+    /\/build\/caddy\/LICENSE \\\n+      \/out\/rootfs\/usr\/share\/licenses\/caddy\/LICENSE/,
+  );
+  assert.match(dockerfile, /cmp \/out\/rootfs\/usr\/bin\/caddy \/tmp\/caddy-reproducibility-check/);
+  assert.match(dockerfile, /q-academy-caddy-volume-v1/);
+
+  assert.match(caddyRuntimeEntrypoint, /runtimeUID\s+= 10001/);
+  assert.match(caddyRuntimeEntrypoint, /initializeRuntimeDirectory/);
+  assert.match(
+    caddyRuntimeEntrypoint,
+    /uid == runtimeUID && gid == runtimeGID && info[.]Mode\(\)[.]Perm\(\) == 0o700 \{\s+return verifySentinel\(directory\)/,
+  );
+  assert.match(caddyRuntimeEntrypoint, /len\(entries\) != 1/);
+  assert.match(caddyRuntimeEntrypoint, /os[.]Chown\(directory, runtimeUID, runtimeGID\)/);
+  assert.match(caddyRuntimeEntrypoint, /os[.]Lstat\(directory\)/);
+  assert.match(caddyRuntimeEntrypoint, /info[.]Mode\(\)[.]Perm\(\) != 0o700/);
+  assert.match(caddyRuntimeEntrypoint, /os[.]O_EXCL/);
+  assert.match(caddyRuntimeEntrypoint, /probe[.]Sync\(\)/);
+  assert.match(caddyRuntimeEntrypoint, /syscall[.]Exec/);
+
+  assert.match(dispatcherHttpPost, /redirect: "manual"/);
+  assert.match(dispatcherHttpPost, /maximumResponseBytes = 1024 \* 1024/);
+  assert.match(dispatcherHttpPost, /Authorization: Bearer/);
+  assert.match(dispatcherHttpPost, /O_NOFOLLOW/);
+  assert.doesNotMatch(dispatcherHttpPost, /console[.](?:log|error)/);
+});
+
 test("production isolates media scans from the public app runtime", () => {
   const databaseRole = composeServiceBlock("database-role");
   const databasePermissions = composeServiceBlock("database-permissions");
@@ -464,7 +580,7 @@ test("production isolates media scans from the public app runtime", () => {
   assert.doesNotMatch(mediaWorker, /^      - proxy$/m);
   assert.doesNotMatch(mediaWorker, /http:\/\/app:3000\/api\/internal\/jobs\/media/);
   assert.doesNotMatch(mediaWorker, /\/media\/maintenance/);
-  assert.match(mediaWorker, /--max-time 14400/);
+  assert.match(mediaWorker, /--timeout-seconds 14400/);
   assert.match(mediaWorker, /MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-15000/);
   assert.match(mediaWorker, /MEDIA_WORKER_POLL_SECONDS \+ 14400 \+ 60/);
   assert.match(mediaWorker, /\/tmp\/media-worker[.]in-progress/);
@@ -483,7 +599,7 @@ test("production isolates media scans from the public app runtime", () => {
     mediaMaintenance,
     /MEDIA_MAINTENANCE_INTERVAL_SECONDS.*-lt 30/,
   );
-  assert.match(mediaMaintenance, /--max-time 550/);
+  assert.match(mediaMaintenance, /--timeout-seconds 550/);
   assert.equal(
     productionCompose.match(/\/api\/internal\/jobs\/media\/maintenance/g)
       ?.length,

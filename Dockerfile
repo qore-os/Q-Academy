@@ -1,4 +1,8 @@
 ARG NODE_IMAGE=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+ARG CADDY_BUILDER_IMAGE=golang:1.26.5-bookworm@sha256:3f6236bd765f898a2a3c2946112b04097814c4529d44534674700cd07b9c6b4c
+ARG CADDY_VERSION=2.11.4
+ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187
+ARG CADDY_SOURCE_DATE_EPOCH=1780342502
 ARG DEBIAN_SNAPSHOT=20260714T202849Z
 ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
 ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
@@ -31,6 +35,123 @@ RUN rm -rf -- \
     && ! command -v corepack >/dev/null 2>&1 \
     && ! command -v yarn >/dev/null 2>&1 \
     && ! command -v yarnpkg >/dev/null 2>&1
+
+FROM ${CADDY_BUILDER_IMAGE} AS caddy-builder
+ARG CADDY_VERSION
+ARG CADDY_BUILDABLE_ARTIFACT_SHA256
+ARG CADDY_SOURCE_DATE_EPOCH
+ENV GOTOOLCHAIN=local
+COPY scripts/ops/caddy-runtime-entrypoint.go /tmp/q-academy-caddy-entrypoint.go
+RUN set -eux; \
+    test "$(go env GOVERSION)" = "go1.26.5"; \
+    test "$CADDY_VERSION" = "2.11.4"; \
+    test "$CADDY_BUILDABLE_ARTIFACT_SHA256" = "33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187"; \
+    test "$CADDY_SOURCE_DATE_EPOCH" = "1780342502"; \
+    artifact=/tmp/caddy-buildable-artifact.tar.gz; \
+    curl --fail --location --silent --show-error --retry 3 \
+      --connect-timeout 15 \
+      --max-time 300 \
+      --proto '=https' \
+      --proto-redir '=https' \
+      --output "$artifact" \
+      "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_buildable-artifact.tar.gz"; \
+    printf '%s  %s\n' "$CADDY_BUILDABLE_ARTIFACT_SHA256" "$artifact" \
+      | sha256sum --check --strict -; \
+    install -d -m 0755 \
+      /build/caddy \
+      /out/rootfs/etc/caddy \
+      /out/rootfs/etc/ssl/certs \
+      /out/rootfs/usr/bin \
+      /out/rootfs/usr/share/licenses/caddy \
+      /out/rootfs/tmp; \
+    install -d -o 10001 -g 10001 -m 0700 \
+      /out/rootfs/data \
+      /out/rootfs/config; \
+    tar --extract --gzip --file "$artifact" \
+      --directory /build/caddy \
+      --no-same-owner \
+      --no-same-permissions; \
+    grep -Fx "require github.com/caddyserver/caddy/v2 v${CADDY_VERSION}" \
+      /build/caddy/go.mod; \
+    cd /build/caddy; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+      -mod=vendor \
+      -trimpath \
+      -buildvcs=false \
+      -ldflags='-s -w -buildid=' \
+      -o /out/rootfs/usr/bin/caddy \
+      .; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+      -mod=vendor \
+      -trimpath \
+      -buildvcs=false \
+      -ldflags='-s -w -buildid=' \
+      -o /tmp/caddy-reproducibility-check \
+      .; \
+    cmp /out/rootfs/usr/bin/caddy /tmp/caddy-reproducibility-check; \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+      -trimpath \
+      -buildvcs=false \
+      -ldflags='-s -w -buildid=' \
+      -o /out/rootfs/usr/bin/q-academy-caddy-entrypoint \
+      /tmp/q-academy-caddy-entrypoint.go; \
+    /out/rootfs/usr/bin/caddy version | grep -E "^v${CADDY_VERSION}([[:space:]]|$)"; \
+    go version -m /out/rootfs/usr/bin/caddy \
+      | grep -E "^[[:space:]]*dep[[:space:]]+github.com/caddyserver/caddy/v2[[:space:]]+v${CADDY_VERSION}([[:space:]]|$)"; \
+    if readelf -l /out/rootfs/usr/bin/caddy | grep -q 'INTERP'; then \
+      printf 'Caddy must be statically linked.\n' >&2; \
+      exit 1; \
+    fi; \
+    if readelf -l /out/rootfs/usr/bin/q-academy-caddy-entrypoint | grep -q 'INTERP'; then \
+      printf 'The Caddy runtime preflight must be statically linked.\n' >&2; \
+      exit 1; \
+    fi; \
+    install -m 0444 /etc/ssl/certs/ca-certificates.crt \
+      /out/rootfs/etc/ssl/certs/ca-certificates.crt; \
+    install -m 0444 /build/caddy/LICENSE \
+      /out/rootfs/usr/share/licenses/caddy/LICENSE; \
+    printf 'caddy:x:10001:10001:Caddy runtime:/config:/sbin/nologin\n' \
+      > /out/rootfs/etc/passwd; \
+    printf 'caddy:x:10001:\n' > /out/rootfs/etc/group; \
+    chmod 0444 /out/rootfs/etc/passwd /out/rootfs/etc/group; \
+    chmod 0555 \
+      /out/rootfs/usr/bin/caddy \
+      /out/rootfs/usr/bin/q-academy-caddy-entrypoint; \
+    chmod 1777 /out/rootfs/tmp; \
+    for directory in data config; do \
+      printf 'q-academy-caddy-volume-v1\n' \
+        > "/out/rootfs/$directory/.q-academy-caddy-volume-v1"; \
+      chown 10001:10001 "/out/rootfs/$directory/.q-academy-caddy-volume-v1"; \
+      chmod 0444 "/out/rootfs/$directory/.q-academy-caddy-volume-v1"; \
+    done; \
+    find /out/rootfs -exec \
+      touch --no-dereference --date="@${CADDY_SOURCE_DATE_EPOCH}" {} +; \
+    rm -f \
+      "$artifact" \
+      /tmp/caddy-reproducibility-check \
+      /tmp/q-academy-caddy-entrypoint.go
+
+FROM scratch AS caddy
+LABEL org.opencontainers.image.title="Q-Academy Caddy" \
+      org.opencontainers.image.version="2.11.4" \
+      org.opencontainers.image.source="https://github.com/qore-os/Q-Academy" \
+      org.opencontainers.image.licenses="Apache-2.0"
+COPY --from=caddy-builder /out/rootfs/ /
+ENV HOME=/config \
+    PATH=/usr/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    XDG_CONFIG_HOME=/config \
+    XDG_DATA_HOME=/data
+USER 10001:10001
+VOLUME ["/data", "/config"]
+EXPOSE 8080 8443 8443/udp
+ENTRYPOINT ["/usr/bin/q-academy-caddy-entrypoint"]
+CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+
+FROM runtime-base AS dispatcher
+ENV NODE_ENV=production
+COPY --chown=nextjs:nodejs scripts/ops/dispatcher-http-post.mjs /opt/q-academy/dispatcher-http-post.mjs
+USER nextjs
 
 FROM base AS dependencies
 COPY package.json package-lock.json ./

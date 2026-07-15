@@ -1,5 +1,7 @@
 {
 	email {$ACME_EMAIL}
+	http_port 8080
+	https_port 8443
 	admin off
 
 	on_demand_tls {

@@ -827,9 +827,16 @@ services:
     logging: *default-logging
 
   scheduler:
-    image: ${CURL_IMAGE:?Set CURL_IMAGE to a digest-pinned reference}
+    image: q-academy-dispatcher:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dispatcher
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
     restart: unless-stopped
     init: true
+    user: "1001:1001"
     environment:
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in the production env file}
       JOB_DISPATCH_INTERVAL_SECONDS: ${JOB_DISPATCH_INTERVAL_SECONDS:-15}
@@ -879,8 +886,10 @@ services:
             cleanup_due=true
           fi
           if status="$$(
-            printf 'header = "%s"\n' "$${authorization_header}" |
-              curl --config - --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 45 --request POST "$${endpoint}"
+            printf '%s\n' "$${authorization_header}" |
+              node /opt/q-academy/dispatcher-http-post.mjs \
+                --url "$${endpoint}" \
+                --timeout-seconds 45
           )"; then :; else status=000; fi
           case "$${status}" in
             2??)
@@ -922,9 +931,16 @@ services:
     logging: *default-logging
 
   media-worker:
-    image: ${CURL_IMAGE:?Set CURL_IMAGE to a digest-pinned reference}
+    image: q-academy-dispatcher:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dispatcher
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
     restart: unless-stopped
     init: true
+    user: "1001:1001"
     deploy:
       replicas: 2
     environment:
@@ -968,6 +984,7 @@ services:
         in_progress_marker=/tmp/media-worker.in-progress
         while true; do
           response_file=/tmp/media-dispatch.json
+          rm -f "$${response_file}"
           now="$$(date +%s)"
           printf '%s\n' "$${now}" > "$${in_progress_marker}.tmp"
           mv "$${in_progress_marker}.tmp" "$${in_progress_marker}"
@@ -981,8 +998,11 @@ services:
           ) &
           in_progress_pid=$$!
           if status="$$(
-            printf 'header = "%s"\n' "$${authorization_header}" |
-              curl --config - --silent --show-error --output "$${response_file}" --write-out '%{http_code}' --max-time 14400 --request POST 'http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1'
+            printf '%s\n' "$${authorization_header}" |
+              node /opt/q-academy/dispatcher-http-post.mjs \
+                --url 'http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1' \
+                --timeout-seconds 14400 \
+                --output "$${response_file}"
           )"; then :; else status=000; fi
           if kill "$${in_progress_pid}" 2>/dev/null; then :; fi
           if wait "$${in_progress_pid}" 2>/dev/null; then :; fi
@@ -1044,9 +1064,16 @@ services:
     logging: *default-logging
 
   media-maintenance:
-    image: ${CURL_IMAGE:?Set CURL_IMAGE to a digest-pinned reference}
+    image: q-academy-dispatcher:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dispatcher
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
     restart: unless-stopped
     init: true
+    user: "1001:1001"
     deploy:
       replicas: 1
     environment:
@@ -1089,9 +1116,13 @@ services:
         success_marker=/tmp/media-maintenance.last-success
         while true; do
           response_file=/tmp/media-maintenance.json
+          rm -f "$${response_file}"
           if status="$$(
-            printf 'header = "%s"\n' "$${authorization_header}" |
-              curl --config - --silent --show-error --output "$${response_file}" --write-out '%{http_code}' --max-time 550 --request POST 'http://media-runner:3000/api/internal/jobs/media/maintenance?limit=5'
+            printf '%s\n' "$${authorization_header}" |
+              node /opt/q-academy/dispatcher-http-post.mjs \
+                --url 'http://media-runner:3000/api/internal/jobs/media/maintenance?limit=5' \
+                --timeout-seconds 550 \
+                --output "$${response_file}"
           )"; then :; else status=000; fi
           body=""
           if [ -f "$${response_file}" ]; then body="$$(cat "$${response_file}")"; fi
@@ -1204,17 +1235,46 @@ services:
       - no-new-privileges:true
     logging: *default-logging
 
+  caddy-volume-init:
+    image: q-academy-caddy:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: caddy
+    restart: "no"
+    user: "0:0"
+    command: ["initialize-volumes"]
+    network_mode: none
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    pids_limit: 32
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
   caddy:
-    image: ${CADDY_IMAGE:?Set CADDY_IMAGE to a digest-pinned reference}
+    image: q-academy-caddy:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: caddy
     restart: unless-stopped
+    user: "10001:10001"
     environment:
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in the production env file}
       CADDY_SITE_ADDRESSES: ${CADDY_SITE_ADDRESSES:?Set CADDY_SITE_ADDRESSES in the production env file}
       CADDY_TLS_ASK_SECRET: ${CADDY_TLS_ASK_SECRET:?Set CADDY_TLS_ASK_SECRET in the production env file}
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "80:8080"
+      - "443:8443"
+      - "443:8443/udp"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -1222,6 +1282,8 @@ services:
     depends_on:
       app:
         condition: service_healthy
+      caddy-volume-init:
+        condition: service_completed_successfully
     networks:
       proxy:
         aliases:
@@ -1233,6 +1295,12 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,uid=10001,gid=10001
+    pids_limit: 256
+    cap_drop:
+      - ALL
     stop_grace_period: 30s
     security_opt:
       - no-new-privileges:true
