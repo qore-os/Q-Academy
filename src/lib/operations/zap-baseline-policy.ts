@@ -2,23 +2,12 @@ const EXPECTED_ZAP_VERSION = "2.17.0";
 const EXPECTED_ORIGIN = "http://academy.ci.q-academy.de:3000";
 const EXPECTED_LOGIN_URI = `${EXPECTED_ORIGIN}/login`;
 const NONCE_SOURCE_PATTERN = /'nonce-[A-Za-z0-9_-]{32,128}'/g;
-const ZAP_NEXT_IMAGE_ARTIFACT_PATH =
-  "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75";
-const EXPECTED_CSP_ROUTE_PROFILES = [
-  {
-    id: "legacy-root-page",
-    paths: ["/", "/", "/login", "/robots.txt", "/sitemap.xml"],
-  },
-  {
-    id: "fixed-proxy-redirect",
-    paths: [
-      ZAP_NEXT_IMAGE_ARTIFACT_PATH,
-      "/login",
-      "/login",
-      "/robots.txt",
-      "/sitemap.xml",
-    ],
-  },
+const EXPECTED_CSP_PATHS = [
+  "/login",
+  "/login",
+  "/password/forgot",
+  "/robots.txt",
+  "/sitemap.xml",
 ] as const;
 const EXPECTED_WILDCARD_DETAIL =
   "The following directives either allow wildcard sources (or ancestors), are not defined, or are overly broadly defined:\n" +
@@ -156,19 +145,15 @@ function validateCspRouteCoverage(
     })
     .sort();
 
-  for (const profile of EXPECTED_CSP_ROUTE_PROFILES) {
-    const expectedUris = profile.paths
-      .map((path) => `${EXPECTED_ORIGIN}${path}`)
-      .sort();
-    if (
-      actualUris.length === expectedUris.length &&
-      actualUris.every((uri, index) => uri === expectedUris[index])
-    ) {
-      return profile.id;
-    }
+  const expectedUris = EXPECTED_CSP_PATHS
+    .map((path) => `${EXPECTED_ORIGIN}${path}`)
+    .sort();
+  if (
+    actualUris.length !== expectedUris.length ||
+    actualUris.some((uri, index) => uri !== expectedUris[index])
+  ) {
+    fail(`${label}.instances does not match the reviewed CSP route profile.`);
   }
-
-  fail(`${label}.instances does not match a reviewed CSP route profile.`);
 }
 
 function belongsToRuleFamily(
@@ -195,7 +180,7 @@ function validateCspException(
       : "CSP: style-src unsafe-inline",
     `${label}.alert`,
   );
-  const routeSignature = validateCspRouteCoverage(instances, label);
+  validateCspRouteCoverage(instances, label);
 
   for (const [index, instance] of instances.entries()) {
     const instanceLabel = `${label}.instances[${index}]`;
@@ -218,8 +203,6 @@ function validateCspException(
       fail(`${instanceLabel}.evidence is not the reviewed CSP.`);
     }
   }
-
-  return routeSignature;
 }
 
 function validateServerActionCsrfException(
@@ -288,7 +271,6 @@ export function validateZapBaselineReport(
   let informationalAlertCount = 0;
   let acceptedExceptionAlertCount = 0;
   let acceptedExceptionInstanceCount = 0;
-  let cspRouteSignature: string | null = null;
   const seenAlertRefs = new Set<string>();
 
   for (const [index, rawAlert] of alerts.entries()) {
@@ -313,17 +295,7 @@ export function validateZapBaselineReport(
       if (alertRef !== "10055-4" && alertRef !== "10055-6") {
         fail(`Unexpected CSP ZAP alert reference: ${alertRef}.`);
       }
-      const routeSignature = validateCspException(
-        alert,
-        alertRef,
-        instances,
-        label,
-      );
-      if (cspRouteSignature === null) {
-        cspRouteSignature = routeSignature;
-      } else if (routeSignature !== cspRouteSignature) {
-        fail("The reviewed CSP alerts must cover the same route multiset.");
-      }
+      validateCspException(alert, alertRef, instances, label);
     } else if (belongsToRuleFamily(pluginId, alertRef, "10202")) {
       if (alertRef !== "10202") {
         fail(`Unexpected anti-CSRF ZAP alert reference: ${alertRef}.`);

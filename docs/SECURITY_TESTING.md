@@ -64,12 +64,13 @@ ZAP can configure only a whole rule family, while CSP rule `10055` contains
 separate sub-alerts. Rules `10055` and `10202` are therefore marked `INFO` only
 at the scanner layer and passed to
 `scripts/ci/validate-zap-baseline.ts`. That validator pins the exact ZAP version,
-origin, alert references, one of two complete reviewed route multisets, methods,
-counts, evidence, and request details. The two CSP alerts must use the same
-profile. One profile records the former root-page crawl; the other records the
-fixed Proxy redirect plus one exact ZAP/Next-image crawler artifact. Raw URIs are
-compared for both CSP and login instances, so arbitrary paths, normalization
-tricks, crawler variants, and mixed profiles fail. Its independently pinned CSP
+origin, alert references, the complete uncapped route multiset, methods, counts,
+evidence, and request details. Both CSP alerts must contain exactly two login
+instances plus password recovery, robots, and sitemap coverage. Historical
+root-page and Next-image profiles observed while ZAP still truncated the rule are
+intentionally rejected. Raw URIs are compared for both CSP and login instances,
+so arbitrary paths, normalization tricks, crawler variants, and mixed profiles
+fail. Its independently pinned CSP
 literal is not derived from the application's CSP builder. It accepts only the
 exact login Server Action form, CSP `10055-4`, and style-only `10055-6`. Script
 `unsafe-inline`, `unsafe-eval`, a changed CSP, an extra form field, an unknown

@@ -53,7 +53,13 @@ function documentPolicy(nonceCharacter: string) {
 function cspAlert(
   alertRef: "10055-4" | "10055-6",
 ): TestAlert {
-  const paths = ["/", "/", "/login", "/robots.txt", "/sitemap.xml"];
+  const paths = [
+    "/login",
+    "/login",
+    "/password/forgot",
+    "/robots.txt",
+    "/sitemap.xml",
+  ];
   return {
     pluginid: "10055",
     alertRef,
@@ -185,19 +191,12 @@ test("accepts reversed GET and POST login instance order", () => {
   assert.doesNotThrow(() => validateZapBaselineReport(report));
 });
 
-test("accepts the fixed Proxy redirect crawl in any instance order", () => {
+test("accepts the complete uncapped crawl in any CSP instance order", () => {
   const report = cloneReport();
-  const paths = [
-    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75",
-    "/login",
-    "/login",
-    "/robots.txt",
-    "/sitemap.xml",
-  ];
   for (const [index, alert] of report.site[0]!.alerts
     .filter((candidate) => candidate.alertRef.startsWith("10055-"))
     .entries()) {
-    setCspPaths(alert, index === 0 ? paths : [...paths].reverse());
+    if (index === 0) alert.instances.reverse();
   }
 
   assert.deepEqual(validateZapBaselineReport(report), {
@@ -368,7 +367,33 @@ test("rejects foreign origins, unreviewed paths, and methods", async (t) => {
   });
 });
 
-test("rejects hybrid, excessive, or inconsistent CSP route profiles", async (t) => {
+test("rejects retired, incomplete, or inconsistent CSP route profiles", async (t) => {
+  await t.test("retired truncated root-page profile", () => {
+    const report = cloneReport();
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      setCspPaths(alert, ["/", "/", "/login", "/robots.txt", "/sitemap.xml"]);
+    }
+    assertPolicyRejects(report);
+  });
+
+  await t.test("retired truncated Next-image profile", () => {
+    const report = cloneReport();
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      setCspPaths(alert, [
+        "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75",
+        "/login",
+        "/login",
+        "/robots.txt",
+        "/sitemap.xml",
+      ]);
+    }
+    assertPolicyRejects(report);
+  });
+
   await t.test("missing required sitemap coverage", () => {
     const report = cloneReport();
     for (const alert of report.site[0]!.alerts.filter((candidate) =>
@@ -398,11 +423,11 @@ test("rejects hybrid, excessive, or inconsistent CSP route profiles", async (t) 
   await t.test("different route multisets between CSP alerts", () => {
     const report = cloneReport();
     setCspPaths(report.site[0]!.alerts[1]!, [
-      "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75",
       "/login",
       "/login",
+      "/password/forgot",
+      "/password/forgot",
       "/robots.txt",
-      "/sitemap.xml",
     ]);
     assertPolicyRejects(report);
   });
