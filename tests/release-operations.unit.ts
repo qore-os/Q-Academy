@@ -730,7 +730,7 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /TRIVY_VERSION: 0\.70\.0/);
   assert.match(
     continuousIntegration,
-    /CI_PROMETHEUS_IMAGE: prom\/prometheus:v3\.12\.0@sha256:[a-f0-9]{64}/,
+    /CI_PROMETHEUS_IMAGE: prom\/prometheus:v3\.13\.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893/,
   );
   assert.match(
     continuousIntegration,
