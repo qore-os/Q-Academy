@@ -162,4 +162,7 @@ async function main() {
   }
 }
 
-await main();
+void main().catch((error: unknown) => {
+  printFailure(error, process.argv.includes("--json"));
+  process.exitCode = 1;
+});

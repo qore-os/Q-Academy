@@ -100,7 +100,7 @@ async function main() {
   }
 }
 
-await main().catch((error) => {
+void main().catch((error) => {
   void error;
   console.error(JSON.stringify({
     ok: false,

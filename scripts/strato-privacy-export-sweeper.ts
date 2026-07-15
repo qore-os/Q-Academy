@@ -182,5 +182,10 @@ async function main() {
 if (process.argv.includes("--help")) {
   process.stdout.write(`${HELP}\n`);
 } else {
-  await main();
+  void main().catch(() => {
+    process.stderr.write(
+      `${JSON.stringify({ ok: false, code: "strato_privacy_sweep_failed" })}\n`,
+    );
+    process.exitCode = 1;
+  });
 }
