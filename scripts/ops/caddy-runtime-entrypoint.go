@@ -154,7 +154,22 @@ func main() {
 		}
 	}
 
-	arguments := append([]string{"/usr/bin/caddy"}, os.Args[1:]...)
+	if len(os.Args) != 6 ||
+		os.Args[1] != "run" ||
+		os.Args[2] != "--config" ||
+		os.Args[3] != "/etc/caddy/Caddyfile" ||
+		os.Args[4] != "--adapter" ||
+		os.Args[5] != "caddyfile" {
+		fail("the Caddy runtime command is not permitted")
+	}
+	arguments := []string{
+		"/usr/bin/caddy",
+		"run",
+		"--config",
+		"/etc/caddy/Caddyfile",
+		"--adapter",
+		"caddyfile",
+	}
 	if err := syscall.Exec("/usr/bin/caddy", arguments, os.Environ()); err != nil {
 		fail("the Caddy process could not be started")
 	}

@@ -491,7 +491,16 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
   assert.match(caddyRuntimeEntrypoint, /info[.]Mode\(\)[.]Perm\(\) != 0o700/);
   assert.match(caddyRuntimeEntrypoint, /os[.]O_EXCL/);
   assert.match(caddyRuntimeEntrypoint, /probe[.]Sync\(\)/);
-  assert.match(caddyRuntimeEntrypoint, /syscall[.]Exec/);
+  assert.match(caddyRuntimeEntrypoint, /len\(os[.]Args\) != 6/);
+  assert.match(
+    caddyRuntimeEntrypoint,
+    /arguments := \[\]string\{\s+"\/usr\/bin\/caddy",\s+"run",\s+"--config",\s+"\/etc\/caddy\/Caddyfile",\s+"--adapter",\s+"caddyfile",\s+\}/,
+  );
+  assert.match(
+    caddyRuntimeEntrypoint,
+    /syscall[.]Exec\("\/usr\/bin\/caddy", arguments, os[.]Environ\(\)\)/,
+  );
+  assert.doesNotMatch(caddyRuntimeEntrypoint, /append\(\[\]string/);
 
   assert.match(dispatcherHttpPost, /redirect: "manual"/);
   assert.match(dispatcherHttpPost, /maximumResponseBytes = 1024 \* 1024/);
