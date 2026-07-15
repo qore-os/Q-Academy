@@ -504,6 +504,18 @@ test("production isolates media scans from the public app runtime", () => {
     continuousIntegration,
     /Q_ACADEMY_RUNTIME_ROLE=media-worker[^]*-e DATABASE_URL="\$RUNTIME_MEDIA_DATABASE_URL"/,
   );
+  assert.match(
+    continuousIntegration,
+    /^          RUNTIME_ADMIN_DATABASE_URL: postgresql:\/\/postgres:postgres@127\.0\.0\.1:54329\/q_academy$/m,
+  );
+  assert.match(
+    continuousIntegration,
+    /const admin = postgres\(process\.env\.RUNTIME_ADMIN_DATABASE_URL/,
+  );
+  assert.doesNotMatch(
+    continuousIntegration,
+    /const admin = postgres\(process\.env\.POSTGRES_ADMIN_URL/,
+  );
   assert.match(continuousIntegration, /RUNTIME_OWNER_DATABASE_URL:/);
   assert.match(
     continuousIntegration,

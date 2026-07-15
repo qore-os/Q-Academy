@@ -259,6 +259,7 @@ jobs:
       - name: Build and start production containers
         shell: bash
         env:
+          RUNTIME_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:54329/q_academy
           RUNTIME_OWNER_DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@ci-postgres.internal:54329/q_academy
           RUNTIME_DATABASE_URL: postgresql://q_academy_ci_app:4a3b2c1d0e9f8877665544332211aabbccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
           RUNTIME_MEDIA_DATABASE_URL: postgresql://q_academy_ci_media:8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
@@ -327,7 +328,7 @@ jobs:
           node --input-type=module <<'NODE'
           import postgres from "postgres";
 
-          const admin = postgres(process.env.POSTGRES_ADMIN_URL, { max: 1 });
+          const admin = postgres(process.env.RUNTIME_ADMIN_DATABASE_URL, { max: 1 });
           await admin.unsafe(
             "alter role q_academy_ci nosuperuser nocreatedb nocreaterole noreplication nobypassrls noinherit",
           );
