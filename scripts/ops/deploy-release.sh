@@ -108,7 +108,6 @@ export APP_IMAGE_TAG="$release_tag"
 compose=(docker compose --env-file "$env_file" -f "$compose_file" "${MEDIA_S3_COMPOSE_PROFILE_ARGS[@]}")
 strato_compose=(docker compose --env-file "$env_file" -f "$compose_file" --profile strato)
 
-run "${compose[@]}" config --quiet
 run docker build --pull --target release-verifier \
   --build-arg "NODE_IMAGE=$NODE_IMAGE" \
   --tag q-academy-release-verifier:local .
@@ -126,6 +125,11 @@ local_release_images=(
   "q-academy-media-preflight:$release_tag"
   "q-academy-s3-app-principal-preflight:$release_tag"
 )
+verified_local_release_images=(
+  "q-academy-postgres:$release_tag"
+  "${local_release_images[@]}"
+)
+verified_postgres_image=""
 case "$release_image_mode" in
   verified-manifest)
     [[ -n "$release_image_manifest" ]] || fail "RELEASE_IMAGE_MANIFEST is required in verified-manifest mode"
@@ -149,7 +153,11 @@ case "$release_image_mode" in
       --deny-self-hosted-runners
     host_platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')" || fail "Docker server platform is unavailable"
     verify_release_image_manifest "$release_image_manifest" "$release_tag" "$host_platform" || fail "release image manifest is invalid"
+    verified_postgres_image="$Q_ACADEMY_POSTGRES_IMAGE"
+    export POSTGRES_IMAGE="$verified_postgres_image"
+    run "${compose[@]}" config --quiet
     source_release_images=(
+      "$Q_ACADEMY_POSTGRES_IMAGE"
       "$Q_ACADEMY_APP_IMAGE"
       "$Q_ACADEMY_MIGRATOR_IMAGE"
       "$Q_ACADEMY_KEY_ROTATION_IMAGE"
@@ -160,7 +168,7 @@ case "$release_image_mode" in
     )
     for index in "${!source_release_images[@]}"; do
       source_image="${source_release_images[$index]}"
-      local_image="${local_release_images[$index]}"
+      local_image="${verified_local_release_images[$index]}"
       run docker pull "$source_image"
       if [[ "$dry_run" != "true" ]]; then
         source_image_id="$(docker image inspect --format '{{.Id}}' "$source_image")" || fail "pulled release image is unavailable: $source_image"
@@ -175,6 +183,7 @@ case "$release_image_mode" in
     done
     ;;
   local-build)
+    run "${compose[@]}" config --quiet
     for image in "${local_release_images[@]}"; do
       if docker image inspect "$image" >/dev/null 2>&1; then
         fail "immutable release image already exists: $image"
@@ -265,7 +274,7 @@ fi
 run "${compose[@]}" ps
 
 if [[ "$dry_run" != "true" ]]; then
-  persist_app_image_tag "$env_file" "$release_tag" || fail "could not persist APP_IMAGE_TAG"
+  persist_app_image_tag "$env_file" "$release_tag" "$verified_postgres_image" || fail "could not persist release image pins"
   mkdir -p "$(dirname "$state_file")"
   temporary_state="${state_file}.tmp.$$"
   umask 077

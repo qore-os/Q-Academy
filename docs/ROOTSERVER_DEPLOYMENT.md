@@ -712,7 +712,8 @@ neuem Evidence- und Abnahmelauf erforderlich.
 
    Owner-, App- und Media-Passwoerter koennen in einem Wartungsfenster durch
    Aktualisieren der geschuetzten Env-Datei und erneutes Ausfuehren von
-   `database-role` rotiert werden. Das offizielle PostgreSQL-Image wendet
+   `database-role` rotiert werden. Das von Q-Academy aus dem offiziellen
+   PostgreSQL-Basisimage abgeleitete Image wendet
    `POSTGRES_BOOTSTRAP_PASSWORD` bei vorhandenem `PGDATA` nicht erneut an. Dieses
    Passwort daher zuerst mit dem noch gueltigen Bootstrap-Zugang per `ALTER ROLE`
    in PostgreSQL rotieren, danach die Env-Datei atomar aktualisieren und
@@ -722,14 +723,19 @@ neuem Evidence- und Abnahmelauf erforderlich.
    Beim S3-Anbieter zwei getrennte Principals provisionieren und deren Access-/
    Secret-Keys in `MEDIA_S3_APP_*` beziehungsweise `MEDIA_S3_*` eintragen.
 
-   Fuer `NODE_IMAGE`, `POSTGRES_IMAGE`, `CLAMAV_IMAGE`, `CURL_IMAGE`,
-   `PROMETHEUS_IMAGE`, `NODE_EXPORTER_IMAGE` und `CADDY_IMAGE` jeweils das
+   Fuer `NODE_IMAGE`, den lokalen Fallback `POSTGRES_IMAGE`, `CLAMAV_IMAGE`,
+   `CURL_IMAGE`, `PROMETHEUS_IMAGE`, `NODE_EXPORTER_IMAGE` und `CADDY_IMAGE` jeweils das
    freigegebene Upstream-Image ziehen und die vom Registry-Provider
    veroeffentlichte unveraenderliche Referenz im Format
    `name:tag@sha256:<64-hex>` eintragen. Digests niemals raten oder aus einer
    anderen Architektur uebernehmen. Release-Evidence muss Referenz,
    Zielarchitektur, Abrufzeitpunkt und erfolgreichen Vulnerability-Scan
-   enthalten. `APP_IMAGE_TAG` bleibt bei der Erstinstallation leer und wird erst
+   enthalten. Im normalen `verified-manifest`-Pfad ist jedoch nicht der
+   PostgreSQL-Fallback aus der Env-Datei autoritativ: Das attestierte
+   `Q_ACADEMY_POSTGRES_IMAGE` aus `release-images.env` wird vor dem ersten
+   Compose-Aufruf als `POSTGRES_IMAGE` gesetzt und erst nach erfolgreicher
+   Readiness atomar in der Env-Datei persistiert. `APP_IMAGE_TAG` bleibt bei der
+   Erstinstallation leer und wird erst
    nach erfolgreicher Readiness durch das gesperrte Deploy-Skript gesetzt;
    danach pflegen Deploy und Rollback den Wert atomar.
 
@@ -784,7 +790,8 @@ neuem Evidence- und Abnahmelauf erforderlich.
 
    Bei privaten GHCR-Paketen vorab mit einem kurzlebigen, nur lesenden Token
    `docker login ghcr.io` ausfuehren. Das Deploy zieht ausschliesslich die im
-   Manifest enthaltenen `@sha256:`-Referenzen. Der Manifest-Commit, der
+   Manifest enthaltenen `@sha256:`-Referenzen, einschliesslich des gehaerteten
+   PostgreSQL-Images. Der Manifest-Commit, der
    vollstaendige lokale Git-Commit und `linux/<arch>` des Docker-Servers muessen
    exakt uebereinstimmen.
 
@@ -1211,7 +1218,8 @@ Backup aus. Vor dem Backup-Gate nimmt es in fester Reihenfolge nach dem
 Release-Lock zusaetzlich `/var/lock/q-academy-backup.lock`.
 Standardmaessig verlangt es `RELEASE_IMAGE_MANIFEST`, verifiziert
 dessen GitHub-/Sigstore-Bundle gegen Repository, signernden Workflow und
-Source-Commit, prueft Zielarchitektur und zieht App, Migrator, Key-Rotation,
+Source-Commit, prueft Zielarchitektur und zieht PostgreSQL, App, Migrator,
+Key-Rotation,
 Medienrunner, Medien-Preflight und App-S3-Principal-Preflight nur ueber die dort
 attestierten Registry-Digests. Erst danach
 stoppt es Scheduler, beide Medien-Dispatcher, App und Medienrunner, fuehrt
@@ -1222,8 +1230,8 @@ Compose injiziert den exakten `APP_IMAGE_TAG` in beide Runtimes als
 aus. Deploy und Rollback vergleichen diesen Wert in App und Medienrunner exakt
 mit dem angeforderten Zieltag. Erst danach starten die Dispatcher. Jeder Fehler
 nach dem Stop laesst alle DB-Writer fuer die Untersuchung angehalten. Erst nach
-dieser Release-Readiness schreibt das Skript
-`APP_IMAGE_TAG` atomar in die geschuetzte
+dieser Release-Readiness schreibt das Skript `APP_IMAGE_TAG` und den
+attestierten PostgreSQL-Digest atomar in die geschuetzte
 Produktions-Env sowie den aktuellen und vorherigen Releasezustand. Env und
 State muessen bei jedem weiteren Deploy und Rollback uebereinstimmen. Der
 Backup-Lock bleibt dabei vom Vorab-Backup ueber Writer-Stop, Migration und
@@ -1245,7 +1253,8 @@ scripts/ops/deploy-release.sh "$release_tag"
 
 `RELEASE_IMAGE_MODE=local-build` erhaelt den bisherigen reproduzierbaren Build
 mit digest-gepinntem Node-Basisimage, festem Debian-Snapshot und exakter
-FFmpeg-Paketversion fuer isolierte lokale oder Offline-Abnahmen. Dieser Modus
+FFmpeg-Paketversion sowie dem digest-gepinnten `POSTGRES_IMAGE`-Fallback aus
+der Env-Datei fuer isolierte lokale oder Offline-Abnahmen. Dieser Modus
 besitzt ohne anschliessende identische CI-Scans, SBOMs, Publikation und
 Attestierung keine Produktionsfreigabe. Ein manuelles `sed` auf `APP_IMAGE_TAG`
 oder ein direkter Release-Build umgeht

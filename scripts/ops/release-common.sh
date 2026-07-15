@@ -11,6 +11,7 @@ PINNED_IMAGE_VARIABLES=(
 )
 
 RELEASE_IMAGE_MANIFEST_VARIABLES=(
+  Q_ACADEMY_POSTGRES_IMAGE
   Q_ACADEMY_APP_IMAGE
   Q_ACADEMY_MIGRATOR_IMAGE
   Q_ACADEMY_KEY_ROTATION_IMAGE
@@ -297,6 +298,7 @@ assert_release_environment_writable() {
 persist_app_image_tag() {
   local env_file="$1"
   local release_tag="$2"
+  local postgres_image="${3:-}"
   local directory basename temporary
 
   assert_release_environment_writable "$env_file" || return 1
@@ -304,13 +306,24 @@ persist_app_image_tag() {
     printf 'Refusing to persist an invalid source-bound release tag.\n' >&2
     return 1
   }
+  if [[ -n "$postgres_image" ]]; then
+    [[ "$postgres_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || {
+      printf 'Refusing to persist an invalid PostgreSQL image digest.\n' >&2
+      return 1
+    }
+    production_env_value "$env_file" POSTGRES_IMAGE >/dev/null || return 1
+  fi
 
   directory="$(dirname -- "$env_file")"
   basename="$(basename -- "$env_file")"
   umask 077
   temporary="$(mktemp "${directory}/.${basename}.tmp.XXXXXX")" || return 1
-  if ! awk -v release_tag="$release_tag" '
+  if ! awk -v release_tag="$release_tag" -v postgres_image="$postgres_image" '
     /^APP_IMAGE_TAG=/ { print "APP_IMAGE_TAG=" release_tag; next }
+    /^POSTGRES_IMAGE=/ && postgres_image != "" {
+      print "POSTGRES_IMAGE=" postgres_image
+      next
+    }
     { print }
   ' "$env_file" >"$temporary"; then
     rm -f -- "$temporary"

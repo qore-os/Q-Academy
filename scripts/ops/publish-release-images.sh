@@ -36,8 +36,9 @@ host_platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')"
 
 gzip --decompress --stdout "$artifact_directory/release-images.tar.gz" | docker load >/dev/null
 
-image_components=(app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
+image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
 id_variables=(
+  Q_ACADEMY_POSTGRES_IMAGE_ID
   Q_ACADEMY_APP_IMAGE_ID
   Q_ACADEMY_MIGRATOR_IMAGE_ID
   Q_ACADEMY_KEY_ROTATION_IMAGE_ID
@@ -47,6 +48,7 @@ id_variables=(
   Q_ACADEMY_S3_APP_PRINCIPAL_PREFLIGHT_IMAGE_ID
 )
 manifest_variables=(
+  Q_ACADEMY_POSTGRES_IMAGE
   Q_ACADEMY_APP_IMAGE
   Q_ACADEMY_MIGRATOR_IMAGE
   Q_ACADEMY_KEY_ROTATION_IMAGE

@@ -22,14 +22,25 @@ debian_snapshot="${CI_DEBIAN_SNAPSHOT:-}"
 ca_certificates_version="${CI_CA_CERTIFICATES_VERSION:-}"
 ffmpeg_version="${CI_FFMPEG_VERSION:-}"
 mesa_version="${CI_MESA_VERSION:-}"
+postgres_base_image="${CI_POSTGRES_BASE_IMAGE:-}"
+golang_builder_image="${CI_GOLANG_BUILDER_IMAGE:-}"
+gosu_version="${CI_GOSU_VERSION:-}"
+gosu_source_commit="${CI_GOSU_SOURCE_COMMIT:-}"
+gosu_source_sha256="${CI_GOSU_SOURCE_SHA256:-}"
 [[ "$node_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_NODE_IMAGE must be digest-pinned"
 [[ "$debian_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "CI_DEBIAN_SNAPSHOT is invalid"
 [[ "$ca_certificates_version" =~ ^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_CA_CERTIFICATES_VERSION is invalid"
 [[ "$ffmpeg_version" =~ ^[0-9]+:[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_FFMPEG_VERSION is invalid"
 [[ "$mesa_version" =~ ^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_MESA_VERSION is invalid"
+[[ "$postgres_base_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_POSTGRES_BASE_IMAGE must be digest-pinned"
+[[ "$golang_builder_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_GOLANG_BUILDER_IMAGE must be digest-pinned"
+[[ "$gosu_version" =~ ^[0-9]+\.[0-9]+$ ]] || fail "CI_GOSU_VERSION is invalid"
+[[ "$gosu_source_commit" =~ ^[a-f0-9]{40}$ ]] || fail "CI_GOSU_SOURCE_COMMIT is invalid"
+[[ "$gosu_source_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_GOSU_SOURCE_SHA256 is invalid"
 
-image_components=(app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
+image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
 image_variables=(
+  Q_ACADEMY_POSTGRES_IMAGE_ID
   Q_ACADEMY_APP_IMAGE_ID
   Q_ACADEMY_MIGRATOR_IMAGE_ID
   Q_ACADEMY_KEY_ROTATION_IMAGE_ID
@@ -56,6 +67,11 @@ mkdir -- "$output_directory/evidence"
   printf 'Q_ACADEMY_CA_CERTIFICATES_VERSION=%s\n' "$ca_certificates_version"
   printf 'Q_ACADEMY_FFMPEG_VERSION=%s\n' "$ffmpeg_version"
   printf 'Q_ACADEMY_MESA_VERSION=%s\n' "$mesa_version"
+  printf 'Q_ACADEMY_POSTGRES_BASE_IMAGE=%s\n' "$postgres_base_image"
+  printf 'Q_ACADEMY_GOLANG_BUILDER_IMAGE=%s\n' "$golang_builder_image"
+  printf 'Q_ACADEMY_GOSU_VERSION=%s\n' "$gosu_version"
+  printf 'Q_ACADEMY_GOSU_SOURCE_COMMIT=%s\n' "$gosu_source_commit"
+  printf 'Q_ACADEMY_GOSU_SOURCE_SHA256=%s\n' "$gosu_source_sha256"
   for index in "${!image_components[@]}"; do
     image="q-academy-${image_components[$index]}:$release_tag"
     image_id="$(docker image inspect --format '{{.Id}}' "$image")" || fail "release image is unavailable: $image"
