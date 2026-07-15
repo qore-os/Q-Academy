@@ -44,6 +44,24 @@ test("processing preflight never substitutes a help-only transcript probe", () =
   );
 });
 
+test("processing preflight supports an explicit fail-closed disabled transcript provider", () => {
+  const result = resolveMediaProcessingPreflightConfiguration({
+    ...production,
+    MEDIA_TRANSCRIPTION_ENABLED: "false",
+    MEDIA_TRANSCRIPT_COMMAND: "",
+    MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: "",
+  });
+  assert.equal(result.transcript.mode, "disabled");
+  assert.throws(
+    () =>
+      resolveMediaProcessingPreflightConfiguration({
+        ...production,
+        MEDIA_TRANSCRIPTION_ENABLED: "disabled",
+      }),
+    /MEDIA_TRANSCRIPTION_ENABLED must be true or false/,
+  );
+});
+
 test("processing preflight rejects unsafe roots and ambiguous transcript providers", () => {
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_PROCESSING_WORK_ROOT: "/" }), /unsafe/);
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY: "/tmp/vtt" }), /not allowed|exactly one/);

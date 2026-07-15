@@ -260,7 +260,11 @@ Die Direktzugaenge werden nur in der lokalen Entwicklungsumgebung gerendert. `EN
    unabhaengige Zufallswerte setzen. Fuer Daten-, Webhook- und MFA-Keyrings
    zusaetzlich `DATA_ENCRYPTION_KEY_ID`, `WEBHOOK_ENCRYPTION_KEY_ID` und
    `MFA_RECOVERY_PEPPER_ID` setzen.
-4. Fuer Produktion ein authentifiziertes HTTPS-Mail-Gateway konfigurieren und `EMAIL_DELIVERY_REQUIRED=true` setzen.
+4. Fuer Produktion ein authentifiziertes HTTPS-Mail-Gateway konfigurieren und
+   `EMAIL_DELIVERY_REQUIRED=true` setzen. Eine bewusste Erstinbetriebnahme ohne
+   Versand ist nur mit `EMAIL_DELIVERY_REQUIRED=false` und gleichzeitig leeren
+   `EMAIL_DELIVERY_WEBHOOK_URL`/`EMAIL_DELIVERY_WEBHOOK_SECRET` zulaessig; siehe
+   `docs/MAIL_GATEWAY_CONTRACT.md`.
 5. Juristisch freigegebene `LEGAL_IMPRINT_URL`, `LEGAL_PRIVACY_URL` und `SUPPORT_EMAIL` setzen.
 6. Ein eigenes VAPID-P-256-Schluesselpaar als `WEB_PUSH_VAPID_PUBLIC_KEY`,
    `WEB_PUSH_VAPID_PRIVATE_KEY` und `WEB_PUSH_VAPID_SUBJECT` konfigurieren.
@@ -345,7 +349,10 @@ gestarteten STT-Befehl als begrenztes, validiertes WebVTT erzeugt und koennen
 fuer Untertitel sowie zeitcodierte Suche uebernommen werden. Der
 Produktions-Compose verdrahtet dafuer den nur in den Medien-Images enthaltenen
 OpenAI-Adapter fest auf `whisper-1`; Schluessel, echter Canary und rechtliche
-Providerfreigabe bleiben Go-live-Gates. Profilbilder und Medien-Profilfelder
+Providerfreigabe bleiben Gates fuer automatische Transkription. Mit
+`MEDIA_TRANSCRIPTION_ENABLED=false` startet die Plattform explizit fail-closed:
+kein Provider-Preflight, kein Audio-Egress und lokal fehlschlagende
+Transkriptjobs. Profilbilder und Medien-Profilfelder
 laufen durch dieselbe tenantgebundene `ready`-Asset-Pipeline. Der S3-Runner bindet exakte VersionId,
 ETag und SHA-256, verifiziert Derivat-Uploads und bereinigt sein dediziertes,
 diskbasiertes sowie groessenbegrenztes `nodev,nosuid,noexec`-Arbeitsfilesystem.

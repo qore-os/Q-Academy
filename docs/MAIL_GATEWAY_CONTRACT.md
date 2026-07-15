@@ -10,6 +10,30 @@ Outbox, Worker, Inbound-Signaturpruefung und Sperrlogik sind Bestandteil der
 Anwendung. Auswahl und Einrichtung des realen Mailproviders, Versanddomain,
 DNS-Authentifizierung und externe Zustell-/Lastabnahme bleiben Betriebs-Gates.
 
+## Expliziter Fail-closed-Betrieb ohne ausgehende E-Mail
+
+Der sichere Produktionsstandard bleibt `EMAIL_DELIVERY_REQUIRED=true`; dann
+sind eine HTTPS-URL und ein starkes, eigenes Gateway-Secret zwingend. Fuer eine
+bewusste Erstinbetriebnahme ohne Mailprovider darf der Versand ausschliesslich
+mit dieser konsistenten Kombination deaktiviert werden:
+
+```dotenv
+EMAIL_DELIVERY_REQUIRED=false
+EMAIL_DELIVERY_WEBHOOK_URL=
+EMAIL_DELIVERY_WEBHOOK_SECRET=
+```
+
+URL und Secret muessen dabei beide fehlen oder leer sein. Mischkonfigurationen
+brechen die Produktionsvalidierung ab. Zustellversuche werden lokal als
+terminal fehlgeschlagen abgeschlossen, ohne das Gateway oder ein anderes
+Mailziel aufzurufen. Das gilt bewusst auch fuer Einladungen, Anmelde-Links und
+Passwort-Reset-Mails: Sie werden nicht fuer einen spaeteren Versand vorgemerkt.
+`EMAIL_DELIVERY_INBOUND_SECRET` bleibt auch in diesem Modus verpflichtend und
+unabhaengig; die Authentifizierung eingehender Provider-Events wird nicht
+abgeschwaecht. Zur Aktivierung werden URL und Secret gesetzt und
+`EMAIL_DELIVERY_REQUIRED=true` gemeinsam als kontrollierte
+Konfigurationsaenderung ausgerollt.
+
 ## Request
 
 - Methode: `POST`

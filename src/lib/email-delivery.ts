@@ -381,6 +381,13 @@ export async function deliverQueuedEmail(
       .returning();
     return failed;
   }
+  const configuration = getEmailDeliveryConfiguration();
+  if (!configuration) {
+    return finishEmailWithoutDelivery(claim, {
+      attempt,
+      detail: "Die E-Mail-Zustellung ist nicht konfiguriert.",
+    });
+  }
   let responseStatus: number | null = null;
   let responseBody = "";
   let delivered = false;
@@ -523,10 +530,6 @@ export async function deliverQueuedEmail(
       )
       .limit(1);
     if (!currentSnapshot) return null;
-    const configuration = getEmailDeliveryConfiguration();
-    if (!configuration) {
-      throw new Error("Die E-Mail-Zustellung ist nicht konfiguriert.");
-    }
     const response = await fetch(configuration.url, {
       method: "POST",
       redirect: "error",
@@ -546,12 +549,8 @@ export async function deliverQueuedEmail(
     responseBody = delivered
       ? ""
       : `Das Mail-Gateway antwortete mit HTTP ${response.status}.`;
-  } catch (error) {
-    responseBody =
-      error instanceof Error &&
-      error.message === "Die E-Mail-Zustellung ist nicht konfiguriert."
-        ? error.message
-        : "Die E-Mail-Zustellung ist fehlgeschlagen.";
+  } catch {
+    responseBody = "Die E-Mail-Zustellung ist fehlgeschlagen.";
   }
 
   const status = delivered

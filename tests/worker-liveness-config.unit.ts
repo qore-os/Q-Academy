@@ -33,7 +33,7 @@ for (const [serviceName, marker] of [
   test(`${serviceName} fails closed and exposes a success heartbeat`, () => {
     const service = serviceBlock(serviceName);
 
-    assert.match(service, /restart: unless-stopped/);
+    assert.match(service, /restart: "on-failure:5"/);
     assert.match(service, /WORKER_MAX_CONSECUTIVE_FAILURES:/);
     assert.match(service, /WORKER_HEARTBEAT_STALE_SECONDS:/);
     assert.match(service, /then :; else status=000; fi/);

@@ -606,12 +606,13 @@ export function validateProductionServerEnvironment(
   const emailDeliveryRequired = booleanValue(
     environment,
     "EMAIL_DELIVERY_REQUIRED",
-    false,
+    true,
     issues,
   );
-  if (!emailDeliveryRequired) {
-    issues.push("EMAIL_DELIVERY_REQUIRED must be true in production.");
-  }
+  const configuredEmailUrl = valueOf(
+    environment,
+    "EMAIL_DELIVERY_WEBHOOK_URL",
+  );
   const emailDeliveryWebhookUrl = productionWebhookUrl(
     environment,
     "EMAIL_DELIVERY_WEBHOOK_URL",
@@ -671,20 +672,28 @@ export function validateProductionServerEnvironment(
     }
   }
 
-  if (!emailDeliveryWebhookUrl) {
-    issues.push(
-      "EMAIL_DELIVERY_WEBHOOK_URL is required in production.",
-    );
-  }
-  if (emailDeliveryWebhookUrl && !emailDeliveryWebhookSecret) {
-    issues.push(
-      "EMAIL_DELIVERY_WEBHOOK_SECRET is required when EMAIL_DELIVERY_WEBHOOK_URL is configured.",
-    );
-  }
-  if (!emailDeliveryWebhookUrl && configuredEmailSecret) {
-    issues.push(
-      "EMAIL_DELIVERY_WEBHOOK_URL is required when EMAIL_DELIVERY_WEBHOOK_SECRET is configured.",
-    );
+  if (emailDeliveryRequired) {
+    if (!emailDeliveryWebhookUrl) {
+      issues.push(
+        "EMAIL_DELIVERY_WEBHOOK_URL is required when EMAIL_DELIVERY_REQUIRED is true.",
+      );
+    }
+    if (!emailDeliveryWebhookSecret) {
+      issues.push(
+        "EMAIL_DELIVERY_WEBHOOK_SECRET is required when EMAIL_DELIVERY_REQUIRED is true.",
+      );
+    }
+  } else {
+    if (configuredEmailUrl) {
+      issues.push(
+        "EMAIL_DELIVERY_WEBHOOK_URL must be unset when EMAIL_DELIVERY_REQUIRED is false.",
+      );
+    }
+    if (configuredEmailSecret) {
+      issues.push(
+        "EMAIL_DELIVERY_WEBHOOK_SECRET must be unset when EMAIL_DELIVERY_REQUIRED is false.",
+      );
+    }
   }
 
   try {

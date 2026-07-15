@@ -52,7 +52,7 @@ async function main() {
   currentStage = "transcript";
   if (configuration.transcript.mode === "command") {
     await runBoundedMediaCommand({ executable: configuration.transcript.executable, arguments: configuration.transcript.arguments, timeoutMs: 30_000 });
-  } else {
+  } else if (configuration.transcript.mode === "sidecar") {
     await access(configuration.transcript.directory, constants.R_OK);
   }
   currentStage = "work_filesystem";

@@ -7,7 +7,7 @@ PostgreSQL und ClamAV sind nicht am Host veroeffentlicht. Caddy bezieht und
 erneuert TLS-Zertifikate automatisch und ueberschreibt die an die App
 weitergereichte Client-IP. Medienobjekte liegen in Produktion in einem externen
 privaten S3-kompatiblen Bucket.
-Ein optionales Compose-Profil `monitoring` betreibt Prometheus und Node Exporter
+Das im Produktions-Reconcile verpflichtende Compose-Profil `monitoring` betreibt Prometheus und Node Exporter
 ohne oeffentlich erreichbaren Monitoring-Port. Die enthaltenen Alarmregeln
 ersetzen keine extern konfigurierte Benachrichtigungsstrecke.
 Das Compose-Profil `operations` stellt releasegebundene, nicht-root One-shot-
@@ -33,9 +33,17 @@ HTTP-SLO-Smokes bereit. Auf dem Host ist dafuer weiterhin kein Node.js noetig.
   verifizierte Custom Domains zeigen per A/AAAA oder CNAME auf denselben Server
 - Eingehend nur TCP 22, 80, 443 und UDP 443; Port 5432 bleibt geschlossen
 - Mail-Gateway gemaess [MAIL_GATEWAY_CONTRACT.md](./MAIL_GATEWAY_CONTRACT.md)
+  oder fuer die Erstinbetriebnahme der dort beschriebene explizite
+  Fail-closed-Modus ohne ausgehenden Mailversand
 - fuer jeden produktiv aktivierten SSO-Tenant ein OIDC-Client beim vorgesehenen
   Identity Provider mit kontrolliertem Owner-/Administratorzugang
 - Externes, verschluesseltes Backup-Ziel zusaetzlich zum lokalen Backup-Verzeichnis
+
+Eine UFW-`INPUT`-Regel allein ist kein Gate fuer von Docker publizierte Ports.
+Die Produktionsfreigabe verlaesst sich deshalb nicht auf UFW, sondern auf die
+projektgebundene Docker-Egress-Policy und die feste Aktivierungsreihenfolge:
+Caddy wird als letzter Dienst gestartet; erst dieser Start publiziert atomar
+TCP 80/443 und UDP 443 fuer den neuen Releasepfad.
 
 Die bereitgestellte Konfiguration betreibt genau eine oeffentliche App-Instanz
 und einen nicht oeffentlich erreichbaren Medienrunner. Horizontale Skalierung
@@ -516,9 +524,15 @@ expliziter Versionsfreigabe und dem vollstaendigen externen IPv4-/IPv6-Gate
 verwendet werden. Das Werkzeug unterstuetzt diesen kontrollierten Pfad, schaltet
 ihn aber nicht ein.
 
-Nach dem ersten Compose-Start, wenn die beiden Bridges existieren, wird der
-exakte Projektname aus der gerenderten Compose-Konfiguration gelesen und
-zunaechst nur validiert. Die JSON-Evidence auf stdout enthaelt keine Secrets:
+Deploy, Rollback und Boot-Reconcile leiten den exakten Projektnamen aus der
+gerenderten Compose-Konfiguration ab und akzeptieren ausschliesslich
+`q-academy`. Noch bevor ein Produktionsprozess startet, fuehren sie
+`compose create --no-build --no-recreate app media-runner` aus. Dieser Schritt
+erzeugt die benoetigten Bridges ohne Containerstart und ohne Caddy. Danach
+folgen zwingend `apply` und `verify`; erst bei Erfolg duerfen PostgreSQL,
+Provider-Preflights oder Runtimes starten. `DRY_RUN=true` gibt diese Schritte
+nur aus und veraendert weder Compose noch den Host. Eine manuelle Vorabkontrolle
+der JSON-Evidence enthaelt keine Secrets:
 
 ```bash
 cd /opt/q-academy
@@ -531,9 +545,9 @@ sudo bash scripts/ops/docker-egress-firewall.sh dry-run \
   --project "$project_name" --evidence -
 ```
 
-Erst nach Kontrolle von Projekt, Bridges, erlaubten Ports und Backend wird die
-Policy bewusst als eigene Rootserver-Aktion aktiviert und direkt erneut
-verifiziert:
+Die folgenden Einzelbefehle dienen nur der Diagnose beziehungsweise einer
+kontrollierten Erstabnahme. Der normale Releasepfad fuehrt dieselben Apply- und
+Verify-Gates selbst aus:
 
 ```bash
 sudo bash scripts/ops/docker-egress-firewall.sh apply --project "$project_name"
@@ -556,12 +570,18 @@ jeweiligen Host-Chain. Ein Fehler bei der Regelerzeugung wird vor dem atomaren
 Commit erkannt.
 
 Nach jedem Docker-/Host-Update, Neustart und jeder Netzneuerstellung ist
-`verify` ein verpflichtendes Gate. Die Boot-Reihenfolge und dauerhafte
-Aktivierung werden absichtlich nicht aus dem Repository eingeschaltet: Die
-reale Unit beziehungsweise Host-Automation muss auf dem Zielserver nach Docker
-und nach der Erzeugung der Compose-Netze `apply`, danach `verify` ausfuehren und
-bei jedem Fehler App-/Workerfreigabe verhindern. Dieses Boot-, IPv4-/IPv6- und
-Kernel-Gate gehoert zur externen Rootserver-Abnahme. Vor Kundendaten sind
+`verify` ein verpflichtendes Gate. Die versionierte Unit
+`q-academy-runtime.service` ist an `docker.service` gebunden und fuehrt nach
+jedem Docker-Start den migrationsfreien Fail-closed-Reconcile aus. Sie stoppt
+zuerst ausschliesslich Container mit dem exakten Compose-Label
+`com.docker.compose.project=q-academy`, erzeugt die Netze ohne Start, wendet die
+Policy an, verifiziert sie und startet dann Datenbank/ClamAV, beide Runtimes,
+Dispatcher, STRATO-Sweeper und Monitoring. Caddy folgt zuletzt. Jeder Fehler
+ruft ueber `ExecStopPost` denselben labelgebundenen Not-Stopp auf; dieser Pfad
+haengt weder von Env/State noch vom Release-Lock ab und beruehrt kein anderes
+Qore-Projekt. Installation und reale Ausfuehrung der Unit sowie das IPv4-/IPv6-
+und Kernel-Gate gehoeren weiterhin zur externen Rootserver-Abnahme. Vor
+Kundendaten sind
 Negativtests gegen beide Metadata-Adressen, Host-Gateway, RFC1918/ULA und einen
 nicht erlaubten Port sowie Positivtests fuer alle realen HTTPS-/ACME-/S3-/ClamAV-
 Ziele mit dem aktiven Provider-DNS durchzufuehren.
@@ -587,13 +607,24 @@ neuem Evidence- und Abnahmelauf erforderlich.
 1. Repository nach `/opt/q-academy` auschecken, exakt den freigegebenen Commit
    aktivieren und einen vollstaendig sauberen Worktree sicherstellen. Der
    Release-Tag ist immer `git-` plus vollstaendiger Git-Objekt-ID. Die
-   Betriebsskripte ausfuehrbar machen:
+   Betriebsskripte ausfuehrbar machen. Weil die Runtime-Unit den Controller als
+   root startet, muessen Checkout und `.git` vollstaendig root-eigen und ohne
+   Gruppen-/World-Schreibrechte sein. Der Emergency-Stop wird als separate,
+   root-eigene Kopie ausserhalb des Checkouts installiert:
 
    ```bash
    sudo chmod 0750 scripts/ops/deploy-release.sh scripts/ops/rollback-release.sh \
+     scripts/ops/reconcile-production.sh \
+     scripts/ops/q-academy-emergency-stop.sh \
      scripts/ops/postgres-backup.sh scripts/ops/postgres-restore.sh \
      scripts/ops/verify-image-pins.sh scripts/ops/create-release-artifact.sh \
      scripts/ops/publish-release-images.sh scripts/ops/docker-egress-firewall.sh
+   sudo chown -R root:root /opt/q-academy
+   sudo test -z "$(find /opt/q-academy -xdev \
+     \( ! -user root -o -perm /022 \) -print -quit)"
+   sudo install -D -o root -g root -m 0755 \
+     scripts/ops/q-academy-emergency-stop.sh \
+     /usr/local/libexec/q-academy-emergency-stop
    ```
 2. Konfiguration ausserhalb des Repositories anlegen:
 
@@ -602,7 +633,16 @@ neuem Evidence- und Abnahmelauf erforderlich.
    sudo install -m 0600 deploy/.env.production.example /etc/q-academy/production.env
    sudo editor /etc/q-academy/production.env
    sudo test "$(stat -c '%a' /etc/q-academy/production.env)" = 600
+   sudo install -d -o root -g root -m 0755 /var/lib/q-academy
+   sudo install -d -o root -g root -m 0700 /var/lib/q-academy/releases
+   sudo test "$(stat -c '%u:%g:%a' /var/lib/q-academy/releases)" = "0:0:700"
    ```
+
+   `/var/lib/q-academy/releases` muss bereits vor dem ersten Deploy exakt
+   root-eigen mit Modus `0700` existieren. Das Release-Skript veraendert die
+   Rechte eines vorhandenen, moeglicherweise falsch konfigurierten Verzeichnisses
+   bewusst nicht. Dort liegen der root-only State und waehrend einer offenen
+   Migration der Fail-closed-Marker `pending.env`.
 
    Die Operator-Container erhalten keine Repository- oder Host-Root-Mounts.
    Eingaben und Ausgaben werden auf zwei feste Verzeichnisse begrenzt. Das
@@ -667,8 +707,9 @@ neuem Evidence- und Abnahmelauf erforderlich.
    `PRIVACY_SUBJECT_HMAC_SECRET`,
    `EXAM_SELECTION_SECRET`, `WEBHOOK_ENCRYPTION_KEY`, `DATA_ENCRYPTION_KEY`, `CRON_SECRET`,
    `MEDIA_CRON_SECRET`, `METRICS_SECRET`, `MEDIA_METRICS_SECRET` und
-   `EMAIL_DELIVERY_WEBHOOK_SECRET` und `EMAIL_DELIVERY_INBOUND_SECRET` jeweils
-   einen eigenen Wert erzeugen:
+   `EMAIL_DELIVERY_INBOUND_SECRET` jeweils einen eigenen Wert erzeugen. Wenn
+   der ausgehende Mailversand aktiviert ist, auch fuer
+   `EMAIL_DELIVERY_WEBHOOK_SECRET` einen weiteren eigenen Wert erzeugen:
 
    ```bash
    openssl rand -hex 32
@@ -919,10 +960,13 @@ neuem Evidence- und Abnahmelauf erforderlich.
    sudo test "$(wc -c </etc/q-academy/prometheus-media-token)" -ge 32
    ```
 
-8. Das Monitoring-Profil starten und lokal auf dem Rootserver pruefen:
+8. Das verpflichtende Monitoring-Profil lokal auf dem Rootserver pruefen. Deploy,
+   Rollback und Boot-Reconcile starten Prometheus und Node Exporter bereits vor
+   der abschliessenden Caddy-Aktivierung; ein manuelles `up` darf diese
+   Reihenfolge nicht umgehen:
 
    ```bash
-   docker compose --env-file "$Q_ACADEMY_ENV_FILE" -f compose.production.yml --profile monitoring up -d prometheus node-exporter
+   docker compose --env-file "$Q_ACADEMY_ENV_FILE" -f compose.production.yml --profile monitoring ps prometheus node-exporter
    curl --fail --show-error http://127.0.0.1:9090/-/ready
    curl --fail --show-error http://127.0.0.1:9090/api/v1/targets
    curl --fail --show-error http://127.0.0.1:9090/api/v1/rules
@@ -930,6 +974,29 @@ neuem Evidence- und Abnahmelauf erforderlich.
 
    Prometheus ist nur an `127.0.0.1:9090` gebunden. Fuer die Bedienoberflaeche
    einen SSH-Tunnel verwenden und Port 9090 nicht in der Firewall freigeben.
+
+9. Nach dem ersten erfolgreichen Deploy die versionierte Runtime-Unit installieren,
+   aktivieren und einmal bewusst ausfuehren. Die Unit laedt keine Secrets in die
+   systemd-Umgebung; sie uebergibt nur feste Dateipfade an das Release-Skript:
+
+   ```bash
+   sudo install -m 0644 deploy/systemd/q-academy-runtime.service \
+     /etc/systemd/system/q-academy-runtime.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable q-academy-runtime.service
+   sudo systemctl start q-academy-runtime.service
+   sudo systemctl status --no-pager q-academy-runtime.service
+   sudo journalctl -u q-academy-runtime.service -n 200 --no-pager
+   ```
+
+   `BindsTo=` und `PartOf=` stoppen die Unit mit Docker; der
+   `WantedBy=docker.service`-Link startet den Reconcile nach jedem erneuten
+   Docker-Start. Die Startfrist betraegt zwei Stunden, weil die gesperrten
+   Health-Gates fuer Dispatcher und Provider bewusst lang sein koennen. Ein
+   fehlgeschlagener Reconcile wird nach fuenf Minuten erneut versucht, jedoch
+   hoechstens dreimal innerhalb von 30 Minuten. Zwischen und nach den Versuchen
+   bleibt das Projekt gestoppt; ein offener oder ungueltiger Pending-Marker wird
+   durch Wiederholung nicht umgangen.
 
 Der Scheduler ruft alle 15 Sekunden die Queue-Verarbeitung und standardmaessig
 stuendlich zusaetzlich
@@ -1010,9 +1077,14 @@ die daraus abgeleitete synthetische Revision gebunden. Der Runner verifiziert de
 Quell-Digest, startet FFmpeg beziehungsweise den konfigurierten STT-Provider
 ohne Shell und speichert ein Derivat erst nach erneuter Version-/Metadaten-/
 Digestpruefung. Vor Kundenfreigabe muessen S3 und die konkrete STT-Installation
-im Runner-Netz abgenommen werden:
+im Runner-Netz abgenommen werden. Ist automatische Transkription beim ersten
+Release noch nicht freigegeben, muss `MEDIA_TRANSCRIPTION_ENABLED=false` gesetzt
+sein. Dieser explizite Modus ueberspringt nur den Provider-Canary; Transkriptjobs
+scheitern lokal mit `provider_unavailable`, und es wird kein Audio uebertragen.
+Der weiterhin deklarierte Secret-Bind zeigt dann auf eine leere, root-verwaltete
+Platzhalterdatei, nicht auf einen vermeintlichen API-Schluessel:
 
-Der Produktionsadapter ist auf `whisper-1` und
+Im aktivierten Modus ist der Produktionsadapter auf `whisper-1` und
 `https://api.openai.com/v1/audio/transcriptions` festgelegt. Sein dedizierter
 Schluessel liegt standardmaessig nur in
 `/etc/q-academy/openai-transcription-api-key` mit Host-Owner `1001:1001` und
@@ -1060,7 +1132,11 @@ als fachlicher Erfolg gewertet. Transportfehler werden als HTTP `000` gezaehlt.
 Nach `SCHEDULER_MAX_CONSECUTIVE_FAILURES`,
 `MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES` beziehungsweise
 `MEDIA_MAINTENANCE_MAX_CONSECUTIVE_FAILURES` aufeinanderfolgenden Fehlern
-beendet sich der Dispatcher, damit `restart: unless-stopped` greift. Die
+beendet sich der Dispatcher, damit die begrenzte Policy
+`restart: "on-failure:5"` greift. Sie erlaubt hoechstens fuenf Crash-Neustarts
+und startet Container nicht unkontrolliert nach einem Docker-Daemon-Neustart;
+die vollstaendige, geordnete Wiederherstellung uebernimmt ausschliesslich der
+fail-closed systemd-Reconcile. Die
 Docker-Healthchecks melden einen fehlenden oder zu alten Marker als
 `unhealthy`; beim Medien-Dispatcher gilt alternativ ein hoechstens 120 Sekunden
 alter In-progress-Marker. Die Altersgrenzen der Success-Marker werden mit den drei
@@ -1249,22 +1325,32 @@ dessen GitHub-/Sigstore-Bundle gegen Repository, signernden Workflow und
 Source-Commit, prueft Zielarchitektur und zieht in fester Reihenfolge
 PostgreSQL, App, Migrator, Key-Rotation, Tenant-Ops, Medienrunner,
 Medien-Preflight, App-S3-Principal-Preflight, Dispatcher und Caddy nur ueber die
-dort attestierten Registry-Digests. Erst danach
-stoppt es Scheduler, beide Medien-Dispatcher, App und Medienrunner, fuehrt
-Rollenabgleich, den sessiongesperrten Migrator und den transaktionalen
-Rechteabgleich aus und startet App und Medienrunner gemeinsam mit `--wait`.
+dort attestierten Registry-Digests. Vor dem ersten Containerstart erzeugt es
+`proxy` und `egress` ohne Caddy, erzwingt und verifiziert die hostseitige
+Egress-Policy und stoppt bei jedem spaeteren Fehler das exakte gesamte
+Q-Academy-Projekt. Im Mutationsfenster stoppt es zuerst Caddy und danach
+Scheduler, beide Medien-Dispatcher, App und Medienrunner. Unmittelbar vor der
+ersten moeglichen Migration schreibt es den atomaren, root-eigenen Marker
+`/var/lib/q-academy/releases/pending.env`. Erst dann folgen Rollenabgleich, der
+sessiongesperrte Migrator, der transaktionale Rechteabgleich sowie App und
+Medienrunner gemeinsam mit `--wait`.
 Compose injiziert den exakten `APP_IMAGE_TAG` in beide Runtimes als
 `Q_ACADEMY_APP_VERSION`; erfolgreiche Readiness gibt ihn unter `data.version`
 aus. Deploy und Rollback vergleichen diesen Wert in App und Medienrunner exakt
-mit dem angeforderten Zieltag. Danach initialisiert der isolierte
-`caddy-volume-init` die Caddy-Volumes, Caddy wird aus dem Zielimage neu erstellt
-und intern gesund geprueft. Erst dann darf die externe HTTPS-Readiness
-erfolgreich sein; danach starten die Dispatcher. Jeder Fehler
-nach dem Stop laesst alle DB-Writer fuer die Untersuchung angehalten. Erst nach
+mit dem angeforderten Zieltag. Danach starten und bestehen alle Dispatcher, der
+optionale STRATO-Sweeper und das verpflichtende Monitoring ihre Health-Gates.
+Erst jetzt initialisiert `caddy-volume-init` die Volumes und Caddy wird als
+atomare oeffentliche Aktivierung neu erstellt. Die externe HTTPS-Readiness ist
+zeitlich begrenzt und muss im JSON ebenfalls exakt den Zieltag melden; ein alter
+DNS-Zielhost kann das Gate damit nicht gruen machen. Erst nach
 dieser Release-Readiness schreibt das Skript `APP_IMAGE_TAG` und den
 attestierten PostgreSQL-Digest atomar in die geschuetzte
-Produktions-Env sowie den aktuellen und vorherigen Releasezustand. Env und
-State muessen bei jedem weiteren Deploy und Rollback uebereinstimmen. Der
+Produktions-Env sowie State-Schema 2 mit `CONTROLLER_COMMIT`, aktuellem und
+vorherigem Runtime-Tag. Env- und State-Renames werden auf das Dateisystem
+synchronisiert; erst danach wird der Pending-Marker dauerhaft entfernt. Env und
+State muessen bei jedem weiteren Deploy, Rollback und Boot-Reconcile
+uebereinstimmen; Git `HEAD` muss beim Reconcile dem gespeicherten Controller-
+Commit entsprechen. Der
 Backup-Lock bleibt dabei vom Vorab-Backup ueber Writer-Stop, Migration und
 Readiness bis zur abgeschlossenen Release-Aktivierung auf dem im Deployprozess
 geoeffneten Dateideskriptor 8 gehalten. Damit kann weder ein systemd-Backup noch
@@ -1281,6 +1367,67 @@ export RELEASE_GITHUB_REPOSITORY="<owner>/<repository>"
 export RELEASE_SIGNER_WORKFLOW="<owner>/<repository>/.github/workflows/ci.yml"
 scripts/ops/deploy-release.sh "$release_tag"
 ```
+
+### Offenen Pending-Release sicher aufloesen
+
+Vor der ersten Migration schreibt Deploy einen crash-durablen Marker mit exakt
+`FROM_TAG`, `TO_TAG`, `CONTROLLER_COMMIT`, Phase und dem konservativen Hinweis
+`MIGRATIONS_MAY_HAVE_RUN=true`. Bleibt er nach einem Fehler bestehen, koennen
+Schema und persistierter Env/State auseinanderliegen. Der Boot-Reconcile und
+jeder unbestaetigte Recovery-Lauf stoppen deshalb das gesamte, exakt
+labelgebundene Q-Academy-Projekt. Den Marker niemals manuell loeschen oder
+umschreiben.
+
+Fuer ein vorwaerts gerichtetes Resume muss der saubere Checkout exakt dem
+`CONTROLLER_COMMIT` entsprechen, `TO_TAG` muss `git-<CONTROLLER_COMMIT>` sein,
+dieselben attestierten Release-Artefakte muessen lokal vorliegen und die
+Bestaetigung muss exakt den Zieltag enthalten:
+
+```bash
+cd /opt/q-academy
+sudo test "$(stat -c '%u:%g:%a' /var/lib/q-academy/releases/pending.env)" = "0:0:600"
+pending_to="$(sudo sed -n 's/^TO_TAG=//p' /var/lib/q-academy/releases/pending.env)"
+pending_controller="$(sudo sed -n 's/^CONTROLLER_COMMIT=//p' /var/lib/q-academy/releases/pending.env)"
+test "$(git rev-parse HEAD)" = "$pending_controller"
+test "$pending_to" = "git-$pending_controller"
+export CONFIRM_RESUME_FAILED_RELEASE="$pending_to"
+# RELEASE_IMAGE_MANIFEST, Attestierungsbundle, Repository und Workflow wie beim Ursprungslauf setzen.
+sudo --preserve-env=Q_ACADEMY_ENV_FILE,APP_DOMAIN,RELEASE_IMAGE_MANIFEST,RELEASE_IMAGE_ATTESTATION_BUNDLE,RELEASE_GITHUB_REPOSITORY,RELEASE_SIGNER_WORKFLOW,CONFIRM_RESUME_FAILED_RELEASE \
+  scripts/ops/deploy-release.sh "$pending_to"
+unset CONFIRM_RESUME_FAILED_RELEASE pending_to pending_controller
+```
+
+Das Resume fuehrt die idempotenten Migrationen und alle Gates erneut aus. Es
+akzeptiert nur Env/State-Zustaende, die exakt `FROM_TAG` oder einen bereits
+teilweise persistierten `TO_TAG` des Markers darstellen. Der Marker verschwindet
+erst nach exakter interner und externer Versions-Readiness sowie dauerhaft
+geschriebenem Env/State.
+
+Soll stattdessen auf einen nichtleeren `FROM_TAG` zurueckgeschaltet werden, muss
+fachlich bestaetigt sein, dass das alte Runtime-Image mit allen moeglicherweise
+bereits ausgefuehrten Migrationen kompatibel ist. Der Checkout bleibt dabei auf
+dem im Marker gebundenen aktuellen Controller; nicht auf einen alten Commit
+wechseln:
+
+```bash
+cd /opt/q-academy
+pending_from="$(sudo sed -n 's/^FROM_TAG=//p' /var/lib/q-academy/releases/pending.env)"
+pending_controller="$(sudo sed -n 's/^CONTROLLER_COMMIT=//p' /var/lib/q-academy/releases/pending.env)"
+test -n "$pending_from"
+test "$(git rev-parse HEAD)" = "$pending_controller"
+export CONFIRM_ROLLBACK_TAG="$pending_from"
+export MIGRATIONS_BACKWARD_COMPATIBLE=true
+sudo --preserve-env=Q_ACADEMY_ENV_FILE,APP_DOMAIN,CONFIRM_ROLLBACK_TAG,MIGRATIONS_BACKWARD_COMPATIBLE \
+  scripts/ops/rollback-release.sh "$pending_from"
+unset CONFIRM_ROLLBACK_TAG MIGRATIONS_BACKWARD_COMPATIBLE pending_from pending_controller
+```
+
+Dieser Sonderpfad ist nur zulaessig, wenn Release-State `CURRENT_TAG`,
+Produktions-`APP_IMAGE_TAG`, Rollback-Ziel und Marker-`FROM_TAG` identisch sind.
+Bei einer fehlgeschlagenen Erstinstallation ist `FROM_TAG` leer; ein
+Runtime-Rollback ist dann unmoeglich. Es bleiben ausschliesslich das exakte
+Forward-Resume oder ein kontrollierter, verifizierter Restore mit anschliessendem
+Forward-Deploy. Auch nach einem Restore wird der Marker nicht per `rm` umgangen.
 
 `RELEASE_IMAGE_MODE=local-build` erhaelt den bisherigen reproduzierbaren Build
 mit digest-gepinntem Node-Basisimage, festem Debian-Snapshot und exakter
@@ -1507,13 +1654,20 @@ und beide Healthchecks pruefen. Das verwendete Backup und die Freigabe protokoll
    erwarteten Hash; ein fehlender erwarteter Hash ergibt 503. Diese technische
    Teilmengenpruefung ersetzt keine fachliche Kompatibilitaetspruefung. Nach der
    Freigabe das gesperrte Rollback-Skript mit dem bereits vorhandenen vorherigen
-   Release-Tag ausfuehren. Es stoppt alle fuenf DB-Writer, startet `app` und
+   Release-Tag unter dem im aktiven State gespeicherten Controller-Checkout
+   ausfuehren. Es erzeugt zuerst die Netze ohne Start, erzwingt/verifiziert die
+   Egress-Policy, startet PostgreSQL und ClamAV aus einem vollstaendig gestoppten
+   Zustand und validiert die DB-Rollen sowie beide Provider-Preflights. Danach
+   stoppt es Caddy vor allen fuenf DB-Writern, startet `app` und
    `media-runner` gemeinsam ohne Abhaengigkeiten mit `--wait`, prueft beide
-   Runtimes im Container und startet erst danach die Dispatcher. Im
+   Runtimes im Container und startet erst danach Dispatcher und Monitoring. Im
    `strato-hidrive`-Modus startet es ausserdem den Sweeper aus dem exakt gleichen
-   Ziel-Tag und wartet auf dessen Healthcheck. Bei einem Fehler bleiben alle
-   Writer gestoppt. Den Tag persistiert es erst nach Readiness atomar in Env und
-   Release-State. Im Incident wird kein neues Image gebaut.
+   Ziel-Tag und wartet auf dessen Healthcheck. Caddy ist wieder die letzte,
+   oeffentliche Aktivierung; auch die externe JSON-Version muss exakt passen.
+   Bei einem Fehler nach Egress-Aktivierung stoppt der Notfallpfad das gesamte
+   exakte Q-Academy-Projekt. Den Tag und den aktuellen Controller persistiert das
+   Skript erst nach Readiness dauerhaft in Env und Release-State. Im Incident
+   wird kein neues Image gebaut.
 3. Ist die Rueckwaertskompatibilitaet nicht belegt, keine improvisierten
    Down-SQLs ausfuehren. Entweder mit einem vorwaerts gerichteten Fix fortfahren
    oder das Pre-Deployment-Backup seitlich wiederherstellen, fachlich pruefen
@@ -1525,7 +1679,9 @@ und beide Healthchecks pruefen. Das verwendete Backup und die Freigabe protokoll
 Der Runtime-Rollback ist ausschliesslich als bestaetigtes, prozessgesperrtes
 Skript verfuegbar. Es aendert weder Schema noch Datenbank und
 bricht ohne vorhandenes Image, exakte Tag-Bestaetigung oder dokumentierte
-Migrationskompatibilitaet ab:
+Migrationskompatibilitaet ab. Dieses Beispiel gilt fuer den normalen Rollback
+ohne Pending-Marker; der Marker-Sonderpfad ist ausschliesslich im Abschnitt
+"Offenen Pending-Release sicher aufloesen" beschrieben:
 
 ```bash
 export Q_ACADEMY_ENV_FILE=/etc/q-academy/production.env
@@ -1538,10 +1694,18 @@ scripts/ops/rollback-release.sh "$CONFIRM_ROLLBACK_TAG"
 ## Regelbetrieb
 
 - Taeglich Backup-, Scheduler- und Caddy-Fehler kontrollieren.
-- Nach jedem Host-/Docker-Start, Release und jeder Netzneuerstellung die
-  hostseitige Egress-Policy mit `docker-egress-firewall.sh verify` gegen
-  Werkzeug-, Policy-, Docker-Backend-, Netz-ID- und Kernel-Digest pruefen; ein
-  Fehler sperrt App- und Workerfreigabe und die aktuelle Evidence wird archiviert.
+- Nach jedem Host-/Docker-Start, Release und jeder Netzneuerstellung Status und
+  Journal von `q-academy-runtime.service` kontrollieren. Deploy, Rollback und
+  Reconcile fuehren `docker-egress-firewall.sh verify` gegen Werkzeug-, Policy-,
+  Docker-Backend-, Netz-ID- und Kernel-Digest selbst aus; ein Fehler stoppt das
+  Q-Academy-Projekt. Die aktuelle Evidence zusaetzlich archivieren.
+- `/var/lib/q-academy/releases/pending.env` alarmieren. Solange der Marker
+  existiert, bleibt der automatische Boot absichtlich gesperrt; nur das exakt
+  bestaetigte Resume, der kompatible Pending-Rollback oder ein kontrollierter
+  Restore duerfen den Zustand aufloesen. Der taegliche Standalone-Backup-Timer
+  bricht ebenfalls ab, damit kein uneindeutiger Zwischenstand als regulaere
+  Restore-Evidence archiviert wird. Nur das vom Deploy unter dem geerbten
+  Backup-Lock ausgefuehrte, exakt an `TO_TAG` gebundene Vorab-Backup ist erlaubt.
 - Taeglich ClamAV-Health, Signaturalter und Scanfehler sowie Erreichbarkeit und
   Kapazitaet des S3-Buckets kontrollieren.
 - Taeglich Media-Queue-Alter, Quota-Auslastung, Quarantaene-/Retry-Rate und

@@ -273,11 +273,17 @@ zugelassen. Interne App-, Datenbank-, Job-, Scan- und Observability-Protokolle
 laufen auf anderen beziehungsweise derselben kontrollierten Bridge weiter und
 werden nicht auf zusaetzliche Hostports umgestellt.
 
-Restrisiko: Aktivierung, persistente Boot-Reihenfolge nach Docker/Compose,
-Kernel-Ruleset-Verifikation nach Neustarts sowie reale Positiv- und Negativtests
-fuer IPv4, IPv6, Metadata, Host-Gateway und Provider-DNS koennen lokal nicht
-abgenommen werden. Sie bleiben ein blockierendes Gate der externen
-Rootserver-Abnahme. Ein Provider mit ausschliesslich privatem Ziel benoetigt
+Die versionierte, an `docker.service` gebundene Runtime-Unit erzeugt die beiden
+kontrollierten Netze ohne Containerstart, erzwingt und verifiziert das
+Host-Ruleset und startet alle Runtimes einschliesslich Monitoring erst danach;
+Caddy ist die letzte, atomare Freigabe der von Docker publizierten Ports. Eine
+plain UFW-`INPUT`-Policy wird nicht als Docker-Publish-Gate betrachtet. Bei
+jedem Fehler stoppt `ExecStopPost` ausschliesslich das exakte Compose-Projekt.
+
+Restrisiko: Installation/Aktivierung dieser Unit, Kernel-Ruleset-Verifikation
+auf dem realen Host sowie reale Positiv- und Negativtests fuer IPv4, IPv6,
+Metadata, Host-Gateway und Provider-DNS koennen lokal nicht abgenommen werden.
+Sie bleiben ein blockierendes Gate der externen Rootserver-Abnahme. Ein Provider mit ausschliesslich privatem Ziel benoetigt
 einen separat kontrollierten Outbound-Proxy oder eine neu reviewte Zielpolicy.
 Reale Alarmempfaenger und der Feueralarmtest bleiben ebenfalls Teil dieser
 Abnahme.
@@ -608,6 +614,19 @@ Kontrollen:
   Migrations-Hashes des Images mit der Datenbank.
 - Non-root-/Read-only-Container, internes DB-Netz, Caddy Auto-TLS und
   commitgebundene Image-Tags.
+- Vor der ersten moeglichen Migration wird ein atomarer, root-eigener und
+  crash-durabler Pending-Marker mit FROM-/TO-Tag und aktuellem Controller-Commit
+  geschrieben. Unbeaufsichtigter Boot verweigert bei jedem Markerobjekt den
+  Start. Resume und kompatibler Runtime-Rollback verlangen exakte, getrennte
+  Operatorbestaetigungen; eine fehlgeschlagene Erstinstallation ohne FROM-Tag
+  kann nicht auf ein nicht existentes Runtime-Image zurueckrollen.
+- Env und State Schema 2 werden samt Controller-Commit dauerhaft synchronisiert,
+  bevor der Pending-Marker dauerhaft entfernt wird. Interne und externe
+  Readiness muessen exakt dieselbe Release-Version melden; dadurch kann ein
+  veraltetes DNS-Ziel den Caddy-Go-live nicht bestaetigen.
+- Alle persistenten Container besitzen nur `restart: "on-failure:5"`.
+  Geordneten Start nach Docker-Neustart uebernimmt der migrationsfreie,
+  projektgebundene systemd-Reconcile mit begrenzten Wiederholungen.
 - Custom-Format-Backup mit SHA-256, Archivpruefung und standardmaessigem
   vollstaendigem Test-Restore in eine separate Datenbank.
 

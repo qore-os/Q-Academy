@@ -278,7 +278,21 @@ export class DeterministicSidecarTranscriptProvider
   }
 }
 
+export class DisabledTranscriptProvider implements TranscriptProvider {
+  readonly id = "disabled-v1";
+
+  async transcribe(): Promise<never> {
+    throw new MediaProcessingProviderError(
+      "provider_unavailable",
+      "Transcription is disabled by deployment configuration.",
+    );
+  }
+}
+
 export function configuredTranscriptProvider(): TranscriptProvider {
+  if (process.env.MEDIA_TRANSCRIPTION_ENABLED?.trim() === "false") {
+    return new DisabledTranscriptProvider();
+  }
   return process.env.MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY?.trim()
     ? new DeterministicSidecarTranscriptProvider()
     : new LocalCommandTranscriptProvider();

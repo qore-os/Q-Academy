@@ -13,7 +13,8 @@ export type MediaProcessingPreflightConfiguration = Readonly<{
   transcriptTimeoutMs: number;
   transcript:
     | Readonly<{ mode: "command"; executable: string; arguments: readonly string[] }>
-    | Readonly<{ mode: "sidecar"; directory: string }>;
+    | Readonly<{ mode: "sidecar"; directory: string }>
+    | Readonly<{ mode: "disabled" }>;
 }>;
 
 function processorTimeoutMs(
@@ -102,10 +103,16 @@ export function resolveMediaProcessingPreflightConfiguration(
   const timeouts = resolveMediaProcessorTimeouts(environment);
   const sidecar = environment.MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY?.trim();
   const transcriptCommand = environment.MEDIA_TRANSCRIPT_COMMAND?.trim();
+  const transcriptEnabledValue =
+    environment.MEDIA_TRANSCRIPTION_ENABLED?.trim() || "true";
+  if (!/^(?:true|false)$/.test(transcriptEnabledValue)) {
+    throw new Error("MEDIA_TRANSCRIPTION_ENABLED must be true or false.");
+  }
+  const transcriptEnabled = transcriptEnabledValue === "true";
   if (production && sidecar) {
     throw new Error("MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY is not allowed in production.");
   }
-  if (Boolean(sidecar) === Boolean(transcriptCommand)) {
+  if (transcriptEnabled && Boolean(sidecar) === Boolean(transcriptCommand)) {
     throw new Error("Configure exactly one transcript provider.");
   }
   return {
@@ -113,7 +120,9 @@ export function resolveMediaProcessingPreflightConfiguration(
     ffmpeg,
     ffprobe,
     ...timeouts,
-    transcript: transcriptCommand
+    transcript: !transcriptEnabled
+      ? { mode: "disabled" }
+      : transcriptCommand
       ? {
           mode: "command",
           executable: executable(transcriptCommand, "", "MEDIA_TRANSCRIPT_COMMAND"),

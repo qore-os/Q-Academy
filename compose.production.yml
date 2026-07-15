@@ -87,7 +87,7 @@ services:
 
   postgres:
     image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-q_academy}
       POSTGRES_USER: ${POSTGRES_BOOTSTRAP_USER:-q_academy_bootstrap}
@@ -398,7 +398,7 @@ services:
         NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
         NEXT_PUBLIC_APP_URL: https://${APP_DOMAIN:?Set APP_DOMAIN in the production env file}
         NEXT_PUBLIC_ENABLE_PWA: "true"
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     environment:
       NODE_ENV: production
@@ -434,9 +434,9 @@ services:
       EXAM_SELECTION_SECRET: ${EXAM_SELECTION_SECRET:?Set EXAM_SELECTION_SECRET in the production env file}
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in the production env file}
       METRICS_SECRET: ${METRICS_SECRET:?Set METRICS_SECRET in the production env file}
-      EMAIL_DELIVERY_REQUIRED: "true"
-      EMAIL_DELIVERY_WEBHOOK_URL: ${EMAIL_DELIVERY_WEBHOOK_URL:?Set EMAIL_DELIVERY_WEBHOOK_URL in the production env file}
-      EMAIL_DELIVERY_WEBHOOK_SECRET: ${EMAIL_DELIVERY_WEBHOOK_SECRET:?Set EMAIL_DELIVERY_WEBHOOK_SECRET in the production env file}
+      EMAIL_DELIVERY_REQUIRED: ${EMAIL_DELIVERY_REQUIRED:-true}
+      EMAIL_DELIVERY_WEBHOOK_URL: ${EMAIL_DELIVERY_WEBHOOK_URL:-}
+      EMAIL_DELIVERY_WEBHOOK_SECRET: ${EMAIL_DELIVERY_WEBHOOK_SECRET:-}
       EMAIL_DELIVERY_INBOUND_SECRET: ${EMAIL_DELIVERY_INBOUND_SECRET:?Set EMAIL_DELIVERY_INBOUND_SECRET in the production env file}
       EMAIL_DELIVERY_RETENTION_DAYS: ${EMAIL_DELIVERY_RETENTION_DAYS:-90}
       WEBHOOK_DELIVERY_RETENTION_DAYS: ${WEBHOOK_DELIVERY_RETENTION_DAYS:-90}
@@ -551,6 +551,7 @@ services:
       MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
       MEDIA_FFMPEG_TIMEOUT_SECONDS: ${MEDIA_FFMPEG_TIMEOUT_SECONDS:-10800}
       MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-7200}
+      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-true}
       MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
       MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}","--temperature","0"]'
       MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--preflight"]'
@@ -661,7 +662,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    restart: unless-stopped
+    restart: "on-failure:5"
     healthcheck:
       test:
         - CMD-SHELL
@@ -718,6 +719,7 @@ services:
       MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
       MEDIA_FFMPEG_TIMEOUT_SECONDS: ${MEDIA_FFMPEG_TIMEOUT_SECONDS:-10800}
       MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-7200}
+      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-true}
       MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
       MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}","--temperature","0"]'
       MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--preflight"]'
@@ -748,7 +750,7 @@ services:
 
   clamav-freshclam:
     image: ${CLAMAV_IMAGE:?Set CLAMAV_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     user: clamav
     entrypoint: ["/init-unprivileged"]
@@ -790,7 +792,7 @@ services:
 
   clamav:
     image: ${CLAMAV_IMAGE:?Set CLAMAV_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     user: clamav
     entrypoint: ["/init-unprivileged"]
@@ -846,7 +848,7 @@ services:
       target: dispatcher
       args:
         NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     user: "1001:1001"
     environment:
@@ -950,7 +952,7 @@ services:
       target: dispatcher
       args:
         NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     user: "1001:1001"
     deploy:
@@ -1083,7 +1085,7 @@ services:
       target: dispatcher
       args:
         NODE_IMAGE: ${NODE_IMAGE:?Set NODE_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     user: "1001:1001"
     deploy:
@@ -1185,7 +1187,7 @@ services:
   prometheus:
     profiles: ["monitoring"]
     image: ${PROMETHEUS_IMAGE:?Set PROMETHEUS_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -1228,7 +1230,7 @@ services:
   node-exporter:
     profiles: ["monitoring"]
     image: ${NODE_EXPORTER_IMAGE:?Set NODE_EXPORTER_IMAGE to a digest-pinned reference}
-    restart: unless-stopped
+    restart: "on-failure:5"
     init: true
     command:
       - --path.rootfs=/host/root
@@ -1277,7 +1279,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: caddy
-    restart: unless-stopped
+    restart: "on-failure:5"
     user: "10001:10001"
     environment:
       ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in the production env file}

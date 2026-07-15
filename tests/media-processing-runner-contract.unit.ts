@@ -199,6 +199,11 @@ test("media provider keeps its deployment-controlled process boundary shell-free
     /resolveMediaProcessorTimeouts\(process\.env\)\.ffmpegTimeoutMs/,
   );
   assert.doesNotMatch(provider, /shell: true|\bexec(?:Sync)?\(/);
+  assert.match(provider, /class DisabledTranscriptProvider/);
+  assert.match(
+    provider,
+    /MEDIA_TRANSCRIPTION_ENABLED\?\.trim\(\) === "false"[\s\S]*new DisabledTranscriptProvider\(\)/,
+  );
 });
 
 test("video edits are validated, rendered deterministically and addressed by job", () => {

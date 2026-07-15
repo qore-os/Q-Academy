@@ -67,6 +67,11 @@ test("production uses one exact OpenAI transcription executable contract", () =>
   for (const serviceName of ["media-runner", "media-preflight"]) {
     const service = composeServiceBlock(compose, serviceName);
     assert.ok(
+      service.includes(
+        "MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-true}",
+      ),
+    );
+    assert.ok(
       service.includes(`MEDIA_TRANSCRIPT_COMMAND: ${transcriptExecutable}`),
     );
     assert.ok(
@@ -124,6 +129,7 @@ test("the dedicated credential is a read-only bind mounted into only two service
     productionEnvironment,
     /^OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE=\/etc\/q-academy\/openai-transcription-api-key$/m,
   );
+  assert.match(productionEnvironment, /^MEDIA_TRANSCRIPTION_ENABLED=true$/m);
   assert.doesNotMatch(
     productionEnvironment,
     /^(?:OPENAI_API_KEY|OPENAI_TRANSCRIPTION_API_KEY)=/m,

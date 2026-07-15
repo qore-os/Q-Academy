@@ -13,6 +13,7 @@ test(
   async () => {
     const sql = postgres(databaseUrl, { max: 2, prepare: false });
     const originalFetch = globalThis.fetch;
+    const originalDeliveryRequired = process.env.EMAIL_DELIVERY_REQUIRED;
     const originalDeliveryUrl = process.env.EMAIL_DELIVERY_WEBHOOK_URL;
     const organizationId = randomUUID();
     const memberId = randomUUID();
@@ -23,6 +24,7 @@ test(
       | { end: (options?: { timeout?: number }) => Promise<void> }
       | undefined;
     try {
+      process.env.EMAIL_DELIVERY_REQUIRED = "true";
       process.env.EMAIL_DELIVERY_WEBHOOK_URL =
         "https://mail-provider.example.test/deliver";
       const [
@@ -639,6 +641,11 @@ test(
       );
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalDeliveryRequired === undefined) {
+        delete process.env.EMAIL_DELIVERY_REQUIRED;
+      } else {
+        process.env.EMAIL_DELIVERY_REQUIRED = originalDeliveryRequired;
+      }
       if (originalDeliveryUrl === undefined) {
         delete process.env.EMAIL_DELIVERY_WEBHOOK_URL;
       } else {

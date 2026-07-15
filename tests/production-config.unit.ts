@@ -948,12 +948,38 @@ test("production environment requires least-privilege database credentials", () 
   );
 });
 
-test("production requires complete and authenticated mail delivery", () => {
+test("production mail delivery is configured or explicitly fail-closed", () => {
+  const app = composeServiceBlock("app");
+  assert.match(
+    app,
+    /EMAIL_DELIVERY_REQUIRED: \$\{EMAIL_DELIVERY_REQUIRED:-true\}/,
+  );
+  assert.match(
+    app,
+    /EMAIL_DELIVERY_WEBHOOK_URL: \$\{EMAIL_DELIVERY_WEBHOOK_URL:-\}/,
+  );
+  assert.match(
+    app,
+    /EMAIL_DELIVERY_WEBHOOK_SECRET: \$\{EMAIL_DELIVERY_WEBHOOK_SECRET:-\}/,
+  );
+  assert.match(
+    app,
+    /EMAIL_DELIVERY_INBOUND_SECRET: \$\{EMAIL_DELIVERY_INBOUND_SECRET:\?Set EMAIL_DELIVERY_INBOUND_SECRET in the production env file\}/,
+  );
+  assert.match(productionEnvironmentExample, /^EMAIL_DELIVERY_REQUIRED=true$/m);
+
   const incomplete = validProductionEnvironment();
   delete incomplete.EMAIL_DELIVERY_WEBHOOK_URL;
   assert.throws(
     () => validateProductionServerEnvironment(incomplete),
     /EMAIL_DELIVERY_WEBHOOK_URL/,
+  );
+
+  const missingGatewaySecret = validProductionEnvironment();
+  delete missingGatewaySecret.EMAIL_DELIVERY_WEBHOOK_SECRET;
+  assert.throws(
+    () => validateProductionServerEnvironment(missingGatewaySecret),
+    /EMAIL_DELIVERY_WEBHOOK_SECRET/,
   );
 
   const missingInbound = validProductionEnvironment();
@@ -973,9 +999,36 @@ test("production requires complete and authenticated mail delivery", () => {
 
   const disabled = validProductionEnvironment();
   disabled.EMAIL_DELIVERY_REQUIRED = "false";
-  assert.throws(
-    () => validateProductionServerEnvironment(disabled),
-    /EMAIL_DELIVERY_REQUIRED must be true/,
+  disabled.EMAIL_DELIVERY_WEBHOOK_URL = "   ";
+  disabled.EMAIL_DELIVERY_WEBHOOK_SECRET = "\t";
+  const disabledConfiguration = validateProductionServerEnvironment(disabled);
+  assert.equal(disabledConfiguration?.emailDeliveryRequired, false);
+  assert.equal(disabledConfiguration?.emailDeliveryWebhookUrl, null);
+  assert.equal(disabledConfiguration?.emailDeliveryWebhookSecret, null);
+  assert.equal(
+    disabledConfiguration?.emailDeliveryInboundSecret,
+    "M4ilInbound-8RwT4yU0iO6pA3sD9fG5hJ1kL7zXcVb",
+  );
+
+  for (const name of [
+    "EMAIL_DELIVERY_WEBHOOK_URL",
+    "EMAIL_DELIVERY_WEBHOOK_SECRET",
+  ] as const) {
+    const mixedMode = {
+      ...disabled,
+      [name]: validProductionEnvironment()[name],
+    };
+    assert.throws(
+      () => validateProductionServerEnvironment(mixedMode),
+      new RegExp(`${name} must be unset when EMAIL_DELIVERY_REQUIRED is false`),
+    );
+  }
+
+  const defaultRequired = validProductionEnvironment();
+  delete defaultRequired.EMAIL_DELIVERY_REQUIRED;
+  assert.equal(
+    validateProductionServerEnvironment(defaultRequired)?.emailDeliveryRequired,
+    true,
   );
 
   const configured = validateProductionServerEnvironment(

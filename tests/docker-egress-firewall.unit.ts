@@ -304,7 +304,7 @@ test("machine-readable evidence is atomic, non-secret, and operationally scoped"
   assert.doesNotMatch(script, /production\.env|SESSION_SECRET|DATABASE_URL|docker inspect .*Container/);
 });
 
-test("rootserver and threat-model docs keep activation and acceptance external", () => {
+test("rootserver and threat-model docs automate activation but keep host acceptance external", () => {
   assert.match(deployment, /Hostseitige Egress-Durchsetzung/);
   assert.match(deployment, /docker-egress-firewall\.sh dry-run/);
   assert.match(deployment, /docker-egress-firewall\.sh apply/);
@@ -312,8 +312,11 @@ test("rootserver and threat-model docs keep activation and acceptance external",
   assert.match(deployment, /docker-egress-firewall\.sh remove/);
   assert.match(deployment, /DOCKER-USER/);
   assert.match(deployment, /iptables-nft/);
+  assert.match(deployment, /q-academy-runtime\.service/);
+  assert.match(deployment, /Caddy wird als letzter Dienst gestartet/);
   assert.match(deployment, /externen Rootserver-Abnahme/);
   assert.match(threatModel, /hostseitige Egress-Policy/);
-  assert.match(threatModel, /Boot-Reihenfolge/);
+  assert.match(threatModel, /docker\.service/);
+  assert.match(threatModel, /letzte, atomare Freigabe/);
   assert.match(threatModel, /Kernel-Ruleset/);
 });

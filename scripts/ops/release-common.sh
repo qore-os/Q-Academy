@@ -37,11 +37,17 @@ RELEASE_IMAGE_MANIFEST_VARIABLES=(
 MEDIA_WORK_MOUNT=/var/lib/q-academy-media-processing
 MEDIA_WORK_SENTINEL=.q-academy-media-work-root
 MEDIA_WORK_SENTINEL_VALUE=q-academy-media-processing-v1
+RELEASE_STATE_SCHEMA_VERSION=2
+PENDING_RELEASE_SCHEMA_VERSION=1
+PRODUCTION_COMPOSE_PROJECT=q-academy
 RELEASE_LOCK_FILE_DEFAULT=/var/lock/q-academy-release.lock
 BACKUP_LOCK_FILE_DEFAULT=/var/lock/q-academy-backup.lock
+PENDING_RELEASE_FILE_DEFAULT=/var/lib/q-academy/releases/pending.env
 DATABASE_WRITER_SERVICES=(scheduler media-worker media-maintenance app media-runner)
 DATABASE_RUNTIME_SERVICES=(app media-runner)
 DATABASE_DISPATCHER_SERVICES=(scheduler media-worker media-maintenance)
+RELEASE_NETWORK_BOOTSTRAP_SERVICES=(app media-runner)
+OBSERVABILITY_RUNTIME_SERVICES=(prometheus node-exporter)
 DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS=1800
 CADDY_WAIT_TIMEOUT_SECONDS=300
 S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS=1200
@@ -84,6 +90,273 @@ production_env_value() {
   value="$(sed -n "s/^${name}=//p" "$env_file")"
   value="${value%$'\r'}"
   printf '%s' "$value"
+}
+
+validate_pending_release_marker() {
+  local marker_file="$1"
+  local schema from_tag to_tag controller_commit phase migrations_may_have_run created_at
+
+  [[ "$marker_file" == /* ]] || {
+    printf 'Pending release marker path must be absolute.\n' >&2
+    return 1
+  }
+  [[ -f "$marker_file" && ! -L "$marker_file" ]] || {
+    printf 'Pending release marker is missing or unsafe: %s\n' "$marker_file" >&2
+    return 1
+  }
+  awk -F= '
+    BEGIN {
+      allowed["SCHEMA_VERSION"] = 1
+      allowed["FROM_TAG"] = 1
+      allowed["TO_TAG"] = 1
+      allowed["CONTROLLER_COMMIT"] = 1
+      allowed["PHASE"] = 1
+      allowed["MIGRATIONS_MAY_HAVE_RUN"] = 1
+      allowed["CREATED_AT"] = 1
+    }
+    !($1 in allowed) { invalid = 1 }
+    END { exit (NR == 7 && !invalid) ? 0 : 1 }
+  ' "$marker_file" || {
+    printf 'Pending release marker must contain exactly the seven contract fields.\n' >&2
+    return 1
+  }
+  [[ "$(stat -c '%u:%g:%a' "$marker_file")" == "0:0:600" ]] || {
+    printf 'Pending release marker must be root-owned with mode 0600.\n' >&2
+    return 1
+  }
+  schema="$(production_env_value "$marker_file" SCHEMA_VERSION)" || return 1
+  from_tag="$(production_env_value "$marker_file" FROM_TAG)" || return 1
+  to_tag="$(production_env_value "$marker_file" TO_TAG)" || return 1
+  controller_commit="$(production_env_value "$marker_file" CONTROLLER_COMMIT)" || return 1
+  phase="$(production_env_value "$marker_file" PHASE)" || return 1
+  migrations_may_have_run="$(production_env_value "$marker_file" MIGRATIONS_MAY_HAVE_RUN)" || return 1
+  created_at="$(production_env_value "$marker_file" CREATED_AT)" || return 1
+
+  [[ "$schema" == "$PENDING_RELEASE_SCHEMA_VERSION" ]] || {
+    printf 'Pending release marker schema is unsupported.\n' >&2
+    return 1
+  }
+  [[ -z "$from_tag" || "$from_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || {
+    printf 'Pending release FROM_TAG is invalid.\n' >&2
+    return 1
+  }
+  [[ "$to_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || {
+    printf 'Pending release TO_TAG is invalid.\n' >&2
+    return 1
+  }
+  [[ -z "$from_tag" || "$from_tag" != "$to_tag" ]] || {
+    printf 'Pending release must change the active tag.\n' >&2
+    return 1
+  }
+  [[ "$controller_commit" =~ ^[a-f0-9]{40,64}$ ]] || {
+    printf 'Pending release CONTROLLER_COMMIT is invalid.\n' >&2
+    return 1
+  }
+  [[ "$to_tag" == "git-${controller_commit}" ]] || {
+    printf 'Pending release TO_TAG does not match CONTROLLER_COMMIT.\n' >&2
+    return 1
+  }
+  [[ "$phase" == "migrations-may-have-run" && "$migrations_may_have_run" == "true" ]] || {
+    printf 'Pending release migration phase is invalid.\n' >&2
+    return 1
+  }
+  [[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
+    printf 'Pending release timestamp is invalid.\n' >&2
+    return 1
+  }
+}
+
+write_pending_release_marker() {
+  local marker_file="$1"
+  local from_tag="$2"
+  local to_tag="$3"
+  local controller_commit="$4"
+  local directory parent_directory directory_owner directory_mode temporary
+
+  [[ "$EUID" -eq 0 ]] || {
+    printf 'Only root may create the pending release marker.\n' >&2
+    return 1
+  }
+  [[ "$marker_file" == /* ]] || {
+    printf 'Pending release marker path must be absolute.\n' >&2
+    return 1
+  }
+  [[ -z "$from_tag" || "$from_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$to_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  [[ -z "$from_tag" || "$from_tag" != "$to_tag" ]] || return 1
+  [[ "$controller_commit" =~ ^[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$to_tag" == "git-${controller_commit}" ]] || return 1
+  [[ ! -e "$marker_file" && ! -L "$marker_file" ]] || {
+    printf 'Refusing to replace an existing pending release marker.\n' >&2
+    return 1
+  }
+
+  directory="$(dirname -- "$marker_file")"
+  if [[ -e "$directory" || -L "$directory" ]]; then
+    [[ -d "$directory" && ! -L "$directory" ]] || {
+      printf 'Pending release marker directory is unsafe.\n' >&2
+      return 1
+    }
+    directory_owner="$(stat -c '%u:%g' "$directory")" || return 1
+    directory_mode="$(stat -c '%a' "$directory")" || return 1
+    [[ "$directory_owner" == "0:0" && "$directory_mode" == "700" ]] || {
+      printf 'Existing pending release directory must be root-owned with mode 0700.\n' >&2
+      return 1
+    }
+  else
+    parent_directory="$(dirname -- "$directory")"
+    [[ -d "$parent_directory" && ! -L "$parent_directory" ]] || {
+      printf 'Pending release parent directory must already exist and be safe.\n' >&2
+      return 1
+    }
+    [[ "$(stat -c '%u:%g' "$parent_directory")" == "0:0" ]] || {
+      printf 'Pending release parent directory must be root-owned.\n' >&2
+      return 1
+    }
+    directory_mode="$(stat -c '%a' "$parent_directory")" || return 1
+    [[ "$directory_mode" =~ ^[0-7]*[0145][0145]$ ]] || {
+      printf 'Pending release parent directory must not be group- or world-writable.\n' >&2
+      return 1
+    }
+    mkdir -m 0700 -- "$directory" || return 1
+  fi
+  umask 077
+  temporary="$(mktemp "${directory}/.pending-release.tmp.XXXXXX")" || return 1
+  if ! {
+    printf 'SCHEMA_VERSION=%s\n' "$PENDING_RELEASE_SCHEMA_VERSION"
+    printf 'FROM_TAG=%s\n' "$from_tag"
+    printf 'TO_TAG=%s\n' "$to_tag"
+    printf 'CONTROLLER_COMMIT=%s\n' "$controller_commit"
+    printf 'PHASE=migrations-may-have-run\n'
+    printf 'MIGRATIONS_MAY_HAVE_RUN=true\n'
+    printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$temporary" ||
+    ! chown root:root "$temporary" ||
+    ! chmod 0600 "$temporary" ||
+    ! sync "$temporary" ||
+    ! mv -f -- "$temporary" "$marker_file" ||
+    ! sync -f "$directory"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  validate_pending_release_marker "$marker_file"
+}
+
+remove_pending_release_marker() {
+  local marker_file="$1"
+
+  [[ "$EUID" -eq 0 ]] || {
+    printf 'Only root may remove the pending release marker.\n' >&2
+    return 1
+  }
+  validate_pending_release_marker "$marker_file" || return 1
+  rm -- "$marker_file" || return 1
+  sync -f "$(dirname -- "$marker_file")"
+}
+
+compose_project_name() {
+  local project_name
+
+  (($# > 0)) || {
+    printf 'Compose command is required to derive the project name.\n' >&2
+    return 1
+  }
+  command -v python3 >/dev/null 2>&1 || {
+    printf 'python3 is required to derive the Compose project name.\n' >&2
+    return 1
+  }
+  project_name="$(
+    "$@" config --format json \
+      | python3 -c '
+import json
+import re
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+name = payload.get("name") if isinstance(payload, dict) else None
+if not isinstance(name, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", name) is None:
+    raise SystemExit(3)
+sys.stdout.write(name)
+'
+  )" || {
+    printf 'Could not derive one safe Compose project name.\n' >&2
+    return 1
+  }
+  [[ "$project_name" =~ ^[a-z0-9][a-z0-9_-]{0,47}$ ]] || {
+    printf 'Compose project name is invalid.\n' >&2
+    return 1
+  }
+  printf '%s' "$project_name"
+}
+
+stop_production_compose_project() {
+  local project_name="$1"
+  local container_output container_id
+  local -a container_ids=()
+
+  [[ "$project_name" == "$PRODUCTION_COMPOSE_PROJECT" ]] || {
+    printf 'Refusing to stop a project other than %s.\n' "$PRODUCTION_COMPOSE_PROJECT" >&2
+    return 1
+  }
+  command -v docker >/dev/null 2>&1 || {
+    printf 'docker is required to stop the production Compose project.\n' >&2
+    return 1
+  }
+  container_output="$(
+    docker ps --quiet --no-trunc \
+      --filter "label=com.docker.compose.project=$project_name"
+  )" || {
+    printf 'Could not enumerate the production Compose containers.\n' >&2
+    return 1
+  }
+  [[ -n "$container_output" ]] || return 0
+  mapfile -t container_ids <<<"$container_output"
+  for container_id in "${container_ids[@]}"; do
+    [[ "$container_id" =~ ^[a-f0-9]{64}$ ]] || {
+      printf 'Docker returned an invalid production container identifier.\n' >&2
+      return 1
+    }
+  done
+  docker stop --time 30 "${container_ids[@]}" >/dev/null
+}
+
+verify_external_release_readiness() {
+  local app_domain="$1"
+  local expected_tag="$2"
+  local response
+
+  [[ "$app_domain" =~ ^[A-Za-z0-9.-]+$ ]] || {
+    printf 'External readiness domain is invalid.\n' >&2
+    return 1
+  }
+  [[ "$expected_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || {
+    printf 'External readiness release tag is invalid.\n' >&2
+    return 1
+  }
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  response="$(
+    curl --fail --show-error --silent \
+      --connect-timeout 10 --max-time 30 \
+      --retry 12 --retry-delay 5 --retry-all-errors \
+      "https://${app_domain}/api/v1/health/ready"
+  )" || return 1
+  Q_ACADEMY_EXPECTED_RELEASE="$expected_tag" python3 -c '
+import json
+import os
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+version = payload.get("data", {}).get("version") if isinstance(payload, dict) else None
+if version != os.environ["Q_ACADEMY_EXPECTED_RELEASE"]:
+    raise SystemExit(3)
+' <<<"$response"
 }
 
 configure_media_s3_release_services() {
@@ -288,9 +561,9 @@ verify_media_work_mount() {
   }
 }
 
-assert_release_environment_writable() {
+verify_release_environment_security() {
   local env_file="$1"
-  local directory probe
+  local directory directory_mode directory_mode_value resolved_directory
 
   [[ -f "$env_file" && ! -L "$env_file" ]] || {
     printf 'Production environment must be a regular non-symlink file: %s\n' "$env_file" >&2
@@ -300,7 +573,47 @@ assert_release_environment_writable() {
     printf 'Production environment is not readable: %s\n' "$env_file" >&2
     return 1
   }
+  [[ "$(stat -c '%u:%g' "$env_file")" == "0:0" ]] || {
+    printf 'Production environment must be owned by root:root: %s\n' "$env_file" >&2
+    return 1
+  }
+  [[ "$(stat -c '%a' "$env_file")" =~ ^(400|600)$ ]] || {
+    printf 'Production environment mode must be 0400 or 0600: %s\n' "$env_file" >&2
+    return 1
+  }
+  if LC_ALL=C grep -q $'\r' "$env_file"; then
+    printf 'Production environment must use LF line endings: %s\n' "$env_file" >&2
+    return 1
+  fi
   production_env_value "$env_file" APP_IMAGE_TAG >/dev/null || return 1
+  directory="$(dirname -- "$env_file")"
+  [[ -d "$directory" && ! -L "$directory" ]] || {
+    printf 'Production environment directory must be a regular directory: %s\n' "$directory" >&2
+    return 1
+  }
+  resolved_directory="$(readlink -f -- "$directory")" || return 1
+  [[ "$resolved_directory" == "$directory" ]] || {
+    printf 'Production environment directory must not traverse symlinks: %s\n' "$directory" >&2
+    return 1
+  }
+  [[ "$(stat -c '%u:%g' "$directory")" == "0:0" ]] || {
+    printf 'Production environment directory must be owned by root:root: %s\n' "$directory" >&2
+    return 1
+  }
+  directory_mode="$(stat -c '%a' "$directory")" || return 1
+  [[ "$directory_mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  directory_mode_value=$((8#$directory_mode))
+  (( (directory_mode_value & 8#022) == 0 )) || {
+    printf 'Production environment directory must not be group- or world-writable: %s\n' "$directory" >&2
+    return 1
+  }
+}
+
+assert_release_environment_writable() {
+  local env_file="$1"
+  local directory probe
+
+  verify_release_environment_security "$env_file" || return 1
   directory="$(dirname -- "$env_file")"
   probe="$(mktemp "${directory}/.q-academy-env-write.XXXXXX")" || {
     printf 'Production environment directory is not atomically writable: %s\n' "$directory" >&2
@@ -350,4 +663,5 @@ persist_app_image_tag() {
     rm -f -- "$temporary"
     return 1
   fi
+  sync -f "$directory"
 }

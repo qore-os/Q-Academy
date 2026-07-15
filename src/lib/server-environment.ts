@@ -354,7 +354,12 @@ export function trustProxyHeaders() {
 
 export function getEmailDeliveryConfiguration() {
   const environment = appRuntimeEnvironment();
-  if (!environment.emailDeliveryWebhookUrl) return null;
+  if (
+    !environment.emailDeliveryRequired ||
+    !environment.emailDeliveryWebhookUrl
+  ) {
+    return null;
+  }
   return {
     url: environment.emailDeliveryWebhookUrl,
     secret: environment.emailDeliveryWebhookSecret,

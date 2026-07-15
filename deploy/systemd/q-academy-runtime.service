@@ -1,0 +1,51 @@
+[Unit]
+Description=Q-Academy fail-closed production runtime reconcile
+Documentation=file:/opt/q-academy/docs/ROOTSERVER_DEPLOYMENT.md
+Wants=network-online.target
+After=network-online.target docker.service
+BindsTo=docker.service
+PartOf=docker.service
+ConditionPathExists=/opt/q-academy/scripts/ops/reconcile-production.sh
+ConditionFileIsExecutable=/usr/local/libexec/q-academy-emergency-stop
+RequiresMountsFor=/opt/q-academy /var/lib/q-academy /var/lib/q-academy-media-processing
+StartLimitIntervalSec=30m
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5m
+WorkingDirectory=/opt/q-academy
+Environment=Q_ACADEMY_ENV_FILE=/etc/q-academy/production.env
+Environment=COMPOSE_FILE=compose.production.yml
+Environment=RELEASE_STATE_FILE=/var/lib/q-academy/releases/current.env
+Environment=RELEASE_LOCK_FILE=/var/lock/q-academy-release.lock
+ExecStartPre=/usr/bin/test ! -L /opt/q-academy
+ExecStartPre=/usr/bin/test -d /opt/q-academy/.git
+ExecStartPre=/bin/sh -ec 'test -z "$(/usr/bin/find /opt/q-academy -xdev ! -user root -print -quit)"'
+ExecStartPre=/bin/sh -ec 'test -z "$(/usr/bin/find /opt/q-academy -xdev -perm /022 -print -quit)"'
+ExecStart=/usr/bin/bash /opt/q-academy/scripts/ops/reconcile-production.sh start
+# ExecStopPost also runs after a failed or timed-out ExecStart. This installed,
+# root-owned helper is outside the checkout and stops only the fixed project.
+ExecStopPost=-/usr/local/libexec/q-academy-emergency-stop
+UMask=0077
+TimeoutStartSec=2h
+TimeoutStopSec=5m
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/q-academy /var/lib/q-academy-media-processing /var/lock /run/lock
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+# The docker.service wants edge makes the reconcile run again after every
+# daemon restart; PartOf/BindsTo stop this unit when Docker is stopped.
+WantedBy=docker.service multi-user.target

@@ -24,9 +24,11 @@ test(
     let organizationId = "";
     let foreignOrganizationId = "";
     const originalFetch = globalThis.fetch;
+    const originalDeliveryRequired = process.env.EMAIL_DELIVERY_REQUIRED;
     const originalDeliveryUrl = process.env.EMAIL_DELIVERY_WEBHOOK_URL;
     let networkCalls = 0;
     try {
+      process.env.EMAIL_DELIVERY_REQUIRED = "true";
       process.env.EMAIL_DELIVERY_WEBHOOK_URL =
         "https://mail-provider.example.test/deliver";
       const organizations = await sql<Array<{ id: string }>>`
@@ -153,6 +155,11 @@ test(
       await postgresClient.end();
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalDeliveryRequired === undefined) {
+        delete process.env.EMAIL_DELIVERY_REQUIRED;
+      } else {
+        process.env.EMAIL_DELIVERY_REQUIRED = originalDeliveryRequired;
+      }
       if (originalDeliveryUrl === undefined) {
         delete process.env.EMAIL_DELIVERY_WEBHOOK_URL;
       } else {

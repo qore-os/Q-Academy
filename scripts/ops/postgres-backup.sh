@@ -13,6 +13,7 @@ BACKUP_LOCK_FILE="${BACKUP_LOCK_FILE:-$BACKUP_LOCK_FILE_DEFAULT}"
 RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 VERIFY_RESTORE="${BACKUP_VERIFY_RESTORE:-true}"
 BACKUP_METRICS_FILE="${BACKUP_METRICS_FILE:-/var/lib/q-academy-observability/q-academy-backup.prom}"
+inherited_backup_lock_fd="${Q_ACADEMY_BACKUP_LOCK_FD:-}"
 
 if [[ ! -r "${ENV_FILE}" ]]; then
   printf 'Production environment file is not readable: %s\n' "${ENV_FILE}" >&2
@@ -23,6 +24,18 @@ active_release_tag="${Q_ACADEMY_APP_IMAGE_TAG_OVERRIDE:-${configured_release_tag
 if [[ ! "${active_release_tag}" =~ ^git-[a-f0-9]{40,64}$ ]]; then
   printf 'APP_IMAGE_TAG must identify the full deployed Git commit.\n' >&2
   exit 1
+fi
+if [[ -e "$PENDING_RELEASE_FILE_DEFAULT" || -L "$PENDING_RELEASE_FILE_DEFAULT" ]]; then
+  if [[ -z "$inherited_backup_lock_fd" || -z "${Q_ACADEMY_APP_IMAGE_TAG_OVERRIDE:-}" ]]; then
+    printf 'A pending release blocks standalone backups until explicit recovery completes.\n' >&2
+    exit 1
+  fi
+  validate_pending_release_marker "$PENDING_RELEASE_FILE_DEFAULT" || exit 1
+  pending_backup_tag="$(production_env_value "$PENDING_RELEASE_FILE_DEFAULT" TO_TAG)" || exit 1
+  if [[ "$active_release_tag" != "$pending_backup_tag" ]]; then
+    printf 'The inherited pre-deployment backup tag does not match the pending release.\n' >&2
+    exit 1
+  fi
 fi
 export APP_IMAGE_TAG="${active_release_tag}"
 verify_and_export_pinned_images "${ENV_FILE}"
@@ -105,7 +118,6 @@ METRICS
 }
 
 mkdir -p -- "$(dirname -- "$BACKUP_LOCK_FILE")"
-inherited_backup_lock_fd="${Q_ACADEMY_BACKUP_LOCK_FD:-}"
 if [[ -n "$inherited_backup_lock_fd" ]]; then
   if [[ ! "$inherited_backup_lock_fd" =~ ^([3-9]|[1-9][0-9]{1,2})$ ]]; then
     printf 'The inherited backup lock descriptor is invalid.\n' >&2
