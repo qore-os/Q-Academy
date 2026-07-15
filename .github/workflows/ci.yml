@@ -177,7 +177,9 @@ jobs:
       - name: Typecheck
         env:
           NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run typecheck
+        run: |
+          ./node_modules/.bin/tsx scripts/ci/clean-next-dev-types.ts
+          npm run typecheck
 
       - name: Lint
         run: npm run lint

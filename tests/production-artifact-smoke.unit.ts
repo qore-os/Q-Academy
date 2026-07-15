@@ -184,7 +184,7 @@ test("production builds retain type checks with a bounded four-GiB heap", () => 
   assert.ok(typecheckStart >= 0 && lintStart > typecheckStart);
   assert.match(
     workflow.slice(typecheckStart, lintStart),
-    /NODE_OPTIONS: --max-old-space-size=4096[\s\S]*run: npm run typecheck/,
+    /NODE_OPTIONS: --max-old-space-size=4096[\s\S]*npm run typecheck/,
   );
 
   const buildStart = workflow.indexOf("- name: Build production application");
