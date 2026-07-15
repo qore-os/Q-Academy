@@ -116,19 +116,12 @@ run docker run --rm --network none \
   --workdir /workspace \
   q-academy-release-verifier:local
 
-local_release_images=(
-  "q-academy-app:$release_tag"
-  "q-academy-migrator:$release_tag"
-  "q-academy-key-rotation:$release_tag"
-  "q-academy-tenant-ops:$release_tag"
-  "q-academy-media-runner:$release_tag"
-  "q-academy-media-preflight:$release_tag"
-  "q-academy-s3-app-principal-preflight:$release_tag"
-)
-verified_local_release_images=(
-  "q-academy-postgres:$release_tag"
-  "${local_release_images[@]}"
-)
+verified_local_release_images=()
+for component in "${RELEASE_IMAGE_COMPONENTS[@]}"; do
+  verified_local_release_images+=("q-academy-$component:$release_tag")
+done
+local_build_release_images=("${verified_local_release_images[@]:1}")
+target_release_images=()
 verified_postgres_image=""
 case "$release_image_mode" in
   verified-manifest)
@@ -165,6 +158,8 @@ case "$release_image_mode" in
       "$Q_ACADEMY_MEDIA_RUNNER_IMAGE"
       "$Q_ACADEMY_MEDIA_PREFLIGHT_IMAGE"
       "$Q_ACADEMY_S3_APP_PRINCIPAL_PREFLIGHT_IMAGE"
+      "$Q_ACADEMY_DISPATCHER_IMAGE"
+      "$Q_ACADEMY_CADDY_IMAGE"
     )
     for index in "${!source_release_images[@]}"; do
       source_image="${source_release_images[$index]}"
@@ -181,20 +176,31 @@ case "$release_image_mode" in
         run docker image tag "$source_image" "$local_image"
       fi
     done
+    target_release_images=("${verified_local_release_images[@]}")
     ;;
   local-build)
     run "${compose[@]}" config --quiet
-    for image in "${local_release_images[@]}"; do
+    for image in "${local_build_release_images[@]}"; do
       if docker image inspect "$image" >/dev/null 2>&1; then
         fail "immutable release image already exists: $image"
       fi
     done
-    run "${compose[@]}" build --pull app migrate key-rotation tenant-admin-ops media-runner media-preflight s3-app-principal-preflight
+    run "${compose[@]}" build --pull app migrate key-rotation tenant-admin-ops media-runner media-preflight s3-app-principal-preflight scheduler caddy
+    target_release_images=("${local_build_release_images[@]}")
     ;;
   *)
     fail "RELEASE_IMAGE_MODE must be verified-manifest or local-build"
     ;;
 esac
+
+for target_image in "${target_release_images[@]}"; do
+  if [[ "$dry_run" == "true" ]]; then
+    run docker image inspect "$target_image"
+  else
+    docker image inspect "$target_image" >/dev/null 2>&1 ||
+      fail "target release image is not present locally: $target_image"
+  fi
+done
 
 media_bucket="$(production_env_value "$env_file" MEDIA_S3_BUCKET)" || fail "MEDIA_S3_BUCKET is invalid"
 run "${compose[@]}" up -d --no-recreate --wait --wait-timeout 300 postgres
@@ -260,7 +266,9 @@ for runtime_service in "${DATABASE_RUNTIME_SERVICES[@]}"; do
     "$runtime_service" node -e \
     "fetch('http://127.0.0.1:3000/api/v1/health/ready').then(async(response)=>{const body=await response.json().catch(()=>null);if(!response.ok||body?.data?.version!==process.env.Q_ACADEMY_EXPECTED_RELEASE)process.exit(1)}).catch(()=>process.exit(1))"
 done
-run "${compose[@]}" up -d --no-deps caddy
+run "${compose[@]}" run --rm --no-deps caddy-volume-init
+run "${compose[@]}" up -d --no-deps --force-recreate --wait \
+  --wait-timeout "$CADDY_WAIT_TIMEOUT_SECONDS" caddy
 run curl --fail --show-error --silent --retry 12 --retry-delay 5 \
   "https://$app_domain/api/v1/health/ready"
 run "${compose[@]}" up -d --no-deps --wait \

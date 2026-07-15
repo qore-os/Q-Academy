@@ -60,6 +60,8 @@ test("backup/restore drill is isolated and exercises the production role contrac
   assert.match(drill, /build migrate/);
   assert.match(drill, /run --rm --no-deps migrate/);
   assert.match(drill, /used_migrator_image_id/);
+  assert.doesNotMatch(drill, /CURL_IMAGE|CADDY_IMAGE/);
+  assert.doesNotMatch(drillEnvironment, /CURL_IMAGE|CADDY_IMAGE/);
   assert.match(drill, /scripts\/ops\/postgres-backup\.sh/);
   assert.match(drill, /scripts\/ops\/postgres-restore\.sh/);
   assert.doesNotMatch(drill, /\bpg_restore\b/);

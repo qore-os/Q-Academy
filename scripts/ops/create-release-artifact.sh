@@ -27,6 +27,10 @@ golang_builder_image="${CI_GOLANG_BUILDER_IMAGE:-}"
 gosu_version="${CI_GOSU_VERSION:-}"
 gosu_source_commit="${CI_GOSU_SOURCE_COMMIT:-}"
 gosu_source_sha256="${CI_GOSU_SOURCE_SHA256:-}"
+caddy_builder_image="${CI_CADDY_BUILDER_IMAGE:-}"
+caddy_version="${CI_CADDY_VERSION:-}"
+caddy_buildable_artifact_sha256="${CI_CADDY_BUILDABLE_ARTIFACT_SHA256:-}"
+caddy_source_date_epoch="${CI_CADDY_SOURCE_DATE_EPOCH:-}"
 [[ "$node_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_NODE_IMAGE must be digest-pinned"
 [[ "$debian_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "CI_DEBIAN_SNAPSHOT is invalid"
 [[ "$ca_certificates_version" =~ ^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_CA_CERTIFICATES_VERSION is invalid"
@@ -37,8 +41,12 @@ gosu_source_sha256="${CI_GOSU_SOURCE_SHA256:-}"
 [[ "$gosu_version" =~ ^[0-9]+\.[0-9]+$ ]] || fail "CI_GOSU_VERSION is invalid"
 [[ "$gosu_source_commit" =~ ^[a-f0-9]{40}$ ]] || fail "CI_GOSU_SOURCE_COMMIT is invalid"
 [[ "$gosu_source_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_GOSU_SOURCE_SHA256 is invalid"
+[[ "$caddy_builder_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_CADDY_BUILDER_IMAGE must be digest-pinned"
+[[ "$caddy_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CI_CADDY_VERSION is invalid"
+[[ "$caddy_buildable_artifact_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_CADDY_BUILDABLE_ARTIFACT_SHA256 is invalid"
+[[ "$caddy_source_date_epoch" =~ ^[1-9][0-9]{9}$ ]] || fail "CI_CADDY_SOURCE_DATE_EPOCH is invalid"
 
-image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
+image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher caddy)
 image_variables=(
   Q_ACADEMY_POSTGRES_IMAGE_ID
   Q_ACADEMY_APP_IMAGE_ID
@@ -48,6 +56,8 @@ image_variables=(
   Q_ACADEMY_MEDIA_RUNNER_IMAGE_ID
   Q_ACADEMY_MEDIA_PREFLIGHT_IMAGE_ID
   Q_ACADEMY_S3_APP_PRINCIPAL_PREFLIGHT_IMAGE_ID
+  Q_ACADEMY_DISPATCHER_IMAGE_ID
+  Q_ACADEMY_CADDY_IMAGE_ID
 )
 
 if [[ -e "$output_directory" ]]; then
@@ -72,6 +82,10 @@ mkdir -- "$output_directory/evidence"
   printf 'Q_ACADEMY_GOSU_VERSION=%s\n' "$gosu_version"
   printf 'Q_ACADEMY_GOSU_SOURCE_COMMIT=%s\n' "$gosu_source_commit"
   printf 'Q_ACADEMY_GOSU_SOURCE_SHA256=%s\n' "$gosu_source_sha256"
+  printf 'Q_ACADEMY_CADDY_BUILDER_IMAGE=%s\n' "$caddy_builder_image"
+  printf 'Q_ACADEMY_CADDY_VERSION=%s\n' "$caddy_version"
+  printf 'Q_ACADEMY_CADDY_BUILDABLE_ARTIFACT_SHA256=%s\n' "$caddy_buildable_artifact_sha256"
+  printf 'Q_ACADEMY_CADDY_SOURCE_DATE_EPOCH=%s\n' "$caddy_source_date_epoch"
   for index in "${!image_components[@]}"; do
     image="q-academy-${image_components[$index]}:$release_tag"
     image_id="$(docker image inspect --format '{{.Id}}' "$image")" || fail "release image is unavailable: $image"

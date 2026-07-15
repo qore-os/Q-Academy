@@ -25,6 +25,10 @@ jobs:
       CI_GOSU_VERSION: "1.19"
       CI_GOSU_SOURCE_COMMIT: 6456aaa0f3c854d199d0f037f068eb97515b7513
       CI_GOSU_SOURCE_SHA256: 33d7537d588ea49458b9509bcf4554bdf5ceacc66da71e5caa1058ea3b689c3b
+      CI_CADDY_BUILDER_IMAGE: golang:1.26.5-bookworm@sha256:3f6236bd765f898a2a3c2946112b04097814c4529d44534674700cd07b9c6b4c
+      CI_CADDY_VERSION: "2.11.4"
+      CI_CADDY_BUILDABLE_ARTIFACT_SHA256: 33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187
+      CI_CADDY_SOURCE_DATE_EPOCH: "1780342502"
       CI_ZAP_IMAGE: zaproxy/zap-stable:2.17.0@sha256:8d387b1a63e3425beef4846e39719f5af2a787753af2d8b6558c6257d7a577a2
       CI_PROMETHEUS_IMAGE: prom/prometheus:v3.13.1@sha256:3c42b892cf723fa54d2f262c37a0e1f80aa8c8ddb1da7b9b0df9455a35a7f893
       CI_DEBIAN_SNAPSHOT: 20260714T202849Z
@@ -211,10 +215,8 @@ jobs:
           NODE_IMAGE: registry.invalid/q-academy/node-ci@sha256:0000000000000000000000000000000000000000000000000000000000000000
           POSTGRES_IMAGE: registry.invalid/q-academy/postgres-ci@sha256:1111111111111111111111111111111111111111111111111111111111111111
           CLAMAV_IMAGE: registry.invalid/q-academy/clamav-ci@sha256:2222222222222222222222222222222222222222222222222222222222222222
-          CURL_IMAGE: registry.invalid/q-academy/curl-ci@sha256:3333333333333333333333333333333333333333333333333333333333333333
           PROMETHEUS_IMAGE: registry.invalid/q-academy/prometheus-ci@sha256:4444444444444444444444444444444444444444444444444444444444444444
           NODE_EXPORTER_IMAGE: registry.invalid/q-academy/node-exporter-ci@sha256:5555555555555555555555555555555555555555555555555555555555555555
-          CADDY_IMAGE: registry.invalid/q-academy/caddy-ci@sha256:6666666666666666666666666666666666666666666666666666666666666666
           APP_DOMAIN: academy.ci.q-academy.de
           CADDY_SITE_ADDRESSES: academy.ci.q-academy.de
           ACME_EMAIL: ops@ci.q-academy.de
@@ -285,6 +287,12 @@ jobs:
             --build-arg GOSU_SOURCE_SHA256="$CI_GOSU_SOURCE_SHA256" \
             -t "q-academy-postgres:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            --target runner \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
+            --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
+            -t "q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
             --target migrator \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-migrator:$Q_ACADEMY_CI_RELEASE_TAG" .
@@ -296,12 +304,6 @@ jobs:
             --target tenant-ops \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" .
-          docker build \
-            --target runner \
-            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
-            --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
-            --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
-            -t "q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
             --target media-runner \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
@@ -324,9 +326,21 @@ jobs:
             --target s3-app-principal-preflight \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target dispatcher \
+            --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
+            -t "q-academy-dispatcher:$Q_ACADEMY_CI_RELEASE_TAG" .
+          docker build \
+            --target caddy \
+            --build-arg CADDY_BUILDER_IMAGE="$CI_CADDY_BUILDER_IMAGE" \
+            --build-arg CADDY_VERSION="$CI_CADDY_VERSION" \
+            --build-arg CADDY_BUILDABLE_ARTIFACT_SHA256="$CI_CADDY_BUILDABLE_ARTIFACT_SHA256" \
+            --build-arg CADDY_SOURCE_DATE_EPOCH="$CI_CADDY_SOURCE_DATE_EPOCH" \
+            -t "q-academy-caddy:$Q_ACADEMY_CI_RELEASE_TAG" .
 
-          image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
-          for component in "${image_components[@]}"; do
+          image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher caddy)
+          shell_image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher)
+          for component in "${shell_image_components[@]}"; do
             image="q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG"
             docker run --rm --entrypoint /bin/sh "$image" -ec '
               test ! -e /usr/local/lib/node_modules/npm
@@ -382,6 +396,63 @@ jobs:
               --tuples-only --no-align --command='select current_user, 6 * 7')" \
             = 'postgres|42'
           docker rm --force "$postgres_smoke_container" >/dev/null
+          trap - EXIT
+
+          dispatcher_image="q-academy-dispatcher:$Q_ACADEMY_CI_RELEASE_TAG"
+          test "$(docker image inspect --format '{{.Config.User}}' "$dispatcher_image")" = 1001:1001
+          docker run --rm --entrypoint node "$dispatcher_image" \
+            --check /opt/q-academy/dispatcher-http-post.mjs
+
+          caddy_image="q-academy-caddy:$Q_ACADEMY_CI_RELEASE_TAG"
+          test "$(docker image inspect --format '{{.Config.User}}' "$caddy_image")" = 10001:10001
+          test "$(docker image inspect --format '{{json .Config.Entrypoint}}' "$caddy_image")" \
+            = '["/usr/bin/q-academy-caddy-entrypoint"]'
+          test "$(docker image inspect --format '{{json .Config.Cmd}}' "$caddy_image")" \
+            = '["run","--config","/etc/caddy/Caddyfile","--adapter","caddyfile"]'
+          if docker run --rm --entrypoint /bin/sh "$caddy_image" -ec true \
+            >/dev/null 2>&1; then
+            echo "Scratch Caddy image unexpectedly contains /bin/sh." >&2
+            exit 1
+          fi
+          docker run --rm --entrypoint /usr/bin/caddy "$caddy_image" version \
+            | grep -E "^v${CI_CADDY_VERSION}([[:space:]]|$)"
+
+          caddy_smoke_suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          caddy_data_volume="q-academy-ci-caddy-data-${caddy_smoke_suffix}"
+          caddy_config_volume="q-academy-ci-caddy-config-${caddy_smoke_suffix}"
+          cleanup_caddy_smoke() {
+            docker volume rm --force "$caddy_data_volume" "$caddy_config_volume" \
+              >/dev/null 2>&1 || true
+          }
+          trap cleanup_caddy_smoke EXIT
+          docker volume create "$caddy_data_volume" >/dev/null
+          docker volume create "$caddy_config_volume" >/dev/null
+          docker run --rm --network none --user 0:0 --read-only \
+            --security-opt no-new-privileges=true \
+            --cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH \
+            --volume "$caddy_data_volume:/data" \
+            --volume "$caddy_config_volume:/config" \
+            "$caddy_image" initialize-volumes
+          for volume in "$caddy_data_volume" "$caddy_config_volume"; do
+            docker run --rm --network none --entrypoint /bin/sh \
+              --volume "$volume:/volume:ro" "$postgres_image" -ec '
+                test "$(stat -c "%u:%g:%a" /volume)" = 10001:10001:700
+                sentinel=/volume/.q-academy-caddy-volume-v1
+                test "$(stat -c "%u:%g:%a" "$sentinel")" = 10001:10001:444
+                test "$(cat "$sentinel")" = q-academy-caddy-volume-v1
+              '
+          done
+          docker run --rm --network none --user 10001:10001 --read-only \
+            --cap-drop ALL --security-opt no-new-privileges=true \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=32m,uid=10001,gid=10001 \
+            --volume "$caddy_data_volume:/data" \
+            --volume "$caddy_config_volume:/config" \
+            --volume "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            --env ACME_EMAIL=ops@ci.q-academy.de \
+            --env CADDY_SITE_ADDRESSES=academy.ci.q-academy.de \
+            --env CADDY_TLS_ASK_SECRET="$CADDY_TLS_ASK_SECRET" \
+            "$caddy_image" validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          cleanup_caddy_smoke
           trap - EXIT
 
           tsx_image_components=(migrator key-rotation tenant-ops media-preflight s3-app-principal-preflight)
@@ -828,7 +899,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight)
+          image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher caddy)
           before_manifest="$RUNNER_TEMP/q-academy-release-image-ids.before"
           after_manifest="$RUNNER_TEMP/q-academy-release-image-ids.after"
 

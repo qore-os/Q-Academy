@@ -128,7 +128,7 @@ test("Prometheus scrapes authenticated aggregate metrics and evaluates alerts", 
   );
   assert.match(
     continuousIntegration,
-    /prom\/prometheus:v3\.12\.0@sha256:[a-f0-9]{64}/,
+    /prom\/prometheus:v3\.13\.1@sha256:[a-f0-9]{64}/,
   );
   assert.match(continuousIntegration, /check rules \/etc\/prometheus\/alerts\.yml/);
   assert.match(continuousIntegration, /check config \/etc\/prometheus\/prometheus\.yml/);

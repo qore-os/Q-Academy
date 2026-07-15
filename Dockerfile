@@ -151,7 +151,7 @@ CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
 FROM runtime-base AS dispatcher
 ENV NODE_ENV=production
 COPY --chown=nextjs:nodejs scripts/ops/dispatcher-http-post.mjs /opt/q-academy/dispatcher-http-post.mjs
-USER nextjs
+USER 1001:1001
 
 FROM base AS dependencies
 COPY package.json package-lock.json ./

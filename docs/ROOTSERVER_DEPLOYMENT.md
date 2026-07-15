@@ -41,9 +41,11 @@ Die bereitgestellte Konfiguration betreibt genau eine oeffentliche App-Instanz
 und einen nicht oeffentlich erreichbaren Medienrunner. Horizontale Skalierung
 der oeffentlichen App erfordert vorher einen gemeinsamen Next.js-Cache, koordinierte
 Invalidierung und einen fuer alle Instanzen identischen Server-Action-Schluessel.
-Die Standard-Caddy-Distribution verwaltet die explizit in
-`CADDY_SITE_ADDRESSES` aufgefuehrten Plattformhosts statisch. Fuer verifizierte
-Custom Domains verwendet sie einen `https://`-Catch-all mit On-Demand TLS. Vor
+Das releasegebundene, gehaertete Scratch-Caddy-Image verwaltet die explizit in
+`CADDY_SITE_ADDRESSES` aufgefuehrten Plattformhosts statisch. Es lauscht im
+Container ohne Root-Rechte auf `8080`/`8443`; Compose bildet die Host-Ports
+`80`/`443` darauf ab. Fuer verifizierte Custom Domains verwendet es einen
+`https://`-Catch-all mit On-Demand TLS. Vor
 jeder neuen oder erneut zu autorisierenden Domain fragt Caddy ueber einen nur
 auf Container-Loopback gebundenen Proxy den internen App-Endpunkt ab. Der Proxy
 setzt `CADDY_TLS_ASK_SECRET` als Bearer-Header und erreicht die App ausschliesslich
@@ -724,7 +726,7 @@ neuem Evidence- und Abnahmelauf erforderlich.
    Secret-Keys in `MEDIA_S3_APP_*` beziehungsweise `MEDIA_S3_*` eintragen.
 
    Fuer `NODE_IMAGE`, den lokalen Fallback `POSTGRES_IMAGE`, `CLAMAV_IMAGE`,
-   `CURL_IMAGE`, `PROMETHEUS_IMAGE`, `NODE_EXPORTER_IMAGE` und `CADDY_IMAGE` jeweils das
+   `PROMETHEUS_IMAGE` und `NODE_EXPORTER_IMAGE` jeweils das
    freigegebene Upstream-Image ziehen und die vom Registry-Provider
    veroeffentlichte unveraenderliche Referenz im Format
    `name:tag@sha256:<64-hex>` eintragen. Digests niemals raten oder aus einer
@@ -790,8 +792,11 @@ neuem Evidence- und Abnahmelauf erforderlich.
 
    Bei privaten GHCR-Paketen vorab mit einem kurzlebigen, nur lesenden Token
    `docker login ghcr.io` ausfuehren. Das Deploy zieht ausschliesslich die im
-   Manifest enthaltenen `@sha256:`-Referenzen, einschliesslich des gehaerteten
-   PostgreSQL-Images. Der Manifest-Commit, der
+   Manifest enthaltenen `@sha256:`-Referenzen, einschliesslich der gehaerteten
+   PostgreSQL-, Dispatcher- und Scratch-Caddy-Images. Dispatcher und Caddy sind
+   releasegebundene Q-Academy-Artefakte; separate `CURL_IMAGE`- oder
+   `CADDY_IMAGE`-Upstream-Pins gehoeren nicht mehr in die Produktions-Env. Der
+   Manifest-Commit, der
    vollstaendige lokale Git-Commit und `linux/<arch>` des Docker-Servers muessen
    exakt uebereinstimmen.
 
@@ -811,7 +816,10 @@ neuem Evidence- und Abnahmelauf erforderlich.
 
 5. Datenbank, Migration, ClamAV, App, Medienrunner, Scan- und
    Maintenance-Dispatcher, Scheduler und Caddy ueber den gesperrten Releasepfad
-   starten:
+   starten. Der Releasepfad prueft zuerst alle Zielimages. Direkt vor jedem
+   Caddy-Recreate initialisiert der isolierte `caddy-volume-init` die benannten
+   Volumes fail-closed und prueft Owner, Modus und Sentinel. Erst der danach mit
+   UID/GID 10001 gesunde Caddy darf die externe HTTPS-Readiness freigeben:
 
    ```bash
    release_tag="git-$(git rev-parse HEAD)"
@@ -1218,17 +1226,20 @@ Backup aus. Vor dem Backup-Gate nimmt es in fester Reihenfolge nach dem
 Release-Lock zusaetzlich `/var/lock/q-academy-backup.lock`.
 Standardmaessig verlangt es `RELEASE_IMAGE_MANIFEST`, verifiziert
 dessen GitHub-/Sigstore-Bundle gegen Repository, signernden Workflow und
-Source-Commit, prueft Zielarchitektur und zieht PostgreSQL, App, Migrator,
-Key-Rotation,
-Medienrunner, Medien-Preflight und App-S3-Principal-Preflight nur ueber die dort
-attestierten Registry-Digests. Erst danach
+Source-Commit, prueft Zielarchitektur und zieht in fester Reihenfolge
+PostgreSQL, App, Migrator, Key-Rotation, Tenant-Ops, Medienrunner,
+Medien-Preflight, App-S3-Principal-Preflight, Dispatcher und Caddy nur ueber die
+dort attestierten Registry-Digests. Erst danach
 stoppt es Scheduler, beide Medien-Dispatcher, App und Medienrunner, fuehrt
 Rollenabgleich, den sessiongesperrten Migrator und den transaktionalen
 Rechteabgleich aus und startet App und Medienrunner gemeinsam mit `--wait`.
 Compose injiziert den exakten `APP_IMAGE_TAG` in beide Runtimes als
 `Q_ACADEMY_APP_VERSION`; erfolgreiche Readiness gibt ihn unter `data.version`
 aus. Deploy und Rollback vergleichen diesen Wert in App und Medienrunner exakt
-mit dem angeforderten Zieltag. Erst danach starten die Dispatcher. Jeder Fehler
+mit dem angeforderten Zieltag. Danach initialisiert der isolierte
+`caddy-volume-init` die Caddy-Volumes, Caddy wird aus dem Zielimage neu erstellt
+und intern gesund geprueft. Erst dann darf die externe HTTPS-Readiness
+erfolgreich sein; danach starten die Dispatcher. Jeder Fehler
 nach dem Stop laesst alle DB-Writer fuer die Untersuchung angehalten. Erst nach
 dieser Release-Readiness schreibt das Skript `APP_IMAGE_TAG` und den
 attestierten PostgreSQL-Digest atomar in die geschuetzte

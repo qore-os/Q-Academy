@@ -406,7 +406,13 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     productionCompose.match(/image: q-academy-dispatcher:/g)?.length,
     3,
   );
+  assert.match(
+    dockerfile,
+    /^FROM runtime-base AS dispatcher$[\s\S]*?^USER 1001:1001$/m,
+  );
   assert.doesNotMatch(productionCompose, /\$\{CURL_IMAGE:/);
+  assert.doesNotMatch(productionEnvironmentExample, /^CURL_IMAGE=/m);
+  assert.doesNotMatch(continuousIntegration, /^\s+CURL_IMAGE:/m);
 
   const caddyVolumeInit = composeServiceBlock("caddy-volume-init");
   assert.match(
@@ -441,6 +447,8 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     /caddy-volume-init:\s+condition: service_completed_successfully/,
   );
   assert.doesNotMatch(productionCompose, /\$\{CADDY_IMAGE:/);
+  assert.doesNotMatch(productionEnvironmentExample, /^CADDY_IMAGE=/m);
+  assert.doesNotMatch(continuousIntegration, /^\s+CADDY_IMAGE:/m);
 
   assert.match(caddyfile, /^\thttp_port 8080$/m);
   assert.match(caddyfile, /^\thttps_port 8443$/m);

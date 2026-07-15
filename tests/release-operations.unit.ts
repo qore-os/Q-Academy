@@ -88,11 +88,13 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /pg_class relation_record/);
   assert.match(deploy, /Fresh database has no application relations/);
   assert.match(deploy, /docker image inspect/);
-  assert.match(deploy, /q-academy-key-rotation/);
-  assert.match(deploy, /q-academy-tenant-ops/);
-  assert.match(deploy, /q-academy-media-runner/);
-  assert.match(deploy, /q-academy-media-preflight/);
-  assert.match(deploy, /q-academy-s3-app-principal-preflight/);
+  assert.match(deploy, /Q_ACADEMY_KEY_ROTATION_IMAGE/);
+  assert.match(deploy, /Q_ACADEMY_TENANT_OPS_IMAGE/);
+  assert.match(deploy, /Q_ACADEMY_MEDIA_RUNNER_IMAGE/);
+  assert.match(deploy, /Q_ACADEMY_MEDIA_PREFLIGHT_IMAGE/);
+  assert.match(deploy, /Q_ACADEMY_S3_APP_PRINCIPAL_PREFLIGHT_IMAGE/);
+  assert.match(deploy, /Q_ACADEMY_DISPATCHER_IMAGE/);
+  assert.match(deploy, /Q_ACADEMY_CADDY_IMAGE/);
   assert.match(deploy, /RELEASE_IMAGE_MODE:-verified-manifest/);
   assert.match(deploy, /RELEASE_IMAGE_MANIFEST is required/);
   assert.match(deploy, /gh attestation verify "\$release_image_manifest"/);
@@ -106,8 +108,9 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /run docker pull "\$source_image"/);
   assert.match(deploy, /local release tag points to different content/);
   assert.match(deploy, /local-build\)/);
-  assert.match(deploy, /build --pull app migrate key-rotation tenant-admin-ops media-runner media-preflight s3-app-principal-preflight/);
+  assert.match(deploy, /build --pull app migrate key-rotation tenant-admin-ops media-runner media-preflight s3-app-principal-preflight scheduler caddy/);
   assert.match(deploy, /immutable release image already exists/);
+  assert.match(deploy, /target release image is not present locally/);
   assert.match(
     deploy,
     /media-preflight[\s\\]+--confirm-bucket "\$media_bucket"/,
@@ -156,6 +159,14 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(
     deploy,
     /up -d --no-deps --wait \\\s+--wait-timeout "\$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS" \\\s+"\$\{DATABASE_DISPATCHER_SERVICES\[@\]\}"/,
+  );
+  assert.match(
+    deploy,
+    /run "\$\{compose\[@\]\}" run --rm --no-deps caddy-volume-init/,
+  );
+  assert.match(
+    deploy,
+    /up -d --no-deps --force-recreate --wait \\\s+--wait-timeout "\$CADDY_WAIT_TIMEOUT_SECONDS" caddy/,
   );
   assert.match(
     deploy,
@@ -219,6 +230,19 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.ok(dispatcherHealthGate < releasePersistence);
   assert.ok(stratoSweeperHealthGate > dispatcherHealthGate);
   assert.ok(stratoSweeperHealthGate < releasePersistence);
+  const caddyVolumeInit = deploy.indexOf(
+    'run "${compose[@]}" run --rm --no-deps caddy-volume-init',
+  );
+  const caddyHealthGate = deploy.indexOf(
+    '--wait-timeout "$CADDY_WAIT_TIMEOUT_SECONDS" caddy',
+  );
+  const externalReadiness = deploy.indexOf(
+    '"https://$app_domain/api/v1/health/ready"',
+  );
+  assert.ok(caddyVolumeInit > writerStop);
+  assert.ok(caddyVolumeInit < caddyHealthGate);
+  assert.ok(caddyHealthGate < externalReadiness);
+  assert.ok(externalReadiness < releasePersistence);
   assert.ok(releasePersistence < releaseCompletion);
   const prematureBackupLockClose = deploy.indexOf("exec 8>&-");
   assert.ok(
@@ -385,10 +409,8 @@ test("child backup validates the inherited deployment lock without self-deadlock
     `NODE_IMAGE=registry.invalid/node@sha256:${digest}`,
     `POSTGRES_IMAGE=registry.invalid/postgres@sha256:${digest}`,
     `CLAMAV_IMAGE=registry.invalid/clamav@sha256:${digest}`,
-    `CURL_IMAGE=registry.invalid/curl@sha256:${digest}`,
     `PROMETHEUS_IMAGE=registry.invalid/prometheus@sha256:${digest}`,
     `NODE_EXPORTER_IMAGE=registry.invalid/node-exporter@sha256:${digest}`,
-    `CADDY_IMAGE=registry.invalid/caddy@sha256:${digest}`,
   ]
     .map((line) => `'${line}'`)
     .join(" ");
@@ -448,7 +470,9 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.match(rollback, /CONFIRM_ROLLBACK_TAG/);
   assert.match(rollback, /MIGRATIONS_BACKWARD_COMPATIBLE/);
   assert.match(rollback, /docker image inspect/);
-  assert.match(rollback, /target media runner image is not present locally/);
+  assert.match(rollback, /target release image is not present locally/);
+  assert.match(rollback, /target_runtime_components=\(app media-runner\)/);
+  assert.match(rollback, /target_runtime_components\+=\(dispatcher caddy\)/);
   assert.match(rollback, /stop -t 30 "\$\{DATABASE_WRITER_SERVICES\[@\]\}"/);
   assert.match(
     rollback,
@@ -467,6 +491,14 @@ test("app rollback requires explicit compatibility and never mutates the databas
   );
   assert.match(
     rollback,
+    /run "\$\{compose\[@\]\}" run --rm --no-deps caddy-volume-init/,
+  );
+  assert.match(
+    rollback,
+    /up -d --no-deps --force-recreate --wait \\\s+--wait-timeout "\$CADDY_WAIT_TIMEOUT_SECONDS" caddy/,
+  );
+  assert.match(
+    rollback,
     /All application, media, and STRATO deletion writers remain stopped/,
   );
   assert.match(rollback, /release state and production APP_IMAGE_TAG disagree/);
@@ -475,7 +507,7 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.match(rollback, /configure_media_s3_release_services "\$env_file"/);
   assert.match(
     rollback,
-    /target STRATO privacy sweeper image is not present locally/,
+    /target_runtime_components\+=\(s3-app-principal-preflight\)/,
   );
   assert.match(
     rollback,
@@ -510,6 +542,18 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.ok(dispatcherHealthGate >= 0 && dispatcherHealthGate < releasePersistence);
   assert.ok(stratoSweeperHealthGate > dispatcherHealthGate);
   assert.ok(stratoSweeperHealthGate < releasePersistence);
+  const caddyVolumeInit = rollback.indexOf(
+    'run "${compose[@]}" run --rm --no-deps caddy-volume-init',
+  );
+  const caddyHealthGate = rollback.indexOf(
+    '--wait-timeout "$CADDY_WAIT_TIMEOUT_SECONDS" caddy',
+  );
+  const externalReadiness = rollback.indexOf(
+    '"https://$app_domain/api/v1/health/ready"',
+  );
+  assert.ok(caddyVolumeInit >= 0 && caddyVolumeInit < caddyHealthGate);
+  assert.ok(caddyHealthGate < externalReadiness);
+  assert.ok(externalReadiness < releasePersistence);
 });
 
 test("release state and upstream image references fail closed", () => {
@@ -517,16 +561,15 @@ test("release state and upstream image references fail closed", () => {
     "NODE_IMAGE",
     "POSTGRES_IMAGE",
     "CLAMAV_IMAGE",
-    "CURL_IMAGE",
     "PROMETHEUS_IMAGE",
     "NODE_EXPORTER_IMAGE",
-    "CADDY_IMAGE",
   ]) {
     assert.match(common, new RegExp(`\\b${name}\\b`));
     assert.match(compose, new RegExp(`\\$\\{${name}:\\?`));
   }
   assert.match(common, /@sha256:\[a-f0-9\]\{64\}/);
   for (const name of [
+    "Q_ACADEMY_POSTGRES_IMAGE",
     "Q_ACADEMY_APP_IMAGE",
     "Q_ACADEMY_MIGRATOR_IMAGE",
     "Q_ACADEMY_KEY_ROTATION_IMAGE",
@@ -534,6 +577,8 @@ test("release state and upstream image references fail closed", () => {
     "Q_ACADEMY_MEDIA_RUNNER_IMAGE",
     "Q_ACADEMY_MEDIA_PREFLIGHT_IMAGE",
     "Q_ACADEMY_S3_APP_PRINCIPAL_PREFLIGHT_IMAGE",
+    "Q_ACADEMY_DISPATCHER_IMAGE",
+    "Q_ACADEMY_CADDY_IMAGE",
   ]) {
     assert.match(common, new RegExp(`\\b${name}\\b`));
   }
@@ -700,6 +745,8 @@ test("production runtime images omit package managers and development dependenci
 
 test("CI packages, scans, publishes, and attests the exact smoke-tested images", () => {
   for (const target of [
+    "caddy",
+    "dispatcher",
     "migrator",
     "key-rotation",
     "runner",
@@ -721,6 +768,14 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /q-academy-s3-app-principal-preflight:\$Q_ACADEMY_CI_RELEASE_TAG/,
   );
+  assert.match(
+    continuousIntegration,
+    /q-academy-dispatcher:\$Q_ACADEMY_CI_RELEASE_TAG/,
+  );
+  assert.match(
+    continuousIntegration,
+    /q-academy-caddy:\$Q_ACADEMY_CI_RELEASE_TAG/,
+  );
   assert.equal(
     continuousIntegration.match(
       /body\?\.data\?\.version!==process\.env\.Q_ACADEMY_CI_RELEASE_TAG/g,
@@ -738,6 +793,16 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   );
   assert.match(continuousIntegration, /CI_DEBIAN_SNAPSHOT: 20260714T202849Z/);
   assert.match(continuousIntegration, /CI_MESA_VERSION: 22\.3\.6-1\+deb12u2/);
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_BUILDER_IMAGE: golang:1[.]26[.]5-bookworm@sha256:[a-f0-9]{64}/,
+  );
+  assert.match(continuousIntegration, /CI_CADDY_VERSION: "2[.]11[.]4"/);
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_BUILDABLE_ARTIFACT_SHA256: [a-f0-9]{64}/,
+  );
+  assert.match(continuousIntegration, /CI_CADDY_SOURCE_DATE_EPOCH: "[0-9]{10}"/);
   const pinnedNodeImage =
     "node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
   assert.equal(continuousIntegration.split(pinnedNodeImage).length - 1, 2);
@@ -763,6 +828,12 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /tsx_image_components=\(migrator key-rotation tenant-ops media-preflight s3-app-principal-preflight\)/,
   );
+  assert.doesNotMatch(continuousIntegration, /tsx_image_components=\([^\n]*dispatcher/);
+  assert.match(
+    continuousIntegration,
+    /shell_image_components=\(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher\)/,
+  );
+  assert.doesNotMatch(continuousIntegration, /shell_image_components=\([^\n]*caddy/);
   assert.match(
     continuousIntegration,
     /dpkg-query -W -f='\$\{Version\}' "\$package"/,
@@ -800,14 +871,21 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /TMPDIR: \$\{\{ runner\.temp \}\}/);
   assert.match(createReleaseArtifact, /docker save/);
   assert.match(createReleaseArtifact, /s3-app-principal-preflight/);
+  assert.match(createReleaseArtifact, /dispatcher caddy/);
   assert.match(createReleaseArtifact, /CI_CA_CERTIFICATES_VERSION/);
   assert.match(createReleaseArtifact, /Q_ACADEMY_CA_CERTIFICATES_VERSION/);
   assert.match(createReleaseArtifact, /CI_MESA_VERSION/);
   assert.match(createReleaseArtifact, /Q_ACADEMY_MESA_VERSION/);
+  assert.match(createReleaseArtifact, /CI_CADDY_BUILDER_IMAGE/);
+  assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_BUILDER_IMAGE/);
+  assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_VERSION/);
+  assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_BUILDABLE_ARTIFACT_SHA256/);
+  assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_SOURCE_DATE_EPOCH/);
   assert.match(createReleaseArtifact, /SHA256SUMS/);
   assert.match(publishReleaseImages, /sha256sum --check --strict/);
   assert.match(publishReleaseImages, /docker push/);
   assert.match(publishReleaseImages, /s3-app-principal-preflight/);
+  assert.match(publishReleaseImages, /dispatcher caddy/);
   assert.match(publishReleaseImages, /docker pull "\$pinned_reference"/);
   assert.match(publishReleaseImages, /published_id[^]*expected_id/);
   assert.match(publishReleaseImages, /output manifest already exists/);
@@ -816,6 +894,37 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     /ln -- "\$temporary_manifest" "\$output_manifest"/,
   );
   assert.match(publishReleaseImages, /output checksum already exists/);
+  const exactComponents =
+    "postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher caddy";
+  assert.match(
+    common,
+    new RegExp(
+      `RELEASE_IMAGE_COMPONENTS=\\([\\s\\S]*${exactComponents.replaceAll(" ", "\\s+")}\\s*\\)`,
+    ),
+  );
+  assert.match(
+    createReleaseArtifact,
+    new RegExp(`image_components=\\(${exactComponents}\\)`),
+  );
+  assert.match(
+    publishReleaseImages,
+    new RegExp(`image_components=\\(${exactComponents}\\)`),
+  );
+  assert.equal(
+    continuousIntegration.match(new RegExp(`image_components=\\(${exactComponents}\\)`, "g"))?.length,
+    2,
+  );
+  assert.match(continuousIntegration, /Scratch Caddy image unexpectedly contains \/bin\/sh/);
+  assert.match(
+    continuousIntegration,
+    /--network none --user 0:0 --read-only \\\s+--security-opt no-new-privileges=true \\\s+--cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH/,
+  );
+  assert.match(
+    continuousIntegration,
+    /--network none --user 10001:10001 --read-only \\\s+--cap-drop ALL --security-opt no-new-privileges=true/,
+  );
+  assert.match(continuousIntegration, /caddy-volume-v1/);
+  assert.match(continuousIntegration, /validate --config \/etc\/caddy\/Caddyfile --adapter caddyfile/);
 });
 
 test("database bootstrap, ownership, and runtime privileges stay separated", () => {

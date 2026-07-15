@@ -63,11 +63,19 @@ mkdir -p "$(dirname "$lock_file")"
 exec 9>"$lock_file"
 flock -n 9 || fail "another release operation is active"
 
-docker image inspect "q-academy-app:$target_tag" >/dev/null 2>&1 || fail "target app image is not present locally"
-docker image inspect "q-academy-media-runner:$target_tag" >/dev/null 2>&1 || fail "target media runner image is not present locally"
+target_release_images=()
+target_runtime_components=(app media-runner)
 if (( ${#MEDIA_S3_RELEASE_SERVICES[@]} > 0 )); then
-  docker image inspect "q-academy-s3-app-principal-preflight:$target_tag" >/dev/null 2>&1 || fail "target STRATO privacy sweeper image is not present locally"
+  target_runtime_components+=(s3-app-principal-preflight)
 fi
+target_runtime_components+=(dispatcher caddy)
+for component in "${target_runtime_components[@]}"; do
+  target_release_images+=("q-academy-$component:$target_tag")
+done
+for target_image in "${target_release_images[@]}"; do
+  docker image inspect "$target_image" >/dev/null 2>&1 ||
+    fail "target release image is not present locally: $target_image"
+done
 export APP_IMAGE_TAG="$target_tag"
 compose=(docker compose --env-file "$env_file" -f "$compose_file" "${MEDIA_S3_COMPOSE_PROFILE_ARGS[@]}")
 strato_compose=(docker compose --env-file "$env_file" -f "$compose_file" --profile strato)
@@ -85,6 +93,9 @@ for runtime_service in "${DATABASE_RUNTIME_SERVICES[@]}"; do
     "$runtime_service" node -e \
     "fetch('http://127.0.0.1:3000/api/v1/health/ready').then(async(response)=>{const body=await response.json().catch(()=>null);if(!response.ok||body?.data?.version!==process.env.Q_ACADEMY_EXPECTED_RELEASE)process.exit(1)}).catch(()=>process.exit(1))"
 done
+run "${compose[@]}" run --rm --no-deps caddy-volume-init
+run "${compose[@]}" up -d --no-deps --force-recreate --wait \
+  --wait-timeout "$CADDY_WAIT_TIMEOUT_SECONDS" caddy
 run curl --fail --show-error --silent --retry 12 --retry-delay 5 \
   "https://$app_domain/api/v1/health/ready"
 run "${compose[@]}" up -d --no-deps --wait \
