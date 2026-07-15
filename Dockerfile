@@ -120,6 +120,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/drizzle ./drizzle
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
 COPY --from=builder --chown=nextjs:nodejs /app/next.config.ts ./next.config.ts
+COPY --from=builder --chown=nextjs:nodejs /app/src/lib/content-security-policy.ts ./src/lib/content-security-policy.ts
 RUN mkdir -p /app/.next/cache \
     && chown -R nextjs:nodejs /app/.next
 USER nextjs

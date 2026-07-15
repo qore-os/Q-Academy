@@ -221,3 +221,30 @@ test("production builds retain type checks with a bounded four-GiB heap", () => 
   );
   assert.doesNotMatch(nextConfig, /ignoreBuildErrors/);
 });
+
+test("next start runner packages local next.config dependencies", () => {
+  const dockerfile = source("Dockerfile");
+  const nextConfig = source("next.config.ts");
+  const runnerStart = dockerfile.indexOf("FROM base AS runner");
+  const mediaRunnerStart = dockerfile.indexOf("FROM runner AS media-runner");
+
+  assert.ok(runnerStart >= 0 && mediaRunnerStart > runnerStart);
+  assert.match(
+    nextConfig,
+    /from "\.\/src\/lib\/content-security-policy"/,
+  );
+
+  const runner = dockerfile.slice(runnerStart, mediaRunnerStart);
+  assert.match(
+    runner,
+    /COPY --from=builder --chown=nextjs:nodejs \/app\/next\.config\.ts \.\/next\.config\.ts/,
+  );
+  assert.match(
+    runner,
+    /COPY --from=builder --chown=nextjs:nodejs \/app\/src\/lib\/content-security-policy\.ts \.\/src\/lib\/content-security-policy\.ts/,
+  );
+  assert.match(
+    runner,
+    /CMD \["\.\/node_modules\/\.bin\/next", "start", "-H", "0\.0\.0\.0", "-p", "3000"\]/,
+  );
+});
