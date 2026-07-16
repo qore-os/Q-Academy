@@ -1319,6 +1319,45 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   );
 });
 
+test("release publisher uses the tested Docker identity model on a hosted runner", () => {
+  const publisherStart = continuousIntegration.indexOf("  publish-release:");
+  const publisher = continuousIntegration.slice(publisherStart);
+  const setupStep = publisher.indexOf(
+    "docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877",
+  );
+  const verifyStep = publisher.indexOf(
+    "- name: Verify publisher Docker image store",
+  );
+  const loginStep = publisher.indexOf(
+    "- name: Authenticate to GitHub Container Registry",
+  );
+  const publishStep = publisher.indexOf(
+    "- name: Publish the exact tested image IDs",
+  );
+
+  assert.ok(publisherStart >= 0);
+  assert.match(publisher, /^    runs-on: ubuntu-latest$/m);
+  assert.doesNotMatch(publisher, /^    runs-on: self-hosted$/m);
+  assert.match(publisher, /^          version: v29\.4\.0$/m);
+  assert.match(publisher, /^          set-host: true$/m);
+  assert.match(publisher, /"containerd-snapshotter": true/);
+  assert.match(publisher, /^          expected_version="29\.4\.0"$/m);
+  assert.match(
+    publisher,
+    /docker version --format '\{\{\.Server\.Version\}\}'/,
+  );
+  assert.match(publisher, /actual_version" != "\$expected_version/);
+  assert.match(
+    publisher,
+    /docker info --format '\{\{ \.DriverStatus \}\}'/,
+  );
+  assert.match(publisher, /grep -Fq 'io\.containerd\.snapshotter\.v1'/);
+  assert.ok(setupStep >= 0);
+  assert.ok(verifyStep > setupStep);
+  assert.ok(loginStep > verifyStep);
+  assert.ok(publishStep > loginStep);
+});
+
 test("database bootstrap, ownership, and runtime privileges stay separated", () => {
   assert.match(compose, /POSTGRES_USER: \$\{POSTGRES_BOOTSTRAP_USER:/);
   assert.match(compose, /POSTGRES_PASSWORD: \$\{POSTGRES_BOOTSTRAP_PASSWORD:/);
