@@ -39,7 +39,9 @@ async function passwordLogin(
 test("production login renders without development-only access", async ({
   page,
 }) => {
-  const response = await page.goto("/login", { waitUntil: "networkidle" });
+  const response = await page.goto("/login", {
+    waitUntil: "domcontentloaded",
+  });
   expect(response?.status()).toBeLessThan(400);
   expect(response?.headers()["x-powered-by"]).toBeUndefined();
 

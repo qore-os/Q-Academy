@@ -121,7 +121,9 @@ test("community administration follows the owner locale on desktop and mobile", 
     `;
 
     await login(page, origin, ownerEmail, password);
-    await page.goto(`${origin}/admin/community`, { waitUntil: "networkidle" });
+    await page.goto(`${origin}/admin/community`, {
+      waitUntil: "domcontentloaded",
+    });
 
     const copy = getCommunityAdminCopy(locale);
     const pageCopy = getMainPageDictionary(locale).admin.headers.community;

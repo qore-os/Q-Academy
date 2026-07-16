@@ -139,7 +139,7 @@ test("community feed, profile and interactions use the member locale on desktop 
 
     await login(page, origin, memberEmail, password);
     await page.goto(`${origin}/academy/community`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
 
     const dictionary = getMainPageDictionary(locale);

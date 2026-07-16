@@ -151,7 +151,7 @@ test("AI administration and member workspace follow locale on desktop and mobile
       const manager = getAiManagerCopy(locale);
 
       await login(page, origin, email, password, "admin");
-      await page.goto(`${origin}/admin/ai`, { waitUntil: "networkidle" });
+      await page.goto(`${origin}/admin/ai`, { waitUntil: "domcontentloaded" });
 
       await expect(page.locator("html")).toHaveAttribute("lang", locale);
       await expect(
@@ -320,7 +320,7 @@ test("AI administration and member workspace follow locale on desktop and mobile
         await route.continue();
       });
 
-      await page.goto(`${origin}/academy/ai`, { waitUntil: "networkidle" });
+      await page.goto(`${origin}/academy/ai`, { waitUntil: "domcontentloaded" });
       await expect(page.locator("html")).toHaveAttribute("lang", locale);
       await expect(
         page.getByRole("heading", {

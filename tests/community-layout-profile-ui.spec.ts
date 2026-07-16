@@ -36,7 +36,7 @@ test("admin exposes community layout and public-profile governance", async ({
 }) => {
   test.setTimeout(90_000);
   await loginAsAdmin(page);
-  await page.goto("/admin/community", { waitUntil: "networkidle" });
+  await page.goto("/admin/community", { waitUntil: "domcontentloaded" });
 
   await expect(
     page.getByRole("heading", { name: adminCopy.layout.heading }),
@@ -61,7 +61,7 @@ test("member can use grouped areas, RichText and public-profile navigation", asy
 }) => {
   test.setTimeout(90_000);
   await loginAsMember(page);
-  await page.goto("/academy/community", { waitUntil: "networkidle" });
+  await page.goto("/academy/community", { waitUntil: "domcontentloaded" });
 
   await expect(page.getByTestId("community-area-groups")).toBeVisible();
   await page.getByTestId("community-composer-trigger").click();
@@ -88,7 +88,7 @@ test("member can use grouped areas, RichText and public-profile navigation", asy
   ).toBeVisible();
 
   await page.goto("/academy/profile?community=required", {
-    waitUntil: "networkidle",
+    waitUntil: "domcontentloaded",
   });
   await expect(
     page.getByTestId("community-profile-requirements"),

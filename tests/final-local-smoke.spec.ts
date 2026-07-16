@@ -30,14 +30,12 @@ async function loginAsAdmin(page: Page) {
   await page.goto("/login");
   await page.getByRole("button", { name: "Als Admin testen" }).click();
   await page.waitForURL("**/admin");
-  await page.waitForLoadState("networkidle");
 }
 
 async function loginAsMember(page: Page) {
   await page.goto("/login");
   await page.getByRole("button", { name: "Als Mitglied testen" }).click();
   await page.waitForURL("**/academy");
-  await page.waitForLoadState("networkidle");
   await completeMemberWelcomeIfVisible(page);
 }
 
@@ -66,9 +64,8 @@ async function capture(page: Page, testInfo: TestInfo, name: string) {
 async function visit(
   page: Page,
   path: string,
-  waitUntil: "domcontentloaded" | "networkidle" = "networkidle",
 ) {
-  const response = await page.goto(path, { waitUntil });
+  const response = await page.goto(path, { waitUntil: "domcontentloaded" });
   expect(response, `No navigation response for ${path}`).not.toBeNull();
   expect(response!.status(), `${path} returned HTTP ${response!.status()}`).toBeLessThan(400);
 }
@@ -133,7 +130,7 @@ test("course builder pages styles and presence render without runtime errors", a
   const diagnostics = collectDiagnostics(page);
   await loginAsAdmin(page);
 
-  await visit(page, "/admin/courses", "domcontentloaded");
+  await visit(page, "/admin/courses");
   const courseEditorLink = page.getByRole("link", {
     name: "KI-Grundlagen Bearbeiten",
     exact: true,
@@ -144,7 +141,7 @@ test("course builder pages styles and presence render without runtime errors", a
   );
   const courseEditorPath = await courseEditorLink.getAttribute("href");
   if (!courseEditorPath) throw new Error("KI-Grundlagen editor link is missing.");
-  await visit(page, courseEditorPath, "domcontentloaded");
+  await visit(page, courseEditorPath);
   await expect(page.getByRole("heading", { name: "KI-Grundlagen" })).toBeVisible();
   const tabLabelsAreContained = await page
     .locator(

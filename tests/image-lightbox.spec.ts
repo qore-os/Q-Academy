@@ -258,7 +258,7 @@ test("community attachments and GalleryContent share an accessible localized ima
 
     await login(page, origin, memberEmail, password, "/academy");
     await page.goto(`${origin}/academy/community`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     await expect(page.locator("html")).toHaveAttribute("lang", locale);
     const article = page.locator(`#post-${post.id}`);
@@ -340,7 +340,7 @@ test("community attachments and GalleryContent share an accessible localized ima
     await login(page, origin, ownerEmail, password, "/admin");
     await page.goto(
       `${origin}/admin/courses/${course.id}/preview?lesson=${lesson.id}`,
-      { waitUntil: "networkidle" },
+      { waitUntil: "domcontentloaded" },
     );
     const gallery = page.getByRole("region", { name: copy.galleryLabel });
     await expect(

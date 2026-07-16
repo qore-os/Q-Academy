@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import postgres from "postgres";
 
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
+import { waitForRenderedUi } from "./helpers/rendered-ui";
 import { getAnnouncementCopy } from "../src/lib/i18n/announcements";
 
 type ImportantViolation = {
@@ -37,8 +38,9 @@ async function importantViolations(page: Page): Promise<ImportantViolation[]> {
 }
 
 async function assertAccessible(page: Page, path: string) {
-  const response = await page.goto(path, { waitUntil: "networkidle" });
+  const response = await page.goto(path, { waitUntil: "domcontentloaded" });
   expect(response?.status(), `${path} did not render successfully`).toBeLessThan(400);
+  await waitForRenderedUi(page, path);
   expect(await importantViolations(page), `${path} has serious WCAG violations`).toEqual([]);
 }
 
@@ -135,7 +137,7 @@ test("announcement editor has an accessible modal focus lifecycle", async ({
 }) => {
   const copy = getAnnouncementCopy("de");
   await login(page, "admin");
-  await page.goto("/admin/announcements", { waitUntil: "networkidle" });
+  await page.goto("/admin/announcements", { waitUntil: "domcontentloaded" });
   const trigger = page.getByRole("button", { name: copy.manager.create });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: copy.editor.createTitle });

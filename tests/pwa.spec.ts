@@ -66,8 +66,35 @@ test("development does not register a service worker by default", async ({
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "Registration check runs once");
 
-  await page.goto("/login");
-  await page.waitForLoadState("networkidle");
+  await page.addInitScript(() => {
+    const registerCalls: string[] = [];
+    Object.defineProperty(window, "__qAcademyServiceWorkerRegisterCalls", {
+      configurable: false,
+      value: registerCalls,
+    });
+    if (!("serviceWorker" in navigator)) return;
+
+    const serviceWorker = navigator.serviceWorker;
+    const register = serviceWorker.register.bind(serviceWorker);
+    Object.defineProperty(serviceWorker, "register", {
+      configurable: true,
+      value: (scriptURL: string | URL, options?: RegistrationOptions) => {
+        registerCalls.push(String(scriptURL));
+        return register(scriptURL, options);
+      },
+    });
+  });
+  await page.goto("/login", { waitUntil: "domcontentloaded" });
+  await expect(page.locator('input[name="email"]')).toBeEnabled();
+  const registerCalls = await page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          __qAcademyServiceWorkerRegisterCalls?: string[];
+        }
+      ).__qAcademyServiceWorkerRegisterCalls ?? [],
+  );
+  expect(registerCalls).toEqual([]);
   const registrations = await page.evaluate(async () =>
     "serviceWorker" in navigator
       ? (await navigator.serviceWorker.getRegistrations()).length

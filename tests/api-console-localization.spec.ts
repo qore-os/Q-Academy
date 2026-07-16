@@ -195,7 +195,7 @@ test("API console follows the owner locale on desktop and mobile", async ({
     `;
 
     await login(page, origin, ownerEmail, password);
-    await page.goto(`${origin}/admin/api`, { waitUntil: "networkidle" });
+    await page.goto(`${origin}/admin/api`, { waitUntil: "domcontentloaded" });
 
     await expect(page.locator("html")).toHaveAttribute("lang", locale);
     await expect(

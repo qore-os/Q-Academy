@@ -6,7 +6,7 @@ import { getCoreDictionary } from "../src/lib/i18n/dictionaries";
 const authCopy = getCoreDictionary("de").auth;
 
 async function assertRendered(page: Page, path: string) {
-  const response = await page.goto(path, { waitUntil: "networkidle" });
+  const response = await page.goto(path, { waitUntil: "domcontentloaded" });
   expect(response?.status(), `${path} did not render successfully`).toBeLessThan(400);
   await expect(page.getByRole("main")).toHaveCount(1);
   await expect(page.getByRole("main")).toBeVisible();
@@ -28,7 +28,7 @@ async function login(page: Page, role: "admin" | "member") {
 }
 
 test("public login renders and accepts keyboard input", async ({ page }) => {
-  await page.goto("/login", { waitUntil: "networkidle" });
+  await page.goto("/login", { waitUntil: "domcontentloaded" });
   const email = page.getByLabel("E-Mail-Adresse");
   await expect(email).toBeEnabled();
   await email.focus();

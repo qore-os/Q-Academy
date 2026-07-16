@@ -52,7 +52,9 @@ test.describe("Q-Academy", () => {
     await expect(
       page.getByRole("heading", { name: /Willkommen zurueck/ }),
     ).toBeVisible();
-    await page.waitForLoadState("networkidle");
+    await expect(
+      page.getByRole("heading", { name: "Aktuelle Kurse" }),
+    ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("member-dashboard.png"),
       fullPage: true,
@@ -150,7 +152,9 @@ test.describe("Q-Academy", () => {
   }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile", "mobile-only assertion");
     await loginAsMember(page);
-    await page.waitForLoadState("networkidle");
+    await expect(
+      page.getByRole("navigation", { name: "Mobile Hauptnavigation" }),
+    ).toBeVisible();
     const overflow = await page.evaluate(
       () =>
         document.documentElement.scrollWidth -

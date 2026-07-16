@@ -419,7 +419,7 @@ test("community score is reversible and comment reactions stay tenant-visible an
     );
     await login(page, memberAEmail, tenantOrigin);
     await page.goto(`${tenantOrigin}/academy/community`, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
     });
     const commentRow = page.locator(`#comment-${topCommentId}`);
     await expect(commentRow).toBeVisible({ timeout: 30_000 });

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
+import { waitForRenderedUi } from "./helpers/rendered-ui";
 
 async function loginAsAdmin(page: Page) {
   await page.goto("/login");
@@ -16,8 +17,9 @@ async function loginAsMember(page: Page) {
 }
 
 async function assertKeyboardAndReflow(page: Page, path: string) {
-  const response = await page.goto(path, { waitUntil: "networkidle" });
+  const response = await page.goto(path, { waitUntil: "domcontentloaded" });
   expect(response?.status(), `${path} did not render successfully`).toBeLessThan(400);
+  await waitForRenderedUi(page, path);
 
   const layout = await page.evaluate(() => ({
     viewportOverflow:

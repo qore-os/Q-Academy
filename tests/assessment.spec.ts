@@ -88,7 +88,6 @@ test("required quiz is graded on the server before lesson completion", async ({ 
   await page.getByRole("button", { name: /Lernenden-Demo|Als Mitglied testen/ }).click();
   await page.waitForURL("**/academy");
   await completeMemberWelcomeIfVisible(page);
-  await page.waitForLoadState("networkidle");
   await page.goto(`/academy/courses/ki-grundlagen/learn/${target.lesson_id}`);
   await expect(page.getByRole("heading", { name: "Wissenscheck: Modelle" })).toBeVisible();
   expect(await page.content()).not.toContain("correctOption");
