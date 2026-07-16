@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import postgres from "postgres";
@@ -81,6 +83,7 @@ test("ready media attachments bind atomically and remain downloadable for owner 
   let uploadedAssetId = "";
   const blockIds: string[] = [];
   const mediaIds: string[] = [];
+  const mediaStoragePaths: string[] = [];
   const requestIds: string[] = [];
 
   const insertAsset = async (input: {
@@ -92,6 +95,18 @@ test("ready media attachments bind atomically and remain downloadable for owner 
     const id = randomUUID();
     const size = 64;
     const uploaded = input.status !== "pending";
+    const storageKey = `tenants/${input.organizationId}/assets/${id}/ready.txt`;
+    if (uploaded) {
+      const storagePath = resolve(
+        process.cwd(),
+        ".data",
+        "media",
+        ...storageKey.split("/"),
+      );
+      await mkdir(dirname(storagePath), { recursive: true });
+      await writeFile(storagePath, Buffer.alloc(size, 0x51));
+      mediaStoragePaths.push(storagePath);
+    }
     await sql`
       insert into media_assets (
         id, organization_id, uploaded_by_id, owner_user_id, purpose, kind,
@@ -102,7 +117,7 @@ test("ready media attachments bind atomically and remain downloadable for owner 
       ) values (
         ${id}, ${input.organizationId}, ${input.userId}, ${input.userId},
         'submission', 'document', ${input.status}, 'filesystem',
-        ${`tenants/${input.organizationId}/assets/${id}/ready.txt`},
+        ${storageKey},
         ${`incoming/tenants/${input.organizationId}/assets/${id}/incoming.txt`},
         ${input.name}, ${`test-${id.slice(0, 8)}.txt`}, 'text/plain',
         ${uploaded ? "text/plain" : null}, ${size}, ${uploaded ? size : null},
@@ -509,6 +524,9 @@ test("ready media attachments bind atomically and remain downloadable for owner 
     if (externalOrganizationId) {
       await sql`delete from organizations where id = ${externalOrganizationId}`;
     }
+    await Promise.all(
+      mediaStoragePaths.map((storagePath) => rm(storagePath, { force: true })),
+    );
     await sql.end();
   }
 });

@@ -198,6 +198,7 @@ test("tenant lifecycle blocks access and keeps revocation across reactivation", 
 
     const brandedLogin = await request.get("/login", {
       headers: { Host: `${hostname}:3000` },
+      maxRetries: 2,
     });
     expect(brandedLogin.status()).toBe(200);
     expect(await brandedLogin.text()).toContain(
