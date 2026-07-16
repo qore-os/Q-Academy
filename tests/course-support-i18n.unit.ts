@@ -4,7 +4,11 @@ import test from "node:test";
 
 import ts from "typescript";
 
-import { getCourseSupportCopy } from "../src/lib/i18n/course-support";
+import {
+  getCourseCategoryActionCopy,
+  getCourseCategoryColorCopy,
+  getCourseSupportCopy,
+} from "../src/lib/i18n/course-support";
 import { SUPPORTED_LOCALES } from "../src/lib/i18n/model";
 
 type Leaf = { kind: "string" | "function"; value: string; arity: number };
@@ -66,6 +70,26 @@ test("course support copy has complete key and placeholder parity", () => {
       );
     }
   }
+});
+
+test("German course media copy uses native umlauts and eszett", () => {
+  const copy = getCourseSupportCopy("de");
+
+  assert.equal(copy.media.selectFile, "Datei auswählen");
+  assert.equal(copy.media.processing, "Sicherheitsprüfung");
+  assert.equal(copy.media.ready, "Geprüft und bereit");
+  assert.equal(
+    getCourseCategoryColorCopy("de").picker,
+    "Kategoriefarbe auswählen",
+  );
+  assert.equal(
+    getCourseCategoryActionCopy("de").delete("Kategorie"),
+    "Kategorie löschen",
+  );
+  assert.equal(
+    copy.media.errors.invalidFile,
+    "Dateityp oder Dateigröße ist ungültig.",
+  );
 });
 
 test("course support surfaces render catalog copy instead of direct UI literals", () => {

@@ -54,7 +54,7 @@ test("required submission review, revision and approval form one immutable attem
     "Ich pruefe die Eingaben, dokumentiere das Ergebnis und kontrolliere die Ausgabe manuell.";
   const secondAnswer =
     "Ich pruefe Eingaben und Ergebnis und habe nun einen dokumentierten Kontrollschritt mit Abbruchpfad ergaenzt.";
-  const answerPlaceholder = "Dein Entwurf, Vorgehen und Pruefschritte...";
+  const answerPlaceholder = "Dein Entwurf, Vorgehen und Prüfschritte...";
   const hydrationErrors: string[] = [];
   page.on("pageerror", (error) => {
     if (error.message.includes("Hydration failed")) {
@@ -234,9 +234,9 @@ test("required submission review, revision and approval form one immutable attem
 
     await loginAsAdmin(page);
     await page.goto(`/admin/courses/${courseId}`);
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
 
     await resetSession(page);
@@ -352,7 +352,7 @@ test("required submission review, revision and approval form one immutable attem
       .getByLabel("Antwort", { exact: true })
       .fill(secondAnswer);
     await page
-      .getByRole("button", { name: "Ueberarbeitung einreichen" })
+      .getByRole("button", { name: "Überarbeitung einreichen" })
       .click();
     await expect(
       page.getByText("Deine Abgabe wurde zur Bewertung eingereicht.", {
@@ -489,7 +489,7 @@ test("required submission review, revision and approval form one immutable attem
     await expect(page.getByText(approvalFeedback, { exact: true }).first()).toBeVisible();
     await expect(page.getByText(approvalAnnotation, { exact: true }).first()).toBeVisible();
     await expect(page.getByText("Ergebnis: 94 %", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Lektion abschliessen" }).click();
+    await page.getByRole("button", { name: "Lektion abschließen" }).click();
     await expect(
       page.getByRole("button", { name: "Lektion abgeschlossen" }),
     ).toBeDisabled();

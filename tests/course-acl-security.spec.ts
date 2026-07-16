@@ -148,14 +148,14 @@ test("trainer course pages and certificates enforce view edit and manage boundar
     const editHtml = await editBuilder.text();
     expect(editBuilder.status()).toBe(200);
     expect(editHtml).toContain(titles.edit);
-    expect(editHtml).not.toContain("Kurs veroeffentlichen");
+    expect(editHtml).not.toContain("Kurs veröffentlichen");
 
     const manageBuilder = await request.get(
       `/admin/courses/${courseIds.manage}`,
     );
     const manageHtml = await manageBuilder.text();
     expect(manageBuilder.status()).toBe(200);
-    expect(manageHtml).toContain("Kurs veroeffentlichen");
+    expect(manageHtml).toContain("Kurs veröffentlichen");
 
     const certificates = await request.get("/admin/certificates");
     const certificatesHtml = await certificates.text();

@@ -324,7 +324,7 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
       await dialog.getByLabel("Zielgruppe").fill(targetAudience);
       await dialog.getByLabel("Lernziel").fill(learningGoal);
       await dialog.getByLabel("Niveau").selectOption("advanced");
-      await dialog.getByLabel("Tonalitaet").selectOption("motivating");
+      await dialog.getByLabel("Tonalität").selectOption("motivating");
       await dialog.getByLabel("Umfang").selectOption("intensive");
     };
 
@@ -342,7 +342,7 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
     await expect(dialog.getByLabel("Zielgruppe")).toHaveValue(targetAudience);
     await expect(dialog.getByLabel("Lernziel")).toHaveValue(learningGoal);
     await expect(dialog.getByLabel("Niveau")).toHaveValue("advanced");
-    await expect(dialog.getByLabel("Tonalitaet")).toHaveValue("motivating");
+    await expect(dialog.getByLabel("Tonalität")).toHaveValue("motivating");
     await expect(dialog.getByLabel("Umfang")).toHaveValue("intensive");
 
     await dialog.getByLabel("Thema").fill(topic);
@@ -359,13 +359,13 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
     await dialog.getByLabel("Kategorie").selectOption(foreignCategoryId);
     await dialog.getByRole("button", { name: "Entwurf erstellen" }).click();
     await expect(dialog.getByRole("alert")).toHaveText(
-      "Die gewaehlte Kategorie ist nicht verfuegbar.",
+      "Die gewählte Kategorie ist nicht verfügbar.",
     );
     await expect(dialog.getByLabel("Thema")).toHaveValue(topic);
     await expect(dialog.getByLabel("Zielgruppe")).toHaveValue(targetAudience);
     await expect(dialog.getByLabel("Lernziel")).toHaveValue(learningGoal);
     await expect(dialog.getByLabel("Niveau")).toHaveValue("advanced");
-    await expect(dialog.getByLabel("Tonalitaet")).toHaveValue("motivating");
+    await expect(dialog.getByLabel("Tonalität")).toHaveValue("motivating");
     await expect(dialog.getByLabel("Umfang")).toHaveValue("intensive");
 
     await dialog.getByLabel("Kategorie").selectOption("");
@@ -698,7 +698,7 @@ test("AI authoring rechecks a changed role inside the write transaction", async 
     await lockTransaction;
     lockTransaction = null;
     await expect(dialog.getByRole("alert")).toContainText(
-      "Berechtigung zur Kurserstellung wurde geaendert",
+      "Berechtigung zur Kurserstellung wurde geändert",
     );
     await expect(dialog.getByLabel("Thema")).toHaveValue(topic);
     const [mutations] = await client<Array<{ count: number }>>`
@@ -840,7 +840,7 @@ test("parallel AI authoring keeps one in-flight draft and one quota charge", asy
       .getByRole("button", { name: "Entwurf erstellen" })
       .click();
     await expect(second.dialog.getByRole("alert")).toHaveText(
-      "Eine KI-Kurserstellung laeuft bereits. Bitte warte, bis sie abgeschlossen ist.",
+      "Eine KI-Kurserstellung läuft bereits. Bitte warte, bis sie abgeschlossen ist.",
     );
     const [activeLimits] = await client<
       Array<{ quota_attempts: number; concurrent_attempts: number }>

@@ -183,10 +183,11 @@ test("Agent Studio migrations remain unique in the current history", () => {
     { idx: 71, tag: "0071_orbit_billing_control_plane" },
     { idx: 72, tag: "0072_orbit_billing_price_versions" },
     { idx: 73, tag: "0073_intercom_identity_fail_closed" },
+    { idx: 74, tag: "0074_runtime_trigger_role_guards" },
   ]);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0073_intercom_identity_fail_closed",
+    "0074_runtime_trigger_role_guards",
   );
 });
 

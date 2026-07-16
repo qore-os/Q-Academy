@@ -385,7 +385,7 @@ test("course widgets are tenant-safe, versioned, and manageable through UI and R
       ),
     });
     await expect(
-      form.getByText("Geprueft und bereit", { exact: true }),
+      form.getByText("Geprüft und bereit", { exact: true }),
     ).toBeVisible({ timeout: 45_000 });
     await form.getByLabel("Alternativtext").fill(imageAlt);
     await form.getByLabel("Link", { exact: true }).fill("/academy/courses");
@@ -430,8 +430,8 @@ test("course widgets are tenant-safe, versioned, and manageable through UI and R
     await form.getByLabel("Text").fill("Nur fuer den Loeschtest.");
     await form.getByRole("button", { name: "Widget anlegen" }).click();
     const deleteCard = adminPage.locator("article").filter({ hasText: deleteTitle });
-    await deleteCard.getByRole("button", { name: "Info-Karte loeschen" }).click();
-    await deleteCard.getByRole("button", { name: "Loeschen", exact: true }).click();
+    await deleteCard.getByRole("button", { name: "Info-Karte löschen" }).click();
+    await deleteCard.getByRole("button", { name: "Löschen", exact: true }).click();
     await expect(adminPage.getByText(deleteTitle, { exact: true })).toBeHidden();
 
     let infoCard = adminPage.locator("article").filter({ hasText: infoTitle });
@@ -441,7 +441,7 @@ test("course widgets are tenant-safe, versioned, and manageable through UI and R
     await infoCard.getByRole("button", { name: "Info-Karte bearbeiten" }).click();
     await infoCard.getByLabel("Titel").fill(updatedInfoTitle);
     await infoCard
-      .getByRole("button", { name: "Aenderungen speichern" })
+      .getByRole("button", { name: "Änderungen speichern" })
       .click();
     await expect(
       adminPage.getByText(updatedInfoTitle, { exact: true }),
@@ -474,9 +474,9 @@ test("course widgets are tenant-safe, versioned, and manageable through UI and R
       })
       .toBe("image_link,author,info");
 
-    await adminPage.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await adminPage.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      adminPage.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      adminPage.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
 
     const [published] = await client<
@@ -562,7 +562,7 @@ test("course widgets are tenant-safe, versioned, and manageable through UI and R
     await infoCard.getByRole("button", { name: "Info-Karte bearbeiten" }).click();
     await infoCard.getByLabel("Titel").fill(draftInfoTitle);
     await infoCard
-      .getByRole("button", { name: "Aenderungen speichern" })
+      .getByRole("button", { name: "Änderungen speichern" })
       .click();
     await memberPage.reload();
     await expect(
@@ -701,9 +701,9 @@ test("course widget editor and learner cards fit the mobile viewport", async ({
           document.documentElement.clientWidth,
       ),
     ).toBeLessThanOrEqual(1);
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
 
     await page.context().clearCookies();

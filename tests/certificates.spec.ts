@@ -225,7 +225,7 @@ test("course completion issues one certificate and admin can revoke and reissue 
     await expect(
       page.getByRole("heading", { name: "Abschlusslektion" }),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Lektion abschliessen" }).click();
+    await page.getByRole("button", { name: "Lektion abschließen" }).click();
     await expect(
       page.getByRole("button", { name: "Lektion abgeschlossen" }),
     ).toBeDisabled();

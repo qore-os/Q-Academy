@@ -252,9 +252,9 @@ test("ready media attachments bind atomically and remain downloadable for owner 
 
     await loginAsAdmin(page);
     await page.goto(`/admin/courses/${courseId}`);
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
 
     const pendingAsset = await insertAsset({

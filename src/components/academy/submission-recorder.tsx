@@ -354,23 +354,19 @@ export function SubmissionRecorder({
           return;
         }
         if (sizeLimitReachedRef.current) {
-          setError(
-            copy("recorder.tooLarge"),
-          );
+          setError(copy("recorder.tooLarge"));
           setStatus("error");
           return;
         }
 
         const fileDetails = recordingFileName(mode, mimeTypeRef.current);
         if (!fileDetails) {
-          setError(
-            copy("recorder.invalidFormat"),
-          );
+          setError(copy("recorder.invalidFormat"));
           setStatus("error");
           return;
         }
         const blob = new Blob(chunks, { type: mimeTypeRef.current });
-        if (!blob.size || durationMs < 0) {
+        if (!blob.size || durationMs <= 0) {
           setError(copy("recorder.invalidMedia"));
           setStatus("error");
           return;
@@ -617,9 +613,7 @@ export function SubmissionRecorder({
             <span className="text-[10px] text-[var(--theme-muted-text)]">
               {formatRecordingTime(draft.durationMs)} |{" "}
               {formatLearningFileSize(draft.file.size, locale)}
-              {draft.durationLimitReached
-                ? copy("recorder.limitSuffix")
-                : ""}
+              {draft.durationLimitReached ? copy("recorder.limitSuffix") : ""}
             </span>
             <div className="flex flex-wrap gap-2">
               <Button
@@ -686,7 +680,10 @@ export function SubmissionRecorder({
       ) : null}
 
       {unavailableMessage && !draft && !busy ? (
-        <p className="mt-2 text-[10px] text-[var(--theme-muted-text)]" role="status">
+        <p
+          className="mt-2 text-[10px] text-[var(--theme-muted-text)]"
+          role="status"
+        >
           {unavailableMessage}
         </p>
       ) : null}

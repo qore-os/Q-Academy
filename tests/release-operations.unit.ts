@@ -55,6 +55,10 @@ const publishReleaseImages = readFileSync(
   "scripts/ops/publish-release-images.sh",
   "utf8",
 );
+const webmDurationPreflight = readFileSync(
+  "scripts/webm-duration-preflight.ts",
+  "utf8",
+);
 const continuousIntegration = readFileSync(".github/workflows/ci.yml", "utf8");
 const packageManifest = JSON.parse(readFileSync("package.json", "utf8")) as {
   packageManager?: string;
@@ -1130,6 +1134,37 @@ test("production runtime images omit package managers and development dependenci
     assert.doesNotMatch(stage, /COPY --from=dependencies/);
   }
   assert.match(dockerfile, /^FROM runner AS media-runner$/m);
+});
+
+test("pinned media image blocks releases on durationless WebM regressions", () => {
+  assert.match(
+    dockerfile,
+    /COPY --chown=nextjs:nodejs [^\n]*scripts\/webm-duration-preflight\.ts[^\n]* \.\/scripts\//,
+  );
+  assert.match(webmDurationPreflight, /WEBM_PREFLIGHT_FFMPEG = "\/usr\/bin\/ffmpeg"/);
+  assert.match(webmDurationPreflight, /WEBM_PREFLIGHT_FFPROBE = "\/usr\/bin\/ffprobe"/);
+  assert.match(webmDurationPreflight, /probeWebmDurationStream\(/);
+  assert.match(webmDurationPreflight, /shell: false/);
+  assert.match(webmDurationPreflight, /child\.stdout\.once\("error"/);
+  assert.match(webmDurationPreflight, /child\.stderr\.once\("error"/);
+
+  const durationlessSmoke = continuousIntegration.match(
+    /docker run --rm \\\r?\n\s+--network none \\\r?\n\s+--read-only \\[\s\S]{0,1600}?scripts\/webm-duration-preflight\.ts/,
+  )?.[0];
+  assert.ok(durationlessSmoke, "Durationless WebM image smoke is missing.");
+  assert.match(durationlessSmoke, /--user 1001:1001/);
+  assert.match(durationlessSmoke, /--security-opt no-new-privileges=true/);
+  assert.match(durationlessSmoke, /--cap-drop ALL/);
+  assert.match(durationlessSmoke, /--pids-limit 64/);
+  assert.match(durationlessSmoke, /--memory 256m/);
+  assert.match(durationlessSmoke, /--tmpfs \/tmp:rw,nosuid,nodev,noexec,size=16m,uid=1001,gid=1001/);
+  assert.match(durationlessSmoke, /--entrypoint node/);
+  assert.match(
+    durationlessSmoke,
+    /q-academy-media-preflight:\$Q_ACADEMY_CI_RELEASE_TAG/,
+  );
+  assert.match(durationlessSmoke, /--conditions=react-server --import tsx/);
+  assert.doesNotMatch(durationlessSmoke, /\|\| true|--network host|--volume/);
 });
 
 test("CI packages, scans, publishes, and attests the exact smoke-tested images", () => {

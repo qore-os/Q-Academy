@@ -250,7 +250,7 @@ test("admin setzt alle Sektionslektionen responsiv mit einer Schnellaktion", asy
     `;
     expect(version.snapshot).toEqual(fixture.snapshotMarker);
     await page
-      .getByRole("button", { name: "Aenderungen veroeffentlichen" })
+      .getByRole("button", { name: "Änderungen veröffentlichen" })
       .click();
     await expect
       .poll(async () => {

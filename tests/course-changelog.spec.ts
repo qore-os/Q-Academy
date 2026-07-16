@@ -113,17 +113,17 @@ test("course changelog reviews safe diffs and resets after republishing", async 
     await page.goto(`/admin/courses/${courseId}`);
     await expect(page.getByTestId("course-change-marker")).toBeVisible();
     const reviewTrigger = page.getByRole("button", {
-      name: /Aenderungen ansehen/,
+      name: /Änderungen ansehen/,
     });
     await reviewTrigger.focus();
     await reviewTrigger.click();
 
     const dialog = page.getByRole("dialog", {
-      name: "Versionen und Aenderungen",
+      name: "Versionen und Änderungen",
     });
     await expect(dialog).toBeVisible();
     await expect(
-      page.getByRole("tab", { name: "Aenderungen ansehen" }),
+      page.getByRole("tab", { name: "Änderungen ansehen" }),
     ).toBeFocused();
     await expect
       .poll(() => page.evaluate(() => document.body.style.overflow))
@@ -143,7 +143,7 @@ test("course changelog reviews safe diffs and resets after republishing", async 
     await reviewTrigger.click();
     await dialog.getByLabel("Versionshinweis").fill(versionOneNote);
     await dialog
-      .getByRole("button", { name: "Kurs veroeffentlichen" })
+      .getByRole("button", { name: "Kurs veröffentlichen" })
       .click();
     await expect
       .poll(async () => {
@@ -157,11 +157,11 @@ test("course changelog reviews safe diffs and resets after republishing", async 
         return row;
       })
       .toEqual({ count: 1, changelog: versionOneNote });
-    await expect(dialog.getByText("Keine offenen Aenderungen")).toBeVisible();
-    await dialog.getByRole("button", { name: "Dialog schliessen" }).click();
+    await expect(dialog.getByText("Keine offenen Änderungen")).toBeVisible();
+    await dialog.getByRole("button", { name: "Dialog schließen" }).click();
 
     const directUpdate = page.getByRole("button", {
-      name: /Kurs aktualisieren.*Aenderungen veroeffentlichen/,
+      name: /Kurs aktualisieren.*Änderungen veröffentlichen/,
     });
     await expect(directUpdate).toBeDisabled();
     await expect(page.getByTestId("course-change-marker")).toBeHidden();
@@ -231,14 +231,14 @@ test("course changelog reviews safe diffs and resets after republishing", async 
       }),
     ).toBeVisible();
 
-    await page.getByRole("button", { name: /Aenderungen ansehen/ }).click();
+    await page.getByRole("button", { name: /Änderungen ansehen/ }).click();
     for (const group of [
       "Kursinformation",
       "Module",
       "Zugriff",
       "Lektionen",
       "Seiten",
-      "Inhaltsbloecke",
+      "Inhaltsblöcke",
     ]) {
       await expect(
         dialog.locator("summary").filter({ hasText: new RegExp(`^${group}`) }),
@@ -250,7 +250,7 @@ test("course changelog reviews safe diffs and resets after republishing", async 
 
     await dialog.getByLabel("Versionshinweis").fill(versionTwoNote);
     await dialog
-      .getByRole("button", { name: "Version veroeffentlichen" })
+      .getByRole("button", { name: "Version veröffentlichen" })
       .click();
     await expect
       .poll(async () => {
@@ -262,7 +262,7 @@ test("course changelog reviews safe diffs and resets after republishing", async 
         return row.count;
       })
       .toBe(2);
-    await expect(dialog.getByText("Keine offenen Aenderungen")).toBeVisible();
+    await expect(dialog.getByText("Keine offenen Änderungen")).toBeVisible();
 
     await page.getByRole("tab", { name: "Versionshistorie" }).click();
     const versionTwo = dialog.getByRole("listitem").filter({

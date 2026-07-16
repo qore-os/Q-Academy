@@ -322,8 +322,8 @@ test("reports link retargeting and indentation without target-version phantom di
   assert.deepEqual(
     entries.map(({ kind, detail }) => ({ kind, detail })),
     [
-      { kind: "updated", detail: "Verlinkter Zielkurs geaendert" },
-      { kind: "moved", detail: "Einrueckung geaendert" },
+      { kind: "updated", detail: "Verlinkter Zielkurs geändert" },
+      { kind: "moved", detail: "Einrückung geändert" },
     ],
   );
 });

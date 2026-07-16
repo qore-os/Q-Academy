@@ -367,9 +367,9 @@ ${transcriptSegments[3]}
       where id = ${orderingBlock.id}
     `;
 
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     await expect
       .poll(async () => {

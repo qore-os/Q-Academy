@@ -304,7 +304,7 @@ test("lesson, submission, and exam copy follows the learner locale on desktop an
     await expect(page.getByText(copy.examSaved, { exact: true })).toBeVisible();
     await expect(page.getByText(authoredExamPrompt, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: copy.examSubmit })).toBeDisabled();
-    await expect(page.getByText("Bereit fuer den Start", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Bereit für den Start", { exact: true })).toHaveCount(0);
 
     await page.getByText("AUTHOR_EXAM_OPTION_ALPHA", { exact: true }).click();
     await expect(page.getByText(copy.examDirty, { exact: true })).toBeVisible();

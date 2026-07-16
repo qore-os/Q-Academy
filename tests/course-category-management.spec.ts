@@ -284,15 +284,15 @@ test("course categories are manageable, permission-bound, atomic, and tenant-saf
       .toBe(true);
 
     await page
-      .getByRole("button", { name: `${editedFirstName} loeschen` })
+      .getByRole("button", { name: `${editedFirstName} löschen` })
       .click();
     const deleteDialog = page.getByRole("dialog", {
-      name: "Kategorie loeschen",
+      name: "Kategorie löschen",
     });
     await expect(deleteDialog).toContainText("1 Kurs");
     await expect(deleteDialog).toContainText("vollstaendig erhalten");
     await deleteDialog
-      .getByRole("button", { name: "Endgueltig loeschen" })
+      .getByRole("button", { name: "Endgültig löschen" })
       .click();
     await expect(deleteDialog).toBeHidden();
 

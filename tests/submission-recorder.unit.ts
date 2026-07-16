@@ -69,6 +69,10 @@ test("recorder enforces ten minutes and 250 MiB before upload", () => {
     }) ?? "",
     /10 Minuten/,
   );
+  assert.match(
+    recordedMediaValidationError({ sizeBytes: 1, durationMs: 0 }) ?? "",
+    /10 Minuten/,
+  );
   assert.equal(formatRecordingTime(9 * 60_000 + 7_000), "09:07");
 });
 

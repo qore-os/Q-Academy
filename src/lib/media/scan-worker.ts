@@ -28,10 +28,7 @@ import {
   submissionAttachments,
   users,
 } from "@/db/schema";
-import {
-  mediaAssetIdentity,
-  type MediaAsset,
-} from "@/lib/media/asset-service";
+import { mediaAssetIdentity, type MediaAsset } from "@/lib/media/asset-service";
 import { scanMediaStreamWithClamAv } from "@/lib/media/clamav-scanner";
 import {
   MediaMaintenanceDeadlineError,
@@ -54,6 +51,10 @@ import {
 import { getMediaStorageConfiguration } from "@/lib/server-environment";
 import { logServerError } from "@/lib/server-error-logging";
 import { enqueueDefaultMediaProcessingJobs } from "@/lib/media/processing-worker";
+import {
+  isWebmDurationProbeMimeType,
+  probeWebmDurationStream,
+} from "@/lib/media/webm-duration-probe";
 
 const SCAN_LEASE_MS = 15 * 60_000;
 const FINAL_CLEANUP_GRACE_MS = 60 * 60_000;
@@ -71,11 +72,7 @@ const UNATTACHED_BRANDING_READY_RETENTION_MS = 24 * 60 * 60_000;
 const MAX_MAINTENANCE_BATCH_SIZE = 5;
 export const MEDIA_MAINTENANCE_ADVISORY_LOCK_KEY =
   "q-academy:media-maintenance:v1";
-const VERIFIED_DELETED_STATUSES = [
-  "deleted",
-  "quarantined",
-  "failed",
-] as const;
+const VERIFIED_DELETED_STATUSES = ["deleted", "quarantined", "failed"] as const;
 
 function batchSize(value: number) {
   if (!Number.isInteger(value) || value < 1) return 25;
@@ -94,7 +91,10 @@ function errorCode(error: unknown) {
 }
 
 function retryAt(attempt: number, now: Date) {
-  const delay = Math.min(BASE_RETRY_MS * 2 ** Math.max(0, attempt - 1), 60 * 60_000);
+  const delay = Math.min(
+    BASE_RETRY_MS * 2 ** Math.max(0, attempt - 1),
+    60 * 60_000,
+  );
   return new Date(now.getTime() + delay);
 }
 
@@ -168,24 +168,27 @@ function startScanLeaseHeartbeat(asset: MediaAsset) {
   let stopped = false;
   let renewing = false;
   let leaseLost = false;
-  const timer = setInterval(async () => {
-    if (stopped || renewing) return;
-    renewing = true;
-    try {
-      if (!(await renewScanLease(asset))) {
+  const timer = setInterval(
+    async () => {
+      if (stopped || renewing) return;
+      renewing = true;
+      try {
+        if (!(await renewScanLease(asset))) {
+          leaseLost = true;
+          stopped = true;
+        }
+      } catch (error) {
         leaseLost = true;
         stopped = true;
+        logServerError(error, {
+          action: "media.scan.lease_heartbeat",
+        });
+      } finally {
+        renewing = false;
       }
-    } catch (error) {
-      leaseLost = true;
-      stopped = true;
-      logServerError(error, {
-        action: "media.scan.lease_heartbeat",
-      });
-    } finally {
-      renewing = false;
-    }
-  }, Math.floor(SCAN_LEASE_MS / 3));
+    },
+    Math.floor(SCAN_LEASE_MS / 3),
+  );
   timer.unref?.();
   return {
     lost: () => leaseLost,
@@ -237,7 +240,9 @@ async function markTerminal(
       scanFailureCode: input.failureCode ?? null,
       scanFailureDetail: input.failureDetail ?? null,
       malwareSignature: input.malwareSignature ?? null,
-      stagingDeletedAt: input.stagingDeleted ? input.now : asset.stagingDeletedAt,
+      stagingDeletedAt: input.stagingDeleted
+        ? input.now
+        : asset.stagingDeletedAt,
       updatedAt: input.now,
     })
     .where(claimCondition(asset))
@@ -302,7 +307,8 @@ async function retryOrFail(asset: MediaAsset, now: Date, code: string) {
       status: "failed",
       now,
       failureCode: code,
-      failureDetail: "Der Media-Scan ist nach mehreren Versuchen fehlgeschlagen.",
+      failureDetail:
+        "Der Media-Scan ist nach mehreren Versuchen fehlgeschlagen.",
     });
     return "failed" as const;
   }
@@ -376,6 +382,38 @@ async function processClaimedAsset(asset: MediaAsset) {
       );
     }
 
+    let durationMilliseconds: number | null = result.durationMilliseconds;
+    if (
+      durationMilliseconds === null &&
+      isWebmDurationProbeMimeType(asset.declaredMimeType)
+    ) {
+      if (heartbeat.lost()) return "lost_claim" as const;
+      const probeStored = await getStoredMediaObjectForScanning(
+        mediaAssetIdentity(asset, "staging"),
+        asset.etag,
+        asset.stagingStorageVersionId,
+      );
+      if (probeStored.sizeBytes !== asset.declaredSizeBytes) {
+        throw new MediaContentStreamError(
+          "The stored WebM object size differs from its upload intent.",
+        );
+      }
+      if (
+        probeStored.mimeType !== null &&
+        probeStored.mimeType.toLowerCase() !== asset.declaredMimeType
+      ) {
+        throw new MediaContentInspectionError(
+          "signature_mismatch",
+          "The stored WebM object MIME type differs from its upload intent.",
+        );
+      }
+      const probedDuration = await probeWebmDurationStream({
+        body: probeStored.body,
+        expectedSizeBytes: asset.declaredSizeBytes,
+      });
+      durationMilliseconds = probedDuration.durationMilliseconds;
+    }
+
     if (heartbeat.lost() || !(await renewScanLease(asset))) {
       return "lost_claim" as const;
     }
@@ -394,7 +432,7 @@ async function processClaimedAsset(asset: MediaAsset) {
       etag: promoted.etag ?? asset.etag,
       storageVersionId: promoted.versionId,
       contentSha256: result.sha256,
-      durationMilliseconds: result.durationMilliseconds,
+      durationMilliseconds,
       stagingDeleted: false,
     });
     if (!ready) {
@@ -436,7 +474,7 @@ async function processClaimedAsset(asset: MediaAsset) {
         asset,
         new Date(),
         errorCode(error) ?? "content_mismatch",
-        "Die hochgeladene Datei stimmt nicht mit dem Upload-Intent ueberein.",
+        "Die hochgeladene Datei stimmt nicht mit dem Upload-Intent überein.",
       );
     }
     return retryOrFail(
@@ -472,7 +510,12 @@ async function expirePendingUploads(limit: number, now: Date) {
         scanFailureCode: "upload_expired",
         updatedAt: now,
       })
-      .where(inArray(mediaAssets.id, candidates.map(({ id }) => id)));
+      .where(
+        inArray(
+          mediaAssets.id,
+          candidates.map(({ id }) => id),
+        ),
+      );
     return candidates;
   });
   return expired.length;
@@ -522,7 +565,7 @@ async function expireUnattachedSubmissionAssets(limit: number, now: Date) {
         deletedAt: now,
         scanFailureCode: "unattached_submission_expired",
         scanFailureDetail:
-          "Der gepruefte Abgabeanhang wurde nicht innerhalb von 24 Stunden eingereicht.",
+          "Der geprüfte Abgabeanhang wurde nicht innerhalb von 24 Stunden eingereicht.",
         updatedAt: now,
       })
       .where(
@@ -560,9 +603,7 @@ function unattachedCourseReadyCondition(cutoff: Date) {
 }
 
 async function expireUnattachedCourseAssets(limit: number, now: Date) {
-  const cutoff = new Date(
-    now.getTime() - UNATTACHED_COURSE_READY_RETENTION_MS,
-  );
+  const cutoff = new Date(now.getTime() - UNATTACHED_COURSE_READY_RETENTION_MS);
   return db.transaction(async (tx) => {
     const candidates = await tx
       .select({ id: mediaAssets.id })
@@ -579,7 +620,7 @@ async function expireUnattachedCourseAssets(limit: number, now: Date) {
         deletedAt: now,
         scanFailureCode: "unattached_course_content_expired",
         scanFailureDetail:
-          "Das gepruefte Kursmedium wurde nicht innerhalb von 24 Stunden an einen Kurs gebunden.",
+          "Das geprüfte Kursmedium wurde nicht innerhalb von 24 Stunden an einen Kurs gebunden.",
         updatedAt: now,
       })
       .where(
@@ -639,7 +680,7 @@ async function expireUnattachedCommunityAssets(limit: number, now: Date) {
         deletedAt: now,
         scanFailureCode: "unattached_community_expired",
         scanFailureDetail:
-          "Der gepruefte Community-Anhang wurde nicht innerhalb von 24 Stunden veroeffentlicht.",
+          "Der geprüfte Community-Anhang wurde nicht innerhalb von 24 Stunden veröffentlicht.",
         updatedAt: now,
       })
       .where(
@@ -677,7 +718,9 @@ function unattachedProfileReadyCondition(cutoff: Date) {
 }
 
 async function expireUnattachedProfileAssets(limit: number, now: Date) {
-  const cutoff = new Date(now.getTime() - UNATTACHED_PROFILE_READY_RETENTION_MS);
+  const cutoff = new Date(
+    now.getTime() - UNATTACHED_PROFILE_READY_RETENTION_MS,
+  );
   return db.transaction(async (tx) => {
     const candidates = await tx
       .select({ id: mediaAssets.id })
@@ -694,7 +737,7 @@ async function expireUnattachedProfileAssets(limit: number, now: Date) {
         deletedAt: now,
         scanFailureCode: "unattached_avatar_expired",
         scanFailureDetail:
-          "Das gepruefte Profilbild wurde nicht innerhalb von 24 Stunden gebunden.",
+          "Das geprüfte Profilbild wurde nicht innerhalb von 24 Stunden gebunden.",
         updatedAt: now,
       })
       .where(
@@ -788,12 +831,15 @@ async function expireUnattachedProfileFieldAssets(limit: number, now: Date) {
         deletedAt: now,
         scanFailureCode: "unattached_profile_media_expired",
         scanFailureDetail:
-          "Das gepruefte Profilmedium wurde nicht innerhalb von 24 Stunden gebunden.",
+          "Das geprüfte Profilmedium wurde nicht innerhalb von 24 Stunden gebunden.",
         updatedAt: now,
       })
       .where(
         and(
-          inArray(mediaAssets.id, candidates.map(({ id }) => id)),
+          inArray(
+            mediaAssets.id,
+            candidates.map(({ id }) => id),
+          ),
           unattachedProfileFieldReadyCondition(cutoff),
         ),
       )
@@ -831,7 +877,9 @@ function unattachedBrandingReadyCondition(cutoff: Date) {
 }
 
 async function expireUnattachedBrandingAssets(limit: number, now: Date) {
-  const cutoff = new Date(now.getTime() - UNATTACHED_BRANDING_READY_RETENTION_MS);
+  const cutoff = new Date(
+    now.getTime() - UNATTACHED_BRANDING_READY_RETENTION_MS,
+  );
   return db.transaction(async (tx) => {
     const candidates = await tx
       .select({ id: mediaAssets.id })
@@ -848,7 +896,7 @@ async function expireUnattachedBrandingAssets(limit: number, now: Date) {
         deletedAt: now,
         scanFailureCode: "unattached_branding_expired",
         scanFailureDetail:
-          "Das gepruefte Branding-Bild wurde nicht innerhalb von 24 Stunden gebunden.",
+          "Das geprüfte Branding-Bild wurde nicht innerhalb von 24 Stunden gebunden.",
         updatedAt: now,
       })
       .where(
@@ -865,10 +913,7 @@ async function expireUnattachedBrandingAssets(limit: number, now: Date) {
   });
 }
 
-async function cleanupStoredObjects(
-  budget: MediaMaintenanceBudget,
-  now: Date,
-) {
+async function cleanupStoredObjects(budget: MediaMaintenanceBudget, now: Date) {
   if (!budget.canStartIoAsset()) return 0;
   const candidates = await db
     .select()
@@ -960,7 +1005,12 @@ async function cleanupStoredObjects(
     await db
       .update(mediaAssets)
       .set({ quotaBytes: 0, updatedAt: new Date() })
-      .where(inArray(mediaAssets.id, releasable.map(({ id }) => id)));
+      .where(
+        inArray(
+          mediaAssets.id,
+          releasable.map(({ id }) => id),
+        ),
+      );
   }
   return cleaned;
 }

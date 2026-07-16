@@ -597,7 +597,7 @@ test("admin toggles bidirectional lesson and page title sync", async ({
     });
     await expect(unavailableLink).toBeDisabled();
 
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect
       .poll(async () => {
         const [row] = await client<Array<{ status: string }>>`
@@ -617,9 +617,9 @@ test("admin toggles bidirectional lesson and page title sync", async ({
       .locator("xpath=ancestor::form")
       .getByRole("button", { name: "Speichern" })
       .click();
-    await page.getByRole("button", { name: /Aenderungen ansehen/ }).click();
+    await page.getByRole("button", { name: /Änderungen ansehen/ }).click();
     const changelog = page.getByRole("dialog", {
-      name: "Versionen und Aenderungen",
+      name: "Versionen und Änderungen",
     });
     await expect(
       changelog.locator("summary").filter({ hasText: /^Lektionen/ }),

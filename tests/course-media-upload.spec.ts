@@ -126,7 +126,7 @@ test("private course media is scanned, versioned and limited to course access", 
         "base64",
       ),
     });
-    await expect(editor.getByText("Geprueft und bereit", { exact: true })).toBeVisible({
+    await expect(editor.getByText("Geprüft und bereit", { exact: true })).toBeVisible({
       timeout: 45_000,
     });
     await editor
@@ -167,9 +167,9 @@ test("private course media is scanned, versioned and limited to course access", 
     }, mediaAssetId);
     expect(boundDelete).toBe(409);
 
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     const [published] = await sql<
       Array<{ media_asset_id: string; versions: number }>

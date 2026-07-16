@@ -33,14 +33,18 @@ export class MetadataDurationStreamValidator {
   private failure: unknown = null;
 
   constructor(
-    mimeType: AllowedMediaMimeType,
+    private readonly mimeType: AllowedMediaMimeType,
     expectedSizeBytes: number,
   ) {
     if (!isMetadataDurationMimeType(mimeType)) {
-      throw new TypeError(`Unsupported metadata duration MIME type: ${mimeType}`);
+      throw new TypeError(
+        `Unsupported metadata duration MIME type: ${mimeType}`,
+      );
     }
     if (!Number.isSafeInteger(expectedSizeBytes) || expectedSizeBytes <= 0) {
-      throw new TypeError("Expected media size must be a positive safe integer.");
+      throw new TypeError(
+        "Expected media size must be a positive safe integer.",
+      );
     }
 
     this.metadata = parseStream(
@@ -81,7 +85,10 @@ export class MetadataDurationStreamValidator {
         this.stream.once("drain", onDrain);
         this.stream.once("error", onError);
       }),
-      this.metadata.then(() => undefined, () => undefined),
+      this.metadata.then(
+        () => undefined,
+        () => undefined,
+      ),
     ]);
   }
 
@@ -92,21 +99,33 @@ export class MetadataDurationStreamValidator {
     try {
       result = await this.metadata;
     } catch {
-      throw invalidMedia("The uploaded media container could not be parsed safely.");
+      if (this.mimeType === "audio/webm" || this.mimeType === "video/webm") {
+        return { durationMilliseconds: null };
+      }
+      throw invalidMedia(
+        "The uploaded media container could not be parsed safely.",
+      );
     } finally {
       this.stream.destroy();
     }
     if (this.failure) {
+      if (this.mimeType === "audio/webm" || this.mimeType === "video/webm") {
+        return { durationMilliseconds: null };
+      }
       throw invalidMedia("The uploaded media metadata is invalid.");
     }
 
     const durationSeconds = result.format.duration;
     const durationMilliseconds = Math.round(Number(durationSeconds) * 1_000);
-    if (
-      !Number.isFinite(durationSeconds) ||
-      durationMilliseconds <= 0 ||
-      durationMilliseconds > MAX_DURATION_MILLISECONDS
-    ) {
+    if (durationMilliseconds > MAX_DURATION_MILLISECONDS) {
+      throw invalidMedia(
+        "The uploaded audio or video exceeds the maximum duration.",
+      );
+    }
+    if (!Number.isFinite(durationSeconds) || durationMilliseconds <= 0) {
+      if (this.mimeType === "audio/webm" || this.mimeType === "video/webm") {
+        return { durationMilliseconds: null };
+      }
       throw invalidMedia(
         "The uploaded audio or video has no trustworthy bounded duration.",
       );

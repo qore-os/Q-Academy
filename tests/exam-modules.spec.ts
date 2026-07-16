@@ -375,7 +375,7 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     await expect(memberPage.getByText("Pruefungsmodul | 1 Pruefung")).toBeVisible();
     await memberPage.getByRole("link", { name: new RegExp(moduleTitle) }).click();
     await expect(
-      memberPage.getByRole("heading", { name: "Bereit fuer den Start" }),
+      memberPage.getByRole("heading", { name: "Bereit für den Start" }),
     ).toBeVisible();
     await expect(memberPage.getByText(wrongOption, { exact: true })).toHaveCount(0);
     expect(await memberPage.content()).not.toContain("correctOption");
@@ -407,9 +407,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     await wrongAnswerRadio.press("Space");
     await expect(wrongAnswerRadio).toBeChecked();
     memberPage.once("dialog", (dialog) => void dialog.accept());
-    await memberPage.getByRole("button", { name: "Pruefung abgeben" }).click();
+    await memberPage.getByRole("button", { name: "Prüfung abgeben" }).click();
     await expect(
-      memberPage.getByRole("heading", { name: "Pruefung nicht bestanden" }),
+      memberPage.getByRole("heading", { name: "Prüfung nicht bestanden" }),
     ).toBeVisible();
     await expect(memberPage.getByText(secretFeedback, { exact: true })).toBeVisible();
 
@@ -422,11 +422,11 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     await correctAnswerRadio.press("Space");
     await expect(correctAnswerRadio).toBeChecked();
     memberPage.once("dialog", (dialog) => void dialog.accept());
-    await memberPage.getByRole("button", { name: "Pruefung abgeben" }).click();
+    await memberPage.getByRole("button", { name: "Prüfung abgeben" }).click();
     await expect(
       memberPage
         .getByRole("main")
-        .getByText("Pruefung bestanden", { exact: true }),
+        .getByText("Prüfung bestanden", { exact: true }),
     ).toBeVisible();
     await expect(memberPage.getByText("100 % | 1 von 1 Fragen richtig")).toBeVisible();
     await expect(

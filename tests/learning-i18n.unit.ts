@@ -80,6 +80,25 @@ test("learning copy interpolates every supported locale without unresolved token
   }
 });
 
+test("German attachment and recorder copy uses native umlauts and eszett", () => {
+  const dictionary = learningUiDictionaries.de;
+
+  assert.equal(dictionary["attachments.choose"], "Dateien auswählen");
+  assert.equal(dictionary["attachments.securityCheck"], "Sicherheitsprüfung");
+  assert.equal(
+    dictionary["attachments.invalidFile"],
+    "Dateityp oder Dateigröße ist ungültig.",
+  );
+  assert.equal(
+    dictionary["recorder.tooLarge"],
+    "Die Aufnahme ist größer als 250 MiB und wurde verworfen.",
+  );
+  assert.equal(
+    dictionary["recorder.checking"],
+    "Browser-Unterstützung wird geprüft.",
+  );
+});
+
 test("exam durations and attachment sizes retain locale-specific formatting", () => {
   for (const locale of SUPPORTED_LOCALES) {
     const duration = formatLearningExamDuration(3_661, locale);
@@ -120,7 +139,7 @@ test("learner lesson and exam surfaces contain no actionable German UI fallback"
 
   assert.doesNotMatch(
     source,
-    /Pflichtfrage|Wissenscheck|Mehrfachauswahl|Lueckentext|Sortieraufgabe|Praxisabgabe|Pflichtabgabe|Wird gesendet|Versuchslimit|Pruefung bestanden|Lektion abgeschlossen|Nur lesen|Naechste Seite|Pruefung abgeben|Speichert|Ungespeichert|Serverstand geladen|Loesungseinsicht|Bereit fuer den Start|Dateianhaenge|Dateien auswaehlen|Direkt aufnehmen|Transkript durchsuchen|Navigation ist|zur Bewertung eingereicht|konnte nicht/i,
+    /Pflichtfrage|Wissenscheck|Mehrfachauswahl|Lückentext|Sortieraufgabe|Praxisabgabe|Pflichtabgabe|Wird gesendet|Versuchslimit|Prüfung bestanden|Lektion abgeschlossen|Nur lesen|Nächste Seite|Prüfung abgeben|Speichert|Ungespeichert|Serverstand geladen|Lösungseinsicht|Bereit für den Start|Dateianhänge|Dateien auswählen|Direkt aufnehmen|Transkript durchsuchen|Navigation ist|zur Bewertung eingereicht|konnte nicht/i,
   );
 
   const lesson = readFileSync(

@@ -435,7 +435,7 @@ test("published learning access enforces drip, sequence and status on every path
       update course_access_grants set created_at = now()
       where user_id = ${memberId} and course_id = ${courseId}
     `;
-    await page.getByRole("button", { name: "Lektion abschliessen" }).click();
+    await page.getByRole("button", { name: "Lektion abschließen" }).click();
     await expect(
       page.getByText(learningCopy("lesson.completeError"), { exact: true }),
     ).toBeVisible();
@@ -463,7 +463,7 @@ test("published learning access enforces drip, sequence and status on every path
       where user_id = ${memberId} and course_id = ${courseId}
     `;
     await page.reload();
-    await page.getByRole("button", { name: "Lektion abschliessen" }).click();
+    await page.getByRole("button", { name: "Lektion abschließen" }).click();
     await expect(
       page.getByRole("button", { name: "Lektion abgeschlossen" }),
     ).toBeDisabled();

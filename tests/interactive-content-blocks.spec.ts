@@ -197,14 +197,14 @@ test("button and gallery blocks work from authoring to responsive learner views"
       ),
     });
     await expect(
-      firstImage.getByText("Geprueft und bereit", { exact: true }),
+      firstImage.getByText("Geprüft und bereit", { exact: true }),
     ).toBeVisible({ timeout: 45_000 });
     await firstImage.getByLabel("Alternativtext").fill(firstAlt);
     await firstImage
       .getByLabel("Bildunterschrift")
       .fill("Geprueftes Bild aus dem privaten Medienspeicher.");
 
-    await dialog.getByRole("button", { name: "Bild hinzufuegen" }).click();
+    await dialog.getByRole("button", { name: "Bild hinzufügen" }).click();
     const secondImage = dialog.getByRole("region", { name: "Galeriebild 2" });
     await secondImage
       .getByRole("textbox", { name: "Galeriebild 2-URL" })
@@ -288,10 +288,10 @@ test("button and gallery blocks work from authoring to responsive learner views"
 
     await page.goto(`/admin/courses/${courseId}`);
     await page
-      .getByRole("button", { name: "Kurs veroeffentlichen" })
+      .getByRole("button", { name: "Kurs veröffentlichen" })
       .click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     await expect
       .poll(async () => {

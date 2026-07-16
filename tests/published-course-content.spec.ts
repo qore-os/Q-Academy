@@ -189,10 +189,10 @@ test("members stay on the last published course version until republish", async 
     await login(adminPage, "admin");
     await adminPage.goto(`/admin/courses/${courseId}`);
     await adminPage
-      .getByRole("button", { name: "Kurs veroeffentlichen" })
+      .getByRole("button", { name: "Kurs veröffentlichen" })
       .click();
     await expect(
-      adminPage.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      adminPage.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
 
     const [firstPublication] = await client<
@@ -275,7 +275,7 @@ test("members stay on the last published course version until republish", async 
       }),
     ).toBeVisible();
     await memberPage
-      .getByRole("button", { name: "Lektion abschliessen" })
+      .getByRole("button", { name: "Lektion abschließen" })
       .click();
     await expect(
       memberPage.getByRole("button", { name: "Lektion abgeschlossen" }),
@@ -310,10 +310,10 @@ test("members stay on the last published course version until republish", async 
 
     await adminPage.goto(`/admin/courses/${courseId}`);
     await adminPage
-      .getByRole("button", { name: "Aenderungen veroeffentlichen" })
+      .getByRole("button", { name: "Änderungen veröffentlichen" })
       .click();
     await expect(
-      adminPage.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      adminPage.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     await expect
       .poll(async () => {

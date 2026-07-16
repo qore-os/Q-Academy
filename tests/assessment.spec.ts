@@ -114,7 +114,7 @@ test("required quiz is graded on the server before lesson completion", async ({ 
     page.getByRole("main").getByText("Pflichtquiz bestanden", { exact: true }),
   ).toBeVisible();
 
-  const completion = page.getByRole("button", { name: "Lektion abschliessen" });
+  const completion = page.getByRole("button", { name: "Lektion abschließen" });
   await expect(completion).toBeEnabled();
   await completion.click();
   await expect(page.getByRole("button", { name: "Lektion abgeschlossen" })).toBeDisabled();

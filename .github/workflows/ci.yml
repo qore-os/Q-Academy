@@ -502,7 +502,22 @@ jobs:
 
           docker run --rm --entrypoint /bin/sh \
             "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
-            'test "$(id -u)" = 1001 && test -r scripts/media-processing-preflight.ts && test -r scripts/clamav-preflight.ts && /usr/bin/ffmpeg -version >/dev/null && /usr/bin/ffprobe -version >/dev/null'
+            'test "$(id -u)" = 1001 && test -r scripts/media-processing-preflight.ts && test -r scripts/clamav-preflight.ts && test -r scripts/webm-duration-preflight.ts && test -r src/lib/media/webm-duration-probe.ts && /usr/bin/ffmpeg -version >/dev/null && /usr/bin/ffprobe -version >/dev/null'
+          docker run --rm \
+            --network none \
+            --read-only \
+            --user 1001:1001 \
+            --security-opt no-new-privileges=true \
+            --cap-drop ALL \
+            --pids-limit 64 \
+            --memory 256m \
+            --env HOME=/tmp \
+            --env TMPDIR=/tmp \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m,uid=1001,gid=1001 \
+            --entrypoint node \
+            "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" \
+            --conditions=react-server --import tsx \
+            scripts/webm-duration-preflight.ts
           docker run --rm --entrypoint /bin/sh \
             "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
             'test "$(id -u)" = 1001 && test -r scripts/s3-app-principal-preflight.ts && test -r scripts/strato-privacy-export-sweeper.ts && test -r src/lib/media/s3-presigned-post.ts && test -r src/lib/media/s3-strato-compatibility-preflight.ts && test -r src/lib/privacy/strato-retention-sweeper.ts'

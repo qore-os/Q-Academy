@@ -262,7 +262,7 @@ RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
     done \
     && rm -rf /var/lib/apt/lists/*
 COPY --chown=nextjs:nodejs tsconfig.json ./tsconfig.json
-COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/clamav-preflight.ts scripts/media-processing-preflight.ts scripts/openai-whisper-transcribe-core.ts scripts/openai-whisper-transcribe.ts ./scripts/
+COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/clamav-preflight.ts scripts/media-processing-preflight.ts scripts/webm-duration-preflight.ts scripts/openai-whisper-transcribe-core.ts scripts/openai-whisper-transcribe.ts ./scripts/
 COPY --chown=nextjs:nodejs src/lib ./src/lib
 USER nextjs
 ENTRYPOINT ["node", "--conditions=react-server", "--import", "tsx", "scripts/media-processing-preflight.ts"]

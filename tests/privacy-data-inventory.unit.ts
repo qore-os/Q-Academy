@@ -56,7 +56,7 @@ function unique(values: readonly string[]) {
   return [...new Set(values)];
 }
 
-test("privacy inventory covers the current 170-table schema and 0073 migration history", () => {
+test("privacy inventory covers the current 170-table schema and 0074 migration history", () => {
   const inventoryNames = Object.keys(PRIVACY_DATA_INVENTORY).sort();
   const missing = publicTableNames.filter(
     (name) => !(name in PRIVACY_DATA_INVENTORY),
@@ -68,13 +68,13 @@ test("privacy inventory covers the current 170-table schema and 0073 migration h
   assert.equal(
     publicTables.length,
     170,
-    "Snapshot 0073 table count changed; update the explicit privacy inventory.",
+    "Snapshot 0074 table count changed; update the explicit privacy inventory.",
   );
-  assert.equal(journal.entries.length, 74, "Expected 74 versioned migrations.");
-  assert.equal(journal.entries.at(-1)?.idx, 73);
+  assert.equal(journal.entries.length, 75, "Expected 75 versioned migrations.");
+  assert.equal(journal.entries.at(-1)?.idx, 74);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0073_intercom_identity_fail_closed",
+    "0074_runtime_trigger_role_guards",
   );
   assert.deepEqual(
     missing,

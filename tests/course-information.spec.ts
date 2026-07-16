@@ -158,11 +158,11 @@ test("course information is ordered, tenant-safe, snapshot-stable, and hidden on
     await adminPage.getByRole("tab", { name: "Information" }).click();
 
     await adminPage
-      .getByRole("button", { name: "Lernziel hinzufuegen" })
+      .getByRole("button", { name: "Lernziel hinzufügen" })
       .click();
     await adminPage.getByLabel("Lernziel 1", { exact: true }).fill(firstGoal);
     await adminPage
-      .getByRole("button", { name: "Lernziel hinzufuegen" })
+      .getByRole("button", { name: "Lernziel hinzufügen" })
       .click();
     await adminPage
       .getByLabel("Lernziel 2", { exact: true })
@@ -174,11 +174,11 @@ test("course information is ordered, tenant-safe, snapshot-stable, and hidden on
     const authorSelect = adminPage.getByLabel("Teammitglied als Kursautor");
     await authorSelect.selectOption(ownerId);
     await adminPage
-      .getByRole("button", { name: "Kursautor hinzufuegen" })
+      .getByRole("button", { name: "Kursautor hinzufügen" })
       .click();
     await authorSelect.selectOption(trainerId);
     await adminPage
-      .getByRole("button", { name: "Kursautor hinzufuegen" })
+      .getByRole("button", { name: "Kursautor hinzufügen" })
       .click();
     await adminPage
       .getByRole("button", { name: "Marco Stein nach oben" })
@@ -274,9 +274,9 @@ test("course information is ordered, tenant-safe, snapshot-stable, and hidden on
     `;
     expect(authorsAfterRejectedPatch.author_ids).toEqual([trainerId, ownerId]);
 
-    await adminPage.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await adminPage.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      adminPage.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      adminPage.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     await expect
       .poll(async () => {
@@ -349,7 +349,7 @@ test("course information is ordered, tenant-safe, snapshot-stable, and hidden on
     await expect(memberPage.getByText(title, { exact: true })).toBeVisible();
 
     await adminPage
-      .getByRole("button", { name: "Aenderungen veroeffentlichen" })
+      .getByRole("button", { name: "Änderungen veröffentlichen" })
       .click();
     await expect
       .poll(async () => {
@@ -582,9 +582,9 @@ test("course information controls and member details fit the mobile viewport", a
       ),
     ).toBeLessThanOrEqual(1);
 
-    await page.getByRole("button", { name: "Kurs veroeffentlichen" }).click();
+    await page.getByRole("button", { name: "Kurs veröffentlichen" }).click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     await expect
       .poll(async () => {

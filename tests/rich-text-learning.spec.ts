@@ -248,10 +248,10 @@ test("rich text is authored structurally and rendered safely for learners", asyn
 
     await adminPage.goto(`/admin/courses/${courseId}`);
     await adminPage
-      .getByRole("button", { name: "Kurs veroeffentlichen" })
+      .getByRole("button", { name: "Kurs veröffentlichen" })
       .click();
     await expect(
-      adminPage.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      adminPage.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     await expect
       .poll(async () => {

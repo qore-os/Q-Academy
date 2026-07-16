@@ -519,6 +519,13 @@
       "when": 1784090513409,
       "tag": "0073_intercom_identity_fail_closed",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1784215083483,
+      "tag": "0074_runtime_trigger_role_guards",
+      "breakpoints": true
     }
   ]
 }

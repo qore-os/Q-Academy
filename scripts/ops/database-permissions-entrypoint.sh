@@ -156,6 +156,54 @@ where namespace_record.nspname = 'public'
   \quit 1
 \endif
 
+select count(*) = 8 as constraint_trigger_functions_are_hardened
+from pg_proc procedure_record
+join pg_namespace namespace_record on namespace_record.oid = procedure_record.pronamespace
+join pg_roles owner_role on owner_role.oid = procedure_record.proowner
+where namespace_record.nspname = 'public'
+  and procedure_record.proname in (
+    'q_academy_check_exam_module_row',
+    'q_academy_check_exam_lesson_row',
+    'q_academy_check_exam_section_row',
+    'q_academy_check_exam_page_row',
+    'q_academy_check_link_module_row',
+    'q_academy_check_link_content_row',
+    'q_academy_check_course_module_outline_row',
+    'q_academy_check_published_course_link_edge_row'
+  )
+  and pg_get_function_identity_arguments(procedure_record.oid) = ''
+  and procedure_record.prorettype = 'pg_catalog.trigger'::regtype
+  and procedure_record.prosecdef
+  and owner_role.rolname = :'owner_user'
+  and procedure_record.proconfig = array['search_path=pg_catalog, public']
+\gset
+\if :constraint_trigger_functions_are_hardened
+\else
+  \echo 'Constraint trigger function hardening verification failed.'
+  \quit 1
+\endif
+
+select count(*) = 1 as community_media_guard_uses_runtime_registry
+from pg_proc procedure_record
+join pg_namespace namespace_record on namespace_record.oid = procedure_record.pronamespace
+join pg_roles owner_role on owner_role.oid = procedure_record.proowner
+where namespace_record.nspname = 'public'
+  and procedure_record.proname = 'prevent_bound_community_media_update'
+  and pg_get_function_identity_arguments(procedure_record.oid) = ''
+  and procedure_record.prorettype = 'pg_catalog.trigger'::regtype
+  and not procedure_record.prosecdef
+  and owner_role.rolname = :'owner_user'
+  and procedure_record.proconfig = array['search_path=pg_catalog, public']
+  and position('community_asset_bindings' in pg_get_functiondef(procedure_record.oid)) > 0
+  and position('community_post_attachments' in pg_get_functiondef(procedure_record.oid)) = 0
+  and position('community_comment_attachments' in pg_get_functiondef(procedure_record.oid)) = 0
+\gset
+\if :community_media_guard_uses_runtime_registry
+\else
+  \echo 'Community media guard runtime registry verification failed.'
+  \quit 1
+\endif
+
 select
   not has_table_privilege(:'app_user', 'public.tenant_erasure_receipts', 'SELECT')
   and not has_table_privilege(:'app_user', 'public.tenant_erasure_receipts', 'INSERT')

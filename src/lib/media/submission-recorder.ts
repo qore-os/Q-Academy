@@ -86,17 +86,17 @@ export function recordedMediaValidationError(input: {
   durationMs: number;
 }) {
   if (!Number.isFinite(input.sizeBytes) || input.sizeBytes <= 0) {
-    return "Die Aufnahme enthaelt keine verwertbaren Mediendaten.";
+    return "Die Aufnahme enthält keine verwertbaren Mediendaten.";
   }
   if (input.sizeBytes > MAX_SUBMISSION_RECORDING_BYTES) {
-    return "Die Aufnahme ist groesser als 250 MiB und wurde verworfen.";
+    return "Die Aufnahme ist größer als 250 MiB und wurde verworfen.";
   }
   if (
     !Number.isFinite(input.durationMs) ||
-    input.durationMs < 0 ||
+    input.durationMs <= 0 ||
     input.durationMs > MAX_SUBMISSION_RECORDING_DURATION_MS
   ) {
-    return "Die Aufnahme darf hoechstens 10 Minuten lang sein.";
+    return "Die Aufnahme darf höchstens 10 Minuten lang sein.";
   }
   return null;
 }
@@ -118,22 +118,22 @@ export function recordingCaptureErrorMessage(
       : "";
   if (name === "NotAllowedError" || name === "SecurityError") {
     return mode === "screen"
-      ? "Die Bildschirmfreigabe wurde nicht erlaubt. Pruefe die Browser-Berechtigung."
-      : "Der Zugriff auf Kamera oder Mikrofon wurde nicht erlaubt. Pruefe die Browser-Berechtigung.";
+      ? "Die Bildschirmfreigabe wurde nicht erlaubt. Prüfe die Browser-Berechtigung."
+      : "Der Zugriff auf Kamera oder Mikrofon wurde nicht erlaubt. Prüfe die Browser-Berechtigung.";
   }
   if (name === "NotFoundError" || name === "DevicesNotFoundError") {
     return mode === "audio"
       ? "Es wurde kein verwendbares Mikrofon gefunden."
-      : "Die benoetigte Kamera oder Audioquelle wurde nicht gefunden.";
+      : "Die benötigte Kamera oder Audioquelle wurde nicht gefunden.";
   }
   if (name === "NotReadableError" || name === "TrackStartError") {
-    return "Das Aufnahmegeraet ist belegt oder konnte nicht gestartet werden.";
+    return "Das Aufnahmegerät ist belegt oder konnte nicht gestartet werden.";
   }
   if (
     name === "OverconstrainedError" ||
     name === "ConstraintNotSatisfiedError"
   ) {
-    return "Das Aufnahmegeraet unterstuetzt die angeforderte Qualitaet nicht.";
+    return "Das Aufnahmegerät unterstützt die angeforderte Qualität nicht.";
   }
   if (name === "AbortError") {
     return mode === "screen"
@@ -143,5 +143,5 @@ export function recordingCaptureErrorMessage(
   if (name === "InvalidStateError") {
     return "Die Aufnahme kann in diesem Browserzustand nicht gestartet werden.";
   }
-  return "Die Aufnahme konnte nicht gestartet werden. Pruefe Browser und Berechtigungen.";
+  return "Die Aufnahme konnte nicht gestartet werden. Prüfe Browser und Berechtigungen.";
 }

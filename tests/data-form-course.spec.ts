@@ -347,10 +347,10 @@ test("course data forms publish, submit into the active profile, and stay tenant
     }
 
     await page
-      .getByRole("button", { name: "Kurs veroeffentlichen" })
+      .getByRole("button", { name: "Kurs veröffentlichen" })
       .click();
     await expect(
-      page.getByRole("button", { name: "Aenderungen veroeffentlichen" }),
+      page.getByRole("button", { name: "Änderungen veröffentlichen" }),
     ).toBeVisible();
     const [publication] = await client<
       Array<{

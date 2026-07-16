@@ -63,11 +63,12 @@ function roleIdentityQuery() {
 }
 
 test(
-  "production media permissions execute hardened storage triggers without contract access",
+  "production runtime permissions execute hardened integrity triggers without broad data access",
   { timeout: 120_000 },
   async () => {
     const admin = postgres(adminUrl, { max: 1 });
     let owner: ReturnType<typeof postgres> | undefined;
+    let app: ReturnType<typeof postgres> | undefined;
     let media: ReturnType<typeof postgres> | undefined;
     try {
       await admin.unsafe(`drop database if exists "${databaseName}" with (force)`);
@@ -106,6 +107,8 @@ test(
       const [catalog] = await owner<
         Array<{
           hardenedFunctions: number;
+          hardenedConstraintTriggers: number;
+          communityMediaGuardUsesRegistry: boolean;
           mediaContractAccess: boolean;
           mediaFunctionAccess: number;
           appFunctionAccess: number;
@@ -135,6 +138,48 @@ test(
                   and function_acl.privilege_type = 'EXECUTE'
               )
           ) as "hardenedFunctions",
+          (
+            select count(*)::integer
+            from pg_proc procedure_record
+            join pg_namespace namespace_record
+              on namespace_record.oid = procedure_record.pronamespace
+            where namespace_record.nspname = 'public'
+              and procedure_record.proname in (
+                'q_academy_check_exam_module_row',
+                'q_academy_check_exam_lesson_row',
+                'q_academy_check_exam_section_row',
+                'q_academy_check_exam_page_row',
+                'q_academy_check_link_module_row',
+                'q_academy_check_link_content_row',
+                'q_academy_check_course_module_outline_row',
+                'q_academy_check_published_course_link_edge_row'
+              )
+              and pg_get_function_identity_arguments(procedure_record.oid) = ''
+              and procedure_record.prorettype = 'pg_catalog.trigger'::regtype
+              and procedure_record.prosecdef
+              and pg_get_userbyid(procedure_record.proowner) = ${ownerRole}
+              and procedure_record.proconfig = array['search_path=pg_catalog, public']
+              and not exists (
+                select 1 from aclexplode(procedure_record.proacl) function_acl
+                where function_acl.grantee = 0
+                  and function_acl.privilege_type = 'EXECUTE'
+              )
+          ) as "hardenedConstraintTriggers",
+          (
+            select count(*) = 1
+            from pg_proc procedure_record
+            join pg_namespace namespace_record
+              on namespace_record.oid = procedure_record.pronamespace
+            where namespace_record.nspname = 'public'
+              and procedure_record.proname = 'prevent_bound_community_media_update'
+              and pg_get_function_identity_arguments(procedure_record.oid) = ''
+              and not procedure_record.prosecdef
+              and pg_get_userbyid(procedure_record.proowner) = ${ownerRole}
+              and procedure_record.proconfig = array['search_path=pg_catalog, public']
+              and position('community_asset_bindings' in pg_get_functiondef(procedure_record.oid)) > 0
+              and position('community_post_attachments' in pg_get_functiondef(procedure_record.oid)) = 0
+              and position('community_comment_attachments' in pg_get_functiondef(procedure_record.oid)) = 0
+          ) as "communityMediaGuardUsesRegistry",
           has_table_privilege(${mediaRole}, 'public.organization_contracts', 'SELECT')
             as "mediaContractAccess",
           (
@@ -207,6 +252,8 @@ test(
           ) as "verifiedPolicies"
       `;
       assert.equal(catalog?.hardenedFunctions, 2);
+      assert.equal(catalog?.hardenedConstraintTriggers, 8);
+      assert.equal(catalog?.communityMediaGuardUsesRegistry, true);
       assert.equal(catalog?.mediaContractAccess, false);
       assert.equal(catalog?.mediaFunctionAccess, 2);
       assert.equal(catalog?.appFunctionAccess, 3);
@@ -243,6 +290,9 @@ test(
       assert.equal(staleIdentity.legacy_role_count, 1);
 
       const organizationId = "10000000-0000-4000-8000-000000000001";
+      const courseId = "11000000-0000-4000-8000-000000000001";
+      const moduleId = "12000000-0000-4000-8000-000000000001";
+      const sectionId = "13000000-0000-4000-8000-000000000001";
       const assetId = "20000000-0000-4000-8000-000000000001";
       const firstJobId = "30000000-0000-4000-8000-000000000001";
       const secondJobId = "30000000-0000-4000-8000-000000000002";
@@ -252,6 +302,13 @@ test(
         insert into organization_contracts (
           organization_id, plan_code, storage_limit_bytes
         ) values ('${organizationId}', 'security_test', 1048576);
+        insert into courses (
+          id, organization_id, title, slug, short_description, description
+        ) values (
+          '${courseId}', '${organizationId}', 'Runtime security course',
+          'runtime-security-course', 'Runtime security course',
+          'Runtime security course'
+        );
         insert into media_assets (
           id, organization_id, purpose, kind, status, storage_driver,
           storage_key, staging_storage_key, original_file_name, safe_file_name,
@@ -273,11 +330,76 @@ test(
            'security-test-second', repeat('b', 64), 'security-test');
       `);
 
+      app = postgres(roleUrl(appRole), { max: 1 });
+      await app.begin(async (transaction) => {
+        await transaction.unsafe(
+          `select public.q_academy_lock_course_link_graph('${organizationId}'::uuid)`,
+        );
+        await transaction.unsafe(`
+          insert into modules (
+            id, organization_id, title, kind, description, folder,
+            is_reusable, estimated_minutes
+          ) values (
+            '${moduleId}', '${organizationId}', 'Runtime security module',
+            'learning', 'Runtime role trigger verification', 'Security',
+            false, 30
+          )
+        `);
+        await transaction.unsafe(`
+          insert into module_sections (
+            id, organization_id, module_id, title, sort_order
+          ) values (
+            '${sectionId}', '${organizationId}', '${moduleId}', 'Start', 0
+          )
+        `);
+        await transaction.unsafe(`
+          insert into course_modules (
+            organization_id, course_id, module_id, sort_order, indent_level,
+            drip_days, is_required
+          ) values (
+            '${organizationId}', '${courseId}', '${moduleId}', 0, 0, 0, true
+          )
+        `);
+      });
+      const [moduleFixture] = await owner<
+        Array<{ modules: number; sections: number; assignments: number }>
+      >`
+        select
+          (select count(*)::integer from modules where id = ${moduleId}) as modules,
+          (select count(*)::integer from module_sections where id = ${sectionId}) as sections,
+          (
+            select count(*)::integer from course_modules
+            where course_id = ${courseId} and module_id = ${moduleId}
+          ) as assignments
+      `;
+      assert.deepEqual(moduleFixture, {
+        modules: 1,
+        sections: 1,
+        assignments: 1,
+      });
+
       media = postgres(roleUrl(mediaRole), { max: 1 });
       await assert.rejects(
         media.unsafe("select storage_limit_bytes from organization_contracts"),
         (error) => databaseErrorCode(error) === "42501",
       );
+      await assert.rejects(
+        media.unsafe(
+          "select media_asset_id from community_post_attachments limit 1",
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await assert.rejects(
+        media.unsafe(
+          "select media_asset_id from community_comment_attachments limit 1",
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await media.unsafe(`
+        update media_assets
+        set status = status
+        where id = '${assetId}'
+      `);
       await media.unsafe(`
         insert into media_asset_derivatives (
           organization_id, source_asset_id, processing_job_id, kind,
@@ -305,6 +427,7 @@ test(
       );
     } finally {
       await media?.end().catch(() => undefined);
+      await app?.end().catch(() => undefined);
       await owner?.end().catch(() => undefined);
       await admin.unsafe(`drop database if exists "${databaseName}" with (force)`);
       for (const role of [staleRole, mediaRole, appRole, ownerRole]) {

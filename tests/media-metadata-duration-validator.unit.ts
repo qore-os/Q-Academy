@@ -75,8 +75,20 @@ function oggOpusFixture() {
     Buffer.alloc(4),
   ]);
   return Buffer.concat([
-    oggPage({ headerType: 2, granulePosition: BigInt(0), serial: 7, sequence: 0, body: head }),
-    oggPage({ headerType: 0, granulePosition: BigInt(0), serial: 7, sequence: 1, body: tags }),
+    oggPage({
+      headerType: 2,
+      granulePosition: BigInt(0),
+      serial: 7,
+      sequence: 0,
+      body: head,
+    }),
+    oggPage({
+      headerType: 0,
+      granulePosition: BigInt(0),
+      serial: 7,
+      sequence: 1,
+      body: tags,
+    }),
     oggPage({
       headerType: 4,
       granulePosition: BigInt(48_312),
@@ -93,7 +105,11 @@ function ebmlSize(size: number) {
 }
 
 function ebmlElement(id: readonly number[], body: Uint8Array) {
-  return Buffer.concat([Buffer.from(id), ebmlSize(body.length), Buffer.from(body)]);
+  return Buffer.concat([
+    Buffer.from(id),
+    ebmlSize(body.length),
+    Buffer.from(body),
+  ]);
 }
 
 function webmFixture() {
@@ -122,9 +138,24 @@ function webmFixture() {
 }
 
 for (const fixture of [
-  { name: "MP3", mimeType: "audio/mpeg" as const, bytes: mp3Fixture(), expected: 2_612 },
-  { name: "Ogg Opus", mimeType: "audio/ogg" as const, bytes: oggOpusFixture(), expected: 1_000 },
-  { name: "WebM", mimeType: "video/webm" as const, bytes: webmFixture(), expected: 1_000 },
+  {
+    name: "MP3",
+    mimeType: "audio/mpeg" as const,
+    bytes: mp3Fixture(),
+    expected: 2_612,
+  },
+  {
+    name: "Ogg Opus",
+    mimeType: "audio/ogg" as const,
+    bytes: oggOpusFixture(),
+    expected: 1_000,
+  },
+  {
+    name: "WebM",
+    mimeType: "video/webm" as const,
+    bytes: webmFixture(),
+    expected: 1_000,
+  },
 ]) {
   test(`${fixture.name} metadata duration is parsed from a bounded split stream`, async () => {
     const result = await inspectAndScanMediaStream({
@@ -139,16 +170,15 @@ for (const fixture of [
   });
 }
 
-test("malformed metadata media fails closed instead of persisting an estimate", async () => {
+test("durationless WebM defers to the bounded native probe", async () => {
   const bytes = Buffer.concat([
     Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
     Buffer.alloc(100),
   ]);
-  await assert.rejects(
-    inspectAndScanMediaStream({
-      body: split(bytes),
-      expectedSizeBytes: bytes.length,
-      mimeType: "video/webm",
-    }),
-  );
+  const result = await inspectAndScanMediaStream({
+    body: split(bytes),
+    expectedSizeBytes: bytes.length,
+    mimeType: "video/webm",
+  });
+  assert.equal(result.durationMilliseconds, null);
 });

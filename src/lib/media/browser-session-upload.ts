@@ -66,7 +66,7 @@ function uploadFile(
     const xhr = new XMLHttpRequest();
     const target = new URL(authorization.url, window.location.origin);
     if (!["http:", "https:"].includes(target.protocol)) {
-      reject(new Error("Die Upload-Adresse ist ungueltig."));
+      reject(new Error("Die Upload-Adresse ist ungültig."));
       return;
     }
     xhr.open(authorization.method, target.href);
@@ -248,7 +248,7 @@ export async function uploadBrowserSessionMedia(input: {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
       transientFailures += 1;
       if (transientFailures > 8) {
-        throw new Error("Der Scanstatus ist voruebergehend nicht erreichbar.");
+        throw new Error("Der Scanstatus ist vorübergehend nicht erreichbar.");
       }
       await wait(pollDelay, input.signal);
       pollDelay = Math.min(5_000, pollDelay + 1_000);
@@ -260,7 +260,7 @@ export async function uploadBrowserSessionMedia(input: {
     ) {
       transientFailures += 1;
       if (transientFailures > 8) {
-        throw new Error("Der Scanstatus ist voruebergehend nicht erreichbar.");
+        throw new Error("Der Scanstatus ist vorübergehend nicht erreichbar.");
       }
       await response.body?.cancel().catch(() => undefined);
       const retryAfter = Number(response.headers.get("retry-after"));
@@ -277,16 +277,16 @@ export async function uploadBrowserSessionMedia(input: {
     transientFailures = 0;
     if (status.status === "ready") return status;
     if (status.status === "quarantined") {
-      throw new Error("Die Sicherheitspruefung hat die Datei abgelehnt.");
+      throw new Error("Die Sicherheitsprüfung hat die Datei abgelehnt.");
     }
     if (status.status === "failed") {
-      throw new Error("Die Sicherheitspruefung konnte nicht abgeschlossen werden.");
+      throw new Error("Die Sicherheitsprüfung konnte nicht abgeschlossen werden.");
     }
     await wait(pollDelay, input.signal);
     pollDelay = Math.min(5_000, pollDelay + 1_000);
   }
   input.signal.throwIfAborted();
-  throw new Error("Die Sicherheitspruefung hat zu lange gedauert.");
+  throw new Error("Die Sicherheitsprüfung hat zu lange gedauert.");
 }
 
 export async function deleteBrowserSessionMediaAsset(
