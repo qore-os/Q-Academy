@@ -459,6 +459,9 @@ append_iptables_rules() {
       subnet_csv="${ipv6_subnets[$index]}"
       [[ -n "$subnet_csv" ]] || continue
     fi
+    printf -- '-A %s -i %s -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -m comment --comment %s-reply-%s -j RETURN\n' \
+      "$forward_chain" "${bridge_names[$index]}" "$forward_marker" "${logical_networks[$index]}" >> "$rules_file"
+    ((expected_count += 1))
     printf -- '-A %s -i %s -o %s -m comment --comment %s-same-%s -j RETURN\n' \
       "$forward_chain" "${bridge_names[$index]}" "${bridge_names[$index]}" "$forward_marker" "${logical_networks[$index]}" >> "$rules_file"
     ((expected_count += 1))
@@ -478,9 +481,11 @@ append_iptables_rules() {
     done
     printf -- '-A %s -i %s -m comment --comment %s-default-%s -j DROP\n' \
       "$forward_chain" "${bridge_names[$index]}" "$forward_marker" "${logical_networks[$index]}" >> "$rules_file"
+    printf -- '-A %s -i %s -m conntrack --ctstate ESTABLISHED,RELATED --ctdir REPLY -m comment --comment %s-reply-%s -j RETURN\n' \
+      "$input_chain" "${bridge_names[$index]}" "$input_marker" "${logical_networks[$index]}" >> "$rules_file"
     printf -- '-A %s -i %s -m comment --comment %s-host-%s -j DROP\n' \
       "$input_chain" "${bridge_names[$index]}" "$input_marker" "${logical_networks[$index]}" >> "$rules_file"
-    ((expected_count += 2))
+    ((expected_count += 3))
     IFS=',' read -r -a subnets <<<"$subnet_csv"
     for subnet in "${subnets[@]}"; do
       [[ -n "$subnet" ]] || fail "empty validated subnet"
@@ -653,6 +658,7 @@ generate_nft_ruleset() {
     printf '  chain forward {\n'
     printf '    type filter hook forward priority -10; policy accept;\n'
     for index in "${!logical_networks[@]}"; do
+      printf '    iifname "%s" ct direction reply ct state { established, related } accept comment "%s-reply-%s"\n' "${bridge_names[$index]}" "$forward_marker" "${logical_networks[$index]}"
       printf '    iifname "%s" oifname "%s" accept comment "%s-same-%s"\n' "${bridge_names[$index]}" "${bridge_names[$index]}" "$forward_marker" "${logical_networks[$index]}"
       printf '    iifname "%s" ip daddr 169.254.169.254 drop comment "%s-metadata4-%s"\n' "${bridge_names[$index]}" "$forward_marker" "${logical_networks[$index]}"
       printf '    iifname "%s" ip daddr { ' "${bridge_names[$index]}"
@@ -676,6 +682,7 @@ generate_nft_ruleset() {
     printf '  chain input {\n'
     printf '    type filter hook input priority -10; policy accept;\n'
     for index in "${!logical_networks[@]}"; do
+      printf '    iifname "%s" ct direction reply ct state { established, related } accept comment "%s-reply-%s"\n' "${bridge_names[$index]}" "$input_marker" "${logical_networks[$index]}"
       printf '    iifname "%s" drop comment "%s-host-%s"\n' "${bridge_names[$index]}" "$input_marker" "${logical_networks[$index]}"
     done
     printf '  }\n'
@@ -697,7 +704,7 @@ dump_nft_owned() {
   expected_count=0
   for index in "${!logical_networks[@]}"; do
     protocols="$(printf '%s' "${policy_ports[$index]}" | tr ',' '\n' | cut -d: -f1 | sort -u | wc -l | tr -d ' ')"
-    expected_count="$((expected_count + 5 + protocols))"
+    expected_count="$((expected_count + 7 + protocols))"
     if [[ -n "${ipv6_subnets[$index]}" ]]; then
       expected_count="$((expected_count + 2))"
     fi

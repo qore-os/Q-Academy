@@ -222,7 +222,7 @@ test("network discovery is exact and rejects a different Compose project or unsa
   assert.match(script, /len\(v4\) != 1 or len\(v6\) > 1/);
 });
 
-test("destination deny classes precede explicit port allows and end in default drop", () => {
+test("stateful return traffic precedes destination denies and new egress ends in default drop", () => {
   for (const range of [
     "169.254.169.254/32",
     "10.0.0.0/8",
@@ -240,6 +240,43 @@ test("destination deny classes precede explicit port allows and end in default d
   ]) {
     assert.ok(script.includes(`"${range}"`), `missing denied range ${range}`);
   }
+  const iptablesGenerator = script.slice(
+    script.indexOf("append_iptables_rules()"),
+    script.indexOf("generate_iptables_restore()"),
+  );
+  const nftGenerator = script.slice(
+    script.indexOf("generate_nft_ruleset()"),
+    script.indexOf("apply_nft()"),
+  );
+  assert.ok(iptablesGenerator.length > 0);
+  assert.ok(nftGenerator.length > 0);
+  const iptablesReply = "--ctstate ESTABLISHED,RELATED --ctdir REPLY";
+  const iptablesForwardReply = iptablesGenerator.indexOf(iptablesReply);
+  const iptablesSameBridge = iptablesGenerator.indexOf("%s-same-%s");
+  const iptablesDestinationDenies = iptablesGenerator.indexOf("blocked_ranges[@]");
+  const iptablesPortAllows = iptablesGenerator.indexOf("--dport");
+  const iptablesDefaultDrop = iptablesGenerator.indexOf("%s-default-%s -j DROP");
+  const iptablesInputReply = iptablesGenerator.lastIndexOf(iptablesReply);
+  const iptablesHostDrop = iptablesGenerator.indexOf("%s-host-%s -j DROP");
+  assert.equal(iptablesGenerator.match(/--ctstate ESTABLISHED,RELATED --ctdir REPLY/g)?.length, 2);
+  assert.ok(iptablesForwardReply < iptablesSameBridge);
+  assert.ok(iptablesSameBridge < iptablesDestinationDenies);
+  assert.ok(iptablesDestinationDenies < iptablesPortAllows);
+  assert.ok(iptablesPortAllows < iptablesDefaultDrop);
+  assert.ok(iptablesDefaultDrop < iptablesInputReply);
+  assert.ok(iptablesInputReply < iptablesHostDrop);
+
+  const nftInputStart = nftGenerator.indexOf("chain input");
+  const nftForward = nftGenerator.slice(0, nftInputStart);
+  const nftInput = nftGenerator.slice(nftInputStart);
+  const nftReply = "ct direction reply ct state { established, related } accept";
+  assert.equal(nftGenerator.match(/ct direction reply ct state \{ established, related \} accept/g)?.length, 2);
+  assert.ok(nftForward.indexOf(nftReply) < nftForward.indexOf("same-%s"));
+  assert.ok(nftForward.indexOf("same-%s") < nftForward.indexOf("metadata4"));
+  assert.ok(nftForward.indexOf("metadata4") < nftForward.indexOf("allow-tcp"));
+  assert.ok(nftForward.indexOf("allow-tcp") < nftForward.indexOf("default"));
+  assert.ok(nftInput.indexOf(nftReply) < nftInput.indexOf("host-%s"));
+  assert.match(script, /expected_count="\$\(\(expected_count \+ 7 \+ protocols\)\)"/);
   assert.ok(script.indexOf("blocked_ranges") < script.indexOf("--dport"));
   assert.match(script, /forward_marker[\s\S]*default[\s\S]*-j DROP/);
   assert.match(script, /input_marker[\s\S]*host[\s\S]*-j DROP/);

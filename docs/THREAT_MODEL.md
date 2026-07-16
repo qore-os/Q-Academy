@@ -271,7 +271,11 @@ versiegelt Werkzeug, Policy, Netzidentitaet und Kernel-Ruleset in maschinenlesba
 Evidence. Dual-Stack wird nur ueber eine atomare native nftables-Transaktion
 zugelassen. Interne App-, Datenbank-, Job-, Scan- und Observability-Protokolle
 laufen auf anderen beziehungsweise derselben kontrollierten Bridge weiter und
-werden nicht auf zusaetzliche Hostports umgestellt.
+werden nicht auf zusaetzliche Hostports umgestellt. Conntrack-Rueckverkehr in
+Richtung `REPLY` mit State `ESTABLISHED,RELATED` wird vor den Ziel-Denies
+zustandsbehaftet akzeptiert; das erlaubt insbesondere Caddys Antworten an
+oeffentliche Clientports, ohne eine neue ausgehende Verbindung zu privaten oder
+nicht freigegebenen Zielen zu ermoeglichen.
 
 Die versionierte, an `docker.service` gebundene Runtime-Unit erzeugt die beiden
 kontrollierten Netze ohne Containerstart, erzwingt und verifiziert das

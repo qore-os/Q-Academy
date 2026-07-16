@@ -490,8 +490,12 @@ Die eingecheckte Policy ist absichtlich klein:
 Docker-internes DNS an `127.0.0.11` wird im Container-Namespace beantwortet und
 benoetigt keine Freigabe zum Host. Interne App-Protokolle bleiben auf ihren
 jeweiligen Bridges erhalten. Verkehr innerhalb derselben kontrollierten Bridge
-wird vor der Zielklassifizierung zurueck an Docker gegeben. Alle anderen
-Weiterleitungen aus `proxy` und `egress` werden zuerst gegen Cloud-Metadata,
+und Conntrack-Rueckverkehr in Richtung `REPLY` mit State
+`ESTABLISHED,RELATED` werden vor der Zielklassifizierung zurueck an Docker
+beziehungsweise den Host gegeben. Damit bleiben Antworten von Caddy an
+oeffentliche Clientports moeglich, ohne neue ausgehende Verbindungen
+freizuschalten. Alle anderen Weiterleitungen aus `proxy` und `egress` werden
+zuerst gegen Cloud-Metadata,
 Loopback, private, Link-local-, CGNAT-, reservierte, Dokumentations-, Benchmark-,
 Multicast-, IPv4-Mapped-, NAT64-, Teredo-, 6to4- und IPv6-ULA-Bereiche geprueft.
 Erst danach gelten die Portfreigaben; der Abschluss pro Eingangsbridge ist ein
