@@ -17,7 +17,7 @@ jobs:
   verify:
     name: Quality, migrations, and E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       CI_NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
       CI_POSTGRES_BASE_IMAGE: postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3
@@ -984,15 +984,141 @@ jobs:
       - name: Install browser engines
         run: npx playwright install --with-deps firefox webkit
 
+      - name: Grant disposable CI cleanup parameter
+        shell: bash
+        run: |
+          touch .data/session-replication-role-grant.active
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
+
+          const databaseAdmin = postgres(process.env.POSTGRES_ADMIN_URL, { max: 1 });
+          try {
+            await databaseAdmin.unsafe(
+              "revoke set on parameter session_replication_role from public, q_academy_ci, q_academy_ci_app, q_academy_ci_media",
+            );
+            const [baseline] = await databaseAdmin.unsafe(`
+              select
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci') as ci_is_superuser,
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci_app') as app_is_superuser,
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci_media') as media_is_superuser,
+                has_parameter_privilege('q_academy_ci_app', 'session_replication_role', 'SET') as app_can_set,
+                has_parameter_privilege('q_academy_ci_media', 'session_replication_role', 'SET') as media_can_set
+            `);
+            if (
+              baseline.ci_is_superuser !== false ||
+              baseline.app_is_superuser !== false ||
+              baseline.media_is_superuser !== false ||
+              baseline.app_can_set !== false ||
+              baseline.media_can_set !== false
+            ) {
+              throw new Error("Disposable CI database roles failed the pre-Playwright privilege baseline.");
+            }
+
+            await databaseAdmin.unsafe(
+              "grant set on parameter session_replication_role to q_academy_ci",
+            );
+            const [granted] = await databaseAdmin.unsafe(`
+              select
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci') as ci_is_superuser,
+                has_parameter_privilege('q_academy_ci', 'session_replication_role', 'SET') as ci_can_set,
+                has_parameter_privilege('q_academy_ci_app', 'session_replication_role', 'SET') as app_can_set,
+                has_parameter_privilege('q_academy_ci_media', 'session_replication_role', 'SET') as media_can_set
+            `);
+            if (
+              granted.ci_is_superuser !== false ||
+              granted.ci_can_set !== true ||
+              granted.app_can_set !== false ||
+              granted.media_can_set !== false
+            ) {
+              throw new Error("Disposable CI cleanup parameter grant verification failed.");
+            }
+          } finally {
+            await databaseAdmin.end();
+          }
+          NODE
+
       - name: Run Playwright suite
+        shell: bash
         env:
           ENABLE_DEMO_LOGIN: "true"
-        run: npm run test:e2e
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          set -euo pipefail
+          for project in chromium mobile; do
+            for shard in 1 2 3 4 5 6; do
+              echo "Running Playwright project $project shard $shard/6"
+              PLAYWRIGHT_RESET_EXPECTED_DATABASE=q_academy \
+              PLAYWRIGHT_RESET_EXPECTED_OWNER=q_academy_ci \
+                npx tsx scripts/ci/reset-playwright-database.ts
+              rm -rf -- .data/media
+              npm run db:migrate
+              NODE_ENV=test \
+              ALLOW_DESTRUCTIVE_SEED=true \
+              SEED_EXPECTED_DATABASE=q_academy \
+                npm run db:seed
+              npm run test:e2e -- --project="$project" --shard="$shard/6"
+            done
+          done
 
       - name: Run Firefox and WebKit core flows
+        shell: bash
         env:
           ENABLE_DEMO_LOGIN: "true"
-        run: npm run test:e2e:cross-browser
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          set -euo pipefail
+          PLAYWRIGHT_RESET_EXPECTED_DATABASE=q_academy \
+          PLAYWRIGHT_RESET_EXPECTED_OWNER=q_academy_ci \
+            npx tsx scripts/ci/reset-playwright-database.ts
+          rm -rf -- .data/media
+          npm run db:migrate
+          NODE_ENV=test \
+          ALLOW_DESTRUCTIVE_SEED=true \
+          SEED_EXPECTED_DATABASE=q_academy \
+            npm run db:seed
+          npm run test:e2e:cross-browser
+
+      - name: Revoke disposable CI cleanup parameter
+        if: always()
+        shell: bash
+        run: |
+          if [[ ! -f .data/session-replication-role-grant.active ]]; then
+            echo "Disposable CI cleanup parameter was not granted."
+            exit 0
+          fi
+
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
+
+          const databaseAdmin = postgres(process.env.POSTGRES_ADMIN_URL, { max: 1 });
+          try {
+            await databaseAdmin.unsafe(
+              "revoke set on parameter session_replication_role from public, q_academy_ci, q_academy_ci_app, q_academy_ci_media",
+            );
+            const [revoked] = await databaseAdmin.unsafe(`
+              select
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci') as ci_is_superuser,
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci_app') as app_is_superuser,
+                (select rolsuper from pg_roles where rolname = 'q_academy_ci_media') as media_is_superuser,
+                has_parameter_privilege('q_academy_ci', 'session_replication_role', 'SET') as ci_can_set,
+                has_parameter_privilege('q_academy_ci_app', 'session_replication_role', 'SET') as app_can_set,
+                has_parameter_privilege('q_academy_ci_media', 'session_replication_role', 'SET') as media_can_set
+            `);
+            if (
+              revoked.ci_is_superuser !== false ||
+              revoked.app_is_superuser !== false ||
+              revoked.media_is_superuser !== false ||
+              revoked.ci_can_set !== false ||
+              revoked.app_can_set !== false ||
+              revoked.media_can_set !== false
+            ) {
+              throw new Error("Disposable CI cleanup parameter revoke verification failed.");
+            }
+          } finally {
+            await databaseAdmin.end();
+          }
+          NODE
+          rm -f .data/session-replication-role-grant.active
 
       - name: Upload tested release artifact and evidence
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

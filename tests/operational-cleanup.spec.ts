@@ -1,19 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import postgres from "postgres";
+
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
-
-function environmentValue(name: string) {
-  if (process.env[name]) return process.env[name];
-  const line = readFileSync(".env", "utf8")
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
-}
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");

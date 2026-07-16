@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import postgres from "postgres";
+
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
@@ -11,14 +11,6 @@ const demoKey =
   process.env.DEMO_API_KEY ?? "qak_demo_qacademy_2026_local_development";
 const apiAuthorization = { Authorization: `Bearer ${demoKey}` };
 const maintenanceLockKey = "q-academy:media-maintenance:v1";
-
-function environmentValue(name: string) {
-  const source = readFileSync(".env", "utf8");
-  const line = source
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
-}
 
 function workerAuthorization() {
   const secret = environmentValue("CRON_SECRET");

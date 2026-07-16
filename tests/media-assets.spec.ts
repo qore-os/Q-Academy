@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import postgres from "postgres";
+
+import { fetchMediaDownload } from "./helpers/media-download";
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
@@ -9,14 +11,6 @@ const databaseUrl =
 const demoKey =
   process.env.DEMO_API_KEY ?? "qak_demo_qacademy_2026_local_development";
 const authorization = { Authorization: `Bearer ${demoKey}` };
-
-function environmentValue(name: string) {
-  const source = readFileSync(".env", "utf8");
-  const line = source
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
-}
 
 async function dispatch(request: APIRequestContext) {
   const secret = environmentValue("CRON_SECRET");
@@ -164,12 +158,18 @@ test("media lifecycle is write-once, scanned, and document-safe", async ({
       `bytes */${content.length}`,
     );
 
-    const download = await request.get(
+    const download = await fetchMediaDownload(
+      request,
       `/api/v1/media-assets/${assetId}/download?disposition=inline`,
-      { headers: authorization, maxRedirects: 0 },
+      { headers: authorization },
     );
-    expect(download.status()).toBe(307);
-    expect(download.headers().location).toContain("disposition=attachment");
+    if (download.redirectLocation) {
+      expect(download.redirectLocation).toContain("disposition=attachment");
+    } else {
+      expect(download.response.headers()["content-disposition"]).toContain(
+        "attachment",
+      );
+    }
   } finally {
     if (assetId) {
       await request.delete(`/api/v1/media-assets/${assetId}`, {

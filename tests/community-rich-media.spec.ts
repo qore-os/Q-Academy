@@ -16,6 +16,7 @@ import {
 } from "../src/lib/i18n/community-actions";
 import { ensureCommunityAreaFixture } from "./helpers/community-area";
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
+import { fetchMediaDownload } from "./helpers/media-download";
 
 const notificationCopy = getCommunityNotificationCopy("de");
 const publishedPostMessage = resolveCommunityActionMessage("de", {
@@ -111,14 +112,10 @@ async function downloadApiMedia(
   href: string,
   secret: string,
 ) {
-  const redirect = await request.get(href, {
+  const { response } = await fetchMediaDownload(request, href, {
     headers: authorization(secret),
-    maxRedirects: 0,
   });
-  expect(redirect.status()).toBe(307);
-  const location = redirect.headers().location;
-  expect(location).toBeTruthy();
-  return request.get(location, { headers: authorization(secret) });
+  return response;
 }
 
 test("community rich media binds atomically and follows restricted-space rights", async ({

@@ -257,6 +257,56 @@ test("later browser suites reuse Chromium and install only remaining engines", (
   assert.doesNotMatch(installStep, /chromium/);
 });
 
+test("the complete browser gate is reseeded, batched and has a bounded heap", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const verifyStart = workflow.indexOf("  verify:");
+  const nextJobStart = workflow.indexOf("  backup-restore-drill:");
+  const chromiumStart = workflow.indexOf("- name: Run Playwright suite");
+  const crossBrowserStart = workflow.indexOf(
+    "- name: Run Firefox and WebKit core flows",
+  );
+  const revokeStart = workflow.indexOf(
+    "- name: Revoke disposable CI cleanup parameter",
+  );
+
+  assert.ok(
+    verifyStart >= 0 &&
+      nextJobStart > verifyStart &&
+      chromiumStart > verifyStart &&
+      crossBrowserStart > chromiumStart &&
+      revokeStart > crossBrowserStart,
+  );
+  assert.match(
+    workflow.slice(verifyStart, nextJobStart),
+    /^    timeout-minutes: 180$/m,
+  );
+  const chromiumStep = workflow.slice(chromiumStart, crossBrowserStart);
+  const crossBrowserStep = workflow.slice(crossBrowserStart, revokeStart);
+  const chromiumRunStart = chromiumStep.indexOf("        run: |");
+  const crossBrowserRunStart = crossBrowserStep.indexOf("        run: |");
+  assert.ok(chromiumRunStart >= 0 && crossBrowserRunStart >= 0);
+  assert.match(
+    chromiumStep,
+    /NODE_OPTIONS: --max-old-space-size=6144/,
+  );
+  assert.match(
+    chromiumStep,
+    /for project in chromium mobile; do[\s\S]*for shard in 1 2 3 4 5 6; do[\s\S]*PLAYWRIGHT_RESET_EXPECTED_DATABASE=q_academy[\s\S]*PLAYWRIGHT_RESET_EXPECTED_OWNER=q_academy_ci[\s\S]*reset-playwright-database\.ts[\s\S]*rm -rf -- \.data\/media[\s\S]*npm run db:migrate[\s\S]*NODE_ENV=test[\s\S]*ALLOW_DESTRUCTIVE_SEED=true[\s\S]*SEED_EXPECTED_DATABASE=q_academy[\s\S]*npm run db:seed[\s\S]*npm run test:e2e -- --project="\$project" --shard="\$shard\/6"/,
+  );
+  assert.doesNotMatch(
+    chromiumStep.slice(0, chromiumRunStart),
+    /NODE_ENV|ALLOW_DESTRUCTIVE_SEED|SEED_EXPECTED_DATABASE/,
+  );
+  assert.match(
+    crossBrowserStep,
+    /NODE_OPTIONS: --max-old-space-size=6144[\s\S]*PLAYWRIGHT_RESET_EXPECTED_DATABASE=q_academy[\s\S]*PLAYWRIGHT_RESET_EXPECTED_OWNER=q_academy_ci[\s\S]*reset-playwright-database\.ts[\s\S]*rm -rf -- \.data\/media[\s\S]*npm run db:migrate[\s\S]*NODE_ENV=test[\s\S]*ALLOW_DESTRUCTIVE_SEED=true[\s\S]*SEED_EXPECTED_DATABASE=q_academy[\s\S]*npm run db:seed[\s\S]*npm run test:e2e:cross-browser/,
+  );
+  assert.doesNotMatch(
+    crossBrowserStep.slice(0, crossBrowserRunStart),
+    /NODE_ENV|ALLOW_DESTRUCTIVE_SEED|SEED_EXPECTED_DATABASE/,
+  );
+});
+
 test("production builds retain type checks with a bounded four-GiB heap", () => {
   const workflow = source(".github/workflows/ci.yml");
   const dockerfile = source("Dockerfile");

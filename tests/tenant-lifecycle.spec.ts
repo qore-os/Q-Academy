@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 import { hash } from "bcryptjs";
 import postgres from "postgres";
+
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const execFileAsync = promisify(execFile);
 const databaseUrl =
@@ -16,14 +17,6 @@ const demoApiKey =
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function environmentValue(name: string) {
-  if (process.env[name]) return process.env[name];
-  const line = readFileSync(".env", "utf8")
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
 }
 
 test("tenant lifecycle blocks access and keeps revocation across reactivation", async ({

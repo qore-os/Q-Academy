@@ -76,7 +76,13 @@ test("member can use grouped areas, RichText and public-profile navigation", asy
     .locator('a[href^="/academy/community/members/"]')
     .first();
   await expect(profileLink).toBeVisible();
-  await profileLink.click();
+  const profileHref = await profileLink.getAttribute("href");
+  expect(profileHref).toMatch(/^\/academy\/community\/members\/[^/]+$/);
+  if (!profileHref) throw new Error("Community profile link has no href.");
+  await Promise.all([
+    page.waitForURL((url) => url.pathname === profileHref),
+    profileLink.click(),
+  ]);
   await expect(
     page.getByRole("heading", { name: "Profilinformationen" }),
   ).toBeVisible();

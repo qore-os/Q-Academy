@@ -4,10 +4,11 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import { expect, test } from "@playwright/test";
 import postgres from "postgres";
+
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
@@ -21,14 +22,6 @@ type ReceivedRequest = {
   method: string | undefined;
   url: string | undefined;
 };
-
-function environmentValue(name: string) {
-  if (process.env[name]) return process.env[name];
-  const line = readFileSync(".env", "utf8")
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
-}
 
 test("stale webhook deliveries are reclaimed and delivered once", async ({
   request,

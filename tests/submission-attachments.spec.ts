@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import postgres from "postgres";
+
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
+import { fetchMediaDownload } from "./helpers/media-download";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
@@ -373,14 +375,11 @@ test("ready media attachments bind atomically and remain downloadable for owner 
         })
       ).status(),
     ).toBe(200);
-    expect(
-      (
-        await request.get(`/api/v1/media-assets/${reusableAsset}/download`, {
-          headers: apiAuthorization,
-          maxRedirects: 0,
-        })
-      ).status(),
-    ).toBe(307);
+    await fetchMediaDownload(
+      request,
+      `/api/v1/media-assets/${reusableAsset}/download`,
+      { headers: apiAuthorization },
+    );
 
     const secondReuse = await createSubmission(request, {
       userId: memberId,

@@ -810,7 +810,10 @@ test("production isolates media scans from the public app runtime", () => {
     /api\/internal\/jobs\/media\/dispatch\?limit=1/,
   );
   assert.match(playwrightConfiguration, /^  workers: 1,$/m);
-  assert.match(continuousIntegration, /run: npm run test:e2e$/m);
+  assert.match(
+    continuousIntegration,
+    /for project in chromium mobile; do[^]*for shard in 1 2 3 4 5 6; do[^]*reset-playwright-database\.ts[^]*rm -rf -- \.data\/media[^]*npm run db:migrate[^]*npm run db:seed[^]*npm run test:e2e -- --project="\$project" --shard="\$shard\/6"/,
+  );
   assert.match(
     continuousIntegration,
     /--target key-rotation[^]*-t "q-academy-key-rotation:\$Q_ACADEMY_CI_RELEASE_TAG"/,
@@ -831,6 +834,91 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(
     continuousIntegration,
     /-e WEB_PUSH_VAPID_PRIVATE_KEY="\$WEB_PUSH_VAPID_PRIVATE_KEY"/,
+  );
+});
+
+test("CI grants the cleanup-only replication parameter only around Playwright", () => {
+  const browserInstallStart = continuousIntegration.indexOf(
+    "- name: Install browser engines",
+  );
+  const grantStart = continuousIntegration.indexOf(
+    "- name: Grant disposable CI cleanup parameter",
+  );
+  const chromiumStart = continuousIntegration.indexOf(
+    "- name: Run Playwright suite",
+  );
+  const crossBrowserStart = continuousIntegration.indexOf(
+    "- name: Run Firefox and WebKit core flows",
+  );
+  const revokeStart = continuousIntegration.indexOf(
+    "- name: Revoke disposable CI cleanup parameter",
+  );
+  const artifactUploadStart = continuousIntegration.indexOf(
+    "- name: Upload tested release artifact and evidence",
+  );
+
+  assert.ok(
+    browserInstallStart >= 0 &&
+      grantStart > browserInstallStart &&
+      chromiumStart > grantStart &&
+      crossBrowserStart > chromiumStart &&
+      revokeStart > crossBrowserStart &&
+      artifactUploadStart > revokeStart,
+  );
+
+  const grantStep = continuousIntegration.slice(grantStart, chromiumStart);
+  assert.match(
+    grantStep,
+    /touch \.data\/session-replication-role-grant\.active/,
+  );
+  assert.match(
+    grantStep,
+    /revoke set on parameter session_replication_role from public, q_academy_ci, q_academy_ci_app, q_academy_ci_media/,
+  );
+  assert.match(
+    grantStep,
+    /grant set on parameter session_replication_role to q_academy_ci/,
+  );
+  assert.match(
+    grantStep,
+    /has_parameter_privilege\('q_academy_ci', 'session_replication_role', 'SET'\) as ci_can_set/,
+  );
+  assert.match(grantStep, /granted\.ci_is_superuser !== false/);
+  assert.match(grantStep, /granted\.ci_can_set !== true/);
+  assert.match(grantStep, /granted\.app_can_set !== false/);
+  assert.match(grantStep, /granted\.media_can_set !== false/);
+  assert.doesNotMatch(
+    grantStep,
+    /grant set on parameter session_replication_role to (?:public|q_academy_ci_app|q_academy_ci_media)/,
+  );
+
+  const revokeStep = continuousIntegration.slice(
+    revokeStart,
+    artifactUploadStart,
+  );
+  assert.match(revokeStep, /if: always\(\)/);
+  assert.match(
+    revokeStep,
+    /if \[\[ ! -f \.data\/session-replication-role-grant\.active \]\]/,
+  );
+  assert.match(
+    revokeStep,
+    /revoke set on parameter session_replication_role from public, q_academy_ci, q_academy_ci_app, q_academy_ci_media/,
+  );
+  for (const role of ["ci", "app", "media"]) {
+    assert.match(revokeStep, new RegExp(`revoked\\.${role}_is_superuser !== false`));
+    assert.match(revokeStep, new RegExp(`revoked\\.${role}_can_set !== false`));
+  }
+  assert.match(
+    revokeStep,
+    /rm -f \.data\/session-replication-role-grant\.active/,
+  );
+
+  assert.equal(
+    continuousIntegration.match(
+      /grant set on parameter session_replication_role to q_academy_ci\b/g,
+    )?.length,
+    1,
   );
 });
 

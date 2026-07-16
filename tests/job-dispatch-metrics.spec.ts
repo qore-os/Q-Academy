@@ -1,13 +1,9 @@
-import { readFileSync } from "node:fs";
-
 import { expect, test } from "@playwright/test";
 
+import { testEnvironmentValue } from "./helpers/test-environment";
+
 function workerAuthorization() {
-  const source = readFileSync(".env", "utf8");
-  const line = source
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith("CRON_SECRET="));
-  const secret = line?.slice("CRON_SECRET=".length).trim();
+  const secret = testEnvironmentValue("CRON_SECRET");
   if (!secret) throw new Error("CRON_SECRET is required by this test.");
   return { Authorization: `Bearer ${secret}` };
 }

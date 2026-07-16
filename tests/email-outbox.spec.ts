@@ -1,20 +1,13 @@
-import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import postgres from "postgres";
+
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
 const demoKey =
   process.env.DEMO_API_KEY ?? "qak_demo_qacademy_2026_local_development";
-
-function environmentValue(name: string) {
-  if (process.env[name]) return process.env[name];
-  const line = readFileSync(".env", "utf8")
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
-}
 
 test("auth links are encrypted in a durable recoverable outbox", async ({
   request,
@@ -101,9 +94,17 @@ test("auth links are encrypted in a durable recoverable outbox", async ({
     `;
     expect(processed?.attempt).toBe(1);
     expect(processed?.claimed_at).toBeNull();
-    expect(["retrying", "delivered"]).toContain(processed?.status);
-    if (processed?.status === "retrying") {
-      expect(processed.next_retry_at).toBeInstanceOf(Date);
+    const deliveryConfigured =
+      environmentValue("EMAIL_DELIVERY_REQUIRED") === "true" &&
+      Boolean(environmentValue("EMAIL_DELIVERY_WEBHOOK_URL"));
+    if (!deliveryConfigured) {
+      expect(processed?.status).toBe("failed");
+      expect(processed?.next_retry_at).toBeNull();
+    } else {
+      expect(["retrying", "delivered"]).toContain(processed?.status);
+      if (processed?.status === "retrying") {
+        expect(processed.next_retry_at).toBeInstanceOf(Date);
+      }
     }
   } finally {
     if (memberId) {

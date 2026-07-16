@@ -16,6 +16,7 @@ import { getCommunityAdminCopy } from "../src/lib/i18n/community-admin";
 import { getCommunityNotificationCopy } from "../src/lib/i18n/community-actions";
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 import { ensureCommunityAreaFixture } from "./helpers/community-area";
+import { fetchMediaDownload } from "./helpers/media-download";
 
 const adminCopy = getCommunityAdminCopy("de");
 const notificationCopy = getCommunityNotificationCopy("de");
@@ -85,24 +86,19 @@ async function expectApiMediaDownload(
   assetId: string,
   expectedStatus: 200 | 404,
 ) {
-  const initial = await request.get(
-    `/api/v1/media-assets/${assetId}/download`,
-    {
+  const href = `/api/v1/media-assets/${assetId}/download`;
+  if (expectedStatus === 404) {
+    const response = await request.get(href, {
       headers: apiHeaders(secret),
       maxRedirects: 0,
-    },
-  );
-  if (expectedStatus === 404) {
-    expect(initial.status()).toBe(404);
+    });
+    expect(response.status()).toBe(404);
     return;
   }
-  expect(initial.status()).toBe(307);
-  const location = initial.headers().location;
-  expect(location).toBeTruthy();
-  const download = await request.get(location!, {
+
+  await fetchMediaDownload(request, href, {
     headers: apiHeaders(secret),
   });
-  expect(download.status()).toBe(200);
 }
 
 async function openAdminModerationCase(page: Page, caseId: string) {

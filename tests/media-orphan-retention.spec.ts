@@ -1,19 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import postgres from "postgres";
+
+import { testEnvironmentValue as environmentValue } from "./helpers/test-environment";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
-
-function environmentValue(name: string) {
-  const source = readFileSync(".env", "utf8");
-  const line = source
-    .split(/\r?\n/)
-    .find((candidate) => candidate.startsWith(`${name}=`));
-  return line?.slice(name.length + 1).trim() || undefined;
-}
 
 async function dispatch(request: APIRequestContext) {
   const secret = environmentValue("CRON_SECRET");

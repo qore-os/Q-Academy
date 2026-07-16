@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import {
@@ -13,6 +13,8 @@ import postgres from "postgres";
 import { getCommunityAdminCopy } from "../src/lib/i18n/community-admin";
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 import { ensureCommunityAreaFixture } from "./helpers/community-area";
+import { fetchMediaDownload } from "./helpers/media-download";
+import { requiredTestEnvironmentValue } from "./helpers/test-environment";
 
 const adminCopy = getCommunityAdminCopy("de");
 
@@ -20,18 +22,11 @@ const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
 
-function environmentValue(name: string) {
-  if (process.env[name]) return process.env[name]!;
-  return readFile(resolve(process.cwd(), ".env"), "utf8").then((source) => {
-    const line = source
-      .split(/\r?\n/)
-      .find((candidate) => candidate.startsWith(`${name}=`));
-    return line?.slice(name.length + 1).trim() || "";
-  });
-}
-
 async function rateLimitHash(action: string, identifier: string) {
-  return createHmac("sha256", await environmentValue("AUTH_RATE_LIMIT_SECRET"))
+  return createHmac(
+    "sha256",
+    requiredTestEnvironmentValue("AUTH_RATE_LIMIT_SECRET"),
+  )
     .update(["v1", action, identifier, ""].join("\0"))
     .digest("hex");
 }
@@ -48,14 +43,10 @@ async function downloadApiMedia(
   href: string,
   secret: string,
 ) {
-  const redirect = await request.get(href, {
+  const { response } = await fetchMediaDownload(request, href, {
     headers: apiHeaders(secret),
-    maxRedirects: 0,
   });
-  expect(redirect.status()).toBe(307);
-  const location = redirect.headers().location;
-  expect(location).toBeTruthy();
-  return request.get(location, { headers: apiHeaders(secret) });
+  return response;
 }
 
 async function loginAsMember(page: Page) {

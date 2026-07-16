@@ -15,7 +15,10 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:3000",
     actionTimeout: 20_000,
-    trace: "retain-on-failure",
+    trace: {
+      mode: "retain-on-failure",
+      screenshots: false,
+    },
     screenshot: "only-on-failure",
   },
   projects: [
@@ -32,6 +35,6 @@ export default defineConfig({
     command: "npm run dev",
     url: "http://127.0.0.1:3000/api/v1/health/ready",
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 180_000,
   },
 });

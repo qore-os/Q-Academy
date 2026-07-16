@@ -357,6 +357,7 @@ test("event audiences protect member UI, RSVP, ICS and REST access", async ({
     await page.waitForURL("**/academy");
     await completeMemberWelcomeIfVisible(page);
     await page.goto("/academy/events");
+    await completeMemberWelcomeIfVisible(page);
     const memberRow = page.locator(`#event-${targetEvent.id}`);
     await expect(memberRow).toBeVisible();
     await expect(memberRow.getByText("Geplant", { exact: true })).toBeVisible();
@@ -408,6 +409,7 @@ test("event audiences protect member UI, RSVP, ICS and REST access", async ({
     await page.waitForURL("**/academy");
     await completeMemberWelcomeIfVisible(page);
     await page.goto("/academy/events");
+    await completeMemberWelcomeIfVisible(page);
     await expect(page.locator(`#event-${targetEvent.id}`)).toHaveCount(0);
     const deniedCalendar = await page.context().request.get(
       `/academy/events/${targetEvent.id}/calendar`,
