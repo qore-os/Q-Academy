@@ -79,6 +79,11 @@ test("embedded forms propagate locale and render only catalogued system copy", (
   assert.doesNotMatch(form, /Kein passendes Datenprofil/);
   assert.doesNotMatch(form, />\{result\.message\}</);
   assert.doesNotMatch(form, />\{state\.message\}</);
+  assert.match(
+    form,
+    /role="status"[\s\S]{0,250}?aria-live="polite"[\s\S]{0,250}?aria-busy="true"[\s\S]{0,250}?aria-hidden="true"[\s\S]{0,250}?\{copy\.loading\}/,
+  );
+  assert.doesNotMatch(form, /aria-label=\{copy\.loading\}/);
 });
 
 test("OIDC settings use message codes and localized UI feedback", () => {

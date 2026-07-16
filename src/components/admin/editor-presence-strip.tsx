@@ -66,8 +66,12 @@ export function EditorPresenceStrip({
 
   if (!presence.length) return null;
   return (
-    <div className="flex min-w-0 items-center gap-2" aria-label={copy.activeEditors}>
-      <Users className="size-3.5 shrink-0 text-[#66727f]" />
+    <div
+      className="flex min-w-0 items-center gap-2"
+      role="group"
+      aria-label={copy.activeEditors}
+    >
+      <Users aria-hidden="true" className="size-3.5 shrink-0 text-[#66727f]" />
       <div className="flex -space-x-1.5">
         {presence.slice(0, 5).map((editor) => (
           <span

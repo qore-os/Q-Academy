@@ -5,8 +5,11 @@ export async function waitForRenderedUi(page: Page, path: string) {
   await expect(main).toBeVisible();
   await expect(main.locator('[aria-busy="true"]')).toHaveCount(0);
 
-  if (/^\/admin\/courses\/[^/?#]+$/.test(path)) {
-    await expect(page.getByLabel("Aktive Bearbeiter")).toHaveCount(1);
+  if (
+    path === "/admin/api" ||
+    /^\/admin\/courses\/[^/?#]+$/.test(path)
+  ) {
+    await expect(main.getByRole("tab", { selected: true })).toBeEnabled();
   }
 
   await page.evaluate(async () => {

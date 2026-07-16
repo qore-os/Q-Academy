@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 import { waitForRenderedUi } from "./helpers/rendered-ui";
+import { resolveEditableCoursePath } from "./helpers/admin-course";
 
 async function loginAsAdmin(page: Page) {
   await page.goto("/login");
@@ -19,6 +20,7 @@ async function loginAsMember(page: Page) {
 async function assertKeyboardAndReflow(page: Page, path: string) {
   const response = await page.goto(path, { waitUntil: "domcontentloaded" });
   expect(response?.status(), `${path} did not render successfully`).toBeLessThan(400);
+  expect(new URL(page.url()).pathname, `${path} redirected unexpectedly`).toBe(path);
   await waitForRenderedUi(page, path);
 
   const layout = await page.evaluate(() => ({
@@ -125,6 +127,7 @@ test("admin workflows reflow and remain keyboard accessible at 400% zoom", async
     await page.setViewportSize({ width: 360, height: 900 });
   }
   await loginAsAdmin(page);
+  const editableCoursePath = await resolveEditableCoursePath(page);
   for (const path of [
     "/admin",
     "/admin/modules",
@@ -135,7 +138,7 @@ test("admin workflows reflow and remain keyboard accessible at 400% zoom", async
     "/admin/ai",
     "/admin/api",
     "/admin/settings",
-    "/admin/courses/48daf731-79fa-4c76-85c2-b4e6324bfeb4",
+    editableCoursePath,
   ]) {
     await assertKeyboardAndReflow(page, path);
   }

@@ -4,6 +4,7 @@ import postgres from "postgres";
 
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 import { waitForRenderedUi } from "./helpers/rendered-ui";
+import { resolveEditableCoursePath } from "./helpers/admin-course";
 import { getAnnouncementCopy } from "../src/lib/i18n/announcements";
 
 type ImportantViolation = {
@@ -40,6 +41,7 @@ async function importantViolations(page: Page): Promise<ImportantViolation[]> {
 async function assertAccessible(page: Page, path: string) {
   const response = await page.goto(path, { waitUntil: "domcontentloaded" });
   expect(response?.status(), `${path} did not render successfully`).toBeLessThan(400);
+  expect(new URL(page.url()).pathname, `${path} redirected unexpectedly`).toBe(path);
   await waitForRenderedUi(page, path);
   expect(await importantViolations(page), `${path} has serious WCAG violations`).toEqual([]);
 }
@@ -64,6 +66,7 @@ test("critical admin workflows have no serious WCAG A/AA violations", async ({
 }) => {
   test.setTimeout(180_000);
   await login(page, "admin");
+  const editableCoursePath = await resolveEditableCoursePath(page);
   for (const path of [
     "/admin",
     "/admin/modules",
@@ -77,7 +80,7 @@ test("critical admin workflows have no serious WCAG A/AA violations", async ({
     "/admin/api",
     "/admin/privacy",
     "/admin/settings",
-    "/admin/courses/48daf731-79fa-4c76-85c2-b4e6324bfeb4",
+    editableCoursePath,
   ]) {
     await assertAccessible(page, path);
   }

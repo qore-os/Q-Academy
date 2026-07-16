@@ -273,8 +273,17 @@ export function EmbeddedDataForm({
   }
   if (!result || resultKey !== requestKey) {
     return (
-      <div className="grid min-h-32 place-items-center" aria-label={copy.loading}>
-        <LoaderCircle className="size-5 animate-spin text-[#2b9188]" />
+      <div
+        className="grid min-h-32 place-items-center"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <LoaderCircle
+          aria-hidden="true"
+          className="size-5 animate-spin text-[#2b9188]"
+        />
+        <span className="sr-only">{copy.loading}</span>
       </div>
     );
   }

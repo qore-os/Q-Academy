@@ -125,6 +125,19 @@ test("editor presence is location-only, short lived, and collapsed by user", () 
   );
 });
 
+test("editor presence exposes its accessible name on a semantic group", () => {
+  const strip = readFileSync(
+    new URL("../src/components/admin/editor-presence-strip.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    strip,
+    /role="group"\s+aria-label=\{copy\.activeEditors\}/,
+  );
+  assert.match(strip, /<Users aria-hidden="true"/);
+});
+
 test("stock configuration is disabled cleanly and response hosts are exact", () => {
   assert.deepEqual(stockImageProviderConfiguration({}), {
     enabled: false,
