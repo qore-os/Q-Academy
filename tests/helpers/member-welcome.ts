@@ -17,6 +17,27 @@ export async function completeMemberWelcomeIfVisible(page: Page) {
     if (!(await finish.isVisible())) return;
   }
 
-  await finish.click();
+  const currentUrl = new URL(page.url());
+  const [refreshRequest] = await Promise.all([
+    page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return (
+        request.method() === "GET" &&
+        request.headers().rsc === "1" &&
+        url.origin === currentUrl.origin &&
+        url.pathname === currentUrl.pathname &&
+        url.searchParams.has("_rsc")
+      );
+    }, { timeout: 20_000 }),
+    finish.click(),
+  ]);
+
+  const refreshResponse = await refreshRequest.response();
+  expect(refreshResponse, "welcome refresh did not receive a response").not.toBeNull();
+  expect(refreshResponse!.ok(), "welcome refresh failed").toBe(true);
+  expect(
+    await refreshResponse!.finished(),
+    "welcome refresh was interrupted",
+  ).toBeNull();
   await expect(finish).toBeHidden();
 }

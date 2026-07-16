@@ -80,6 +80,7 @@ test("dry-run validates mocked Compose networks and emits parseable evidence wit
     resolve(temporary, "mock-env.sh"),
     `docker() {
   if [[ "\${1:-}" == "info" ]]; then
+    [[ "\${2:-}" == "--format" && "\${3:-}" == "{{.FirewallBackend.Driver}}" ]] || return 1
     printf '%s\\n' "\${MOCK_DOCKER_FIREWALL_BACKEND:-iptables}"
     return 0
   fi
@@ -262,6 +263,8 @@ test("firewall ownership is lock-safe, idempotent, and supports both Docker back
   assert.match(script, /dual-stack requires native nftables/);
   assert.match(script, /nft --check -f/);
   assert.match(script, /delete table inet/);
+  assert.match(script, /docker info --format '\{\{[.]FirewallBackend[.]Driver\}\}'/);
+  assert.doesNotMatch(script, /docker info --format '\{\{[.]FirewallBackend\}\}'/);
   assert.match(script, /Docker reported an unsupported firewall backend/);
   assert.match(script, /does not match Docker's reported firewall backend/);
   assert.doesNotMatch(script, /eval\s|^\s*(?:source|\.)\s+["']?\$?policy_file/m);

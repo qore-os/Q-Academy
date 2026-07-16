@@ -350,7 +350,7 @@ for subnet in "${ipv6_subnets[@]:-}"; do
   [[ -z "$subnet" ]] || has_ipv6=true
 done
 
-docker_firewall_backend="$(docker info --format '{{.FirewallBackend}}' 2>/dev/null || true)"
+docker_firewall_backend="$(docker info --format '{{.FirewallBackend.Driver}}' 2>/dev/null || true)"
 case "$docker_firewall_backend" in
   iptables|nftables) ;;
   ""|"<no value>")
