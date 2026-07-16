@@ -11,7 +11,7 @@ const MAX_DURATION_MILLISECONDS = 7 * 24 * 60 * 60 * 1_000;
 const SAFE_EXECUTABLE = /^[^\u0000-\u001f\u007f]{1,1024}$/;
 const NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,9})?$/;
 
-const FFPROBE_ARGUMENTS = [
+export const WEBM_DURATION_FFPROBE_ARGUMENTS = [
   "-v",
   "error",
   "-max_alloc",
@@ -24,7 +24,7 @@ const FFPROBE_ARGUMENTS = [
   "pipe:0",
   "-show_packets",
   "-show_entries",
-  "packet=stream_index,pts_time,duration_time",
+  "packet=stream_index,pts_time,duration_time:packet_tags=:packet_side_data=",
   "-of",
   "compact=p=0:nk=0",
 ] as const;
@@ -153,7 +153,7 @@ export async function probeWebmDurationStream(
   );
   const child = spawn(
     executable, // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-    [...(options.arguments ?? FFPROBE_ARGUMENTS)],
+    [...(options.arguments ?? WEBM_DURATION_FFPROBE_ARGUMENTS)],
     {
       detached: process.platform !== "win32",
       shell: false,
@@ -203,8 +203,10 @@ export async function probeWebmDurationStream(
       fail(invalidWebm("The WebM file contains too many packet records."));
       return;
     }
+    const parts = line.split("|");
+    if (parts.at(-1) === "") parts.pop();
     const fields = new Map<string, string>();
-    for (const part of line.split("|")) {
+    for (const part of parts) {
       const separator = part.indexOf("=");
       if (separator <= 0) {
         fail(

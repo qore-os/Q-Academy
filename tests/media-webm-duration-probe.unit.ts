@@ -4,6 +4,7 @@ import test from "node:test";
 import { MediaContentInspectionError } from "@/lib/media/content-inspection";
 import {
   probeWebmDurationStream,
+  WEBM_DURATION_FFPROBE_ARGUMENTS,
   WebmDurationProbeError,
 } from "@/lib/media/webm-duration-probe";
 
@@ -68,6 +69,51 @@ test("WebM probe derives duration from packet deltas when durations are unavaila
     nodeProbe(script),
   );
   assert.equal(result.durationMilliseconds, 2_500);
+});
+
+test("WebM probe suppresses nested metadata and accepts one compact section terminator", async () => {
+  assert.ok(
+    WEBM_DURATION_FFPROBE_ARGUMENTS.includes(
+      "packet=stream_index,pts_time,duration_time:packet_tags=:packet_side_data=",
+    ),
+  );
+  const bytes = Buffer.from("webm");
+  const acceptedScript = `
+    process.stdin.resume();
+    process.stdin.on("end", () => {
+      process.stdout.write([
+        "stream_index=1|pts_time=-0.007000|duration_time=0.020000|",
+        "stream_index=0|pts_time=1.207000|duration_time=0.100000|",
+        "stream_index=1|pts_time=1.234000|duration_time=0.020000|",
+        "",
+      ].join("\\n"));
+    });
+  `;
+  const result = await probeWebmDurationStream(
+    { body: split(bytes), expectedSizeBytes: bytes.length },
+    nodeProbe(acceptedScript),
+  );
+  assert.equal(result.durationMilliseconds, 1_314);
+
+  for (const invalidRecord of [
+    "stream_index=1|pts_time=1.234000|duration_time=0.020000|side_data_type=Skip Samples",
+    "stream_index=1|pts_time=1.234000|duration_time=0.020000||",
+    "stream_index=1||pts_time=1.234000|duration_time=0.020000",
+  ]) {
+    const invalidScript = `
+      process.stdin.resume();
+      process.stdin.on("end", () => {
+        process.stdout.write(${JSON.stringify(invalidRecord + "\n")});
+      });
+    `;
+    await assert.rejects(
+      probeWebmDurationStream(
+        { body: split(bytes), expectedSizeBytes: bytes.length },
+        nodeProbe(invalidScript),
+      ),
+      MediaContentInspectionError,
+    );
+  }
 });
 
 test("WebM probe still fails closed without a usable timestamp range", async () => {
