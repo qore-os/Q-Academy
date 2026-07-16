@@ -1182,7 +1182,7 @@ jobs:
     name: Publish immutable release images
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     needs: [verify, backup-restore-drill, sast]
-    runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.Q_ACADEMY_PUBLISH_RUNNER) || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
