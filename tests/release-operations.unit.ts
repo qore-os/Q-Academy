@@ -1355,7 +1355,9 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
 });
 
 test("release publisher uses the tested Docker identity model on a hosted runner", () => {
+  const verifierStart = continuousIntegration.indexOf("  verify:");
   const publisherStart = continuousIntegration.indexOf("  publish-release:");
+  const verifier = continuousIntegration.slice(verifierStart, publisherStart);
   const publisher = continuousIntegration.slice(publisherStart);
   const setupStep = publisher.indexOf(
     "docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877",
@@ -1370,7 +1372,28 @@ test("release publisher uses the tested Docker identity model on a hosted runner
     "- name: Publish the exact tested image IDs",
   );
 
-  assert.ok(publisherStart >= 0);
+  assert.ok(verifierStart >= 0);
+  assert.ok(publisherStart > verifierStart);
+  assert.match(
+    verifier,
+    /- name: Set up tested Docker image store[\s\S]*docker\/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877/,
+  );
+  assert.match(
+    verifier,
+    /- name: Verify tested Docker image store[\s\S]*expected_version="29\.4\.0"/,
+  );
+  assert.match(verifier, /^          version: v29\.4\.0$/m);
+  assert.match(verifier, /^          set-host: true$/m);
+  assert.match(verifier, /"containerd-snapshotter": true/);
+  assert.match(
+    verifier,
+    /docker info --format '\{\{ \.DriverStatus \}\}'/,
+  );
+  assert.match(verifier, /grep -Fq 'io\.containerd\.snapshotter\.v1'/);
+  assert.ok(
+    verifier.indexOf("- name: Set up tested Docker image store") <
+      verifier.indexOf("- name: Build and start production containers"),
+  );
   assert.match(publisher, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(publisher, /^    runs-on: self-hosted$/m);
   assert.match(publisher, /^          version: v29\.4\.0$/m);

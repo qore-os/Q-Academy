@@ -71,6 +71,40 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up tested Docker image store
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
+        with:
+          version: v29.4.0
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      - name: Verify tested Docker image store
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_version="29.4.0"
+          actual_version="$(docker version --format '{{.Server.Version}}')"
+          if [[ "$actual_version" != "$expected_version" ]]; then
+            printf 'Tested Docker version mismatch: expected=%s actual=%s\n' \
+              "$expected_version" "$actual_version" >&2
+            exit 1
+          fi
+
+          driver_status="$(docker info --format '{{ .DriverStatus }}')"
+          if ! grep -Fq 'io.containerd.snapshotter.v1' <<<"$driver_status"; then
+            printf 'Tested Docker is not using the containerd image store: %s\n' \
+              "$driver_status" >&2
+            exit 1
+          fi
+
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
