@@ -16,7 +16,7 @@ permissions:
 jobs:
   verify:
     name: Quality, migrations, and E2E
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.Q_ACADEMY_CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 180
     env:
       CI_NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
@@ -1153,7 +1153,7 @@ jobs:
 
   backup-restore-drill:
     name: Disposable production backup/restore drill
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.Q_ACADEMY_CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 45
     env:
       Q_ACADEMY_DRILL_NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
@@ -1182,7 +1182,7 @@ jobs:
     name: Publish immutable release images
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     needs: [verify, backup-restore-drill, sast]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.Q_ACADEMY_PUBLISH_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
