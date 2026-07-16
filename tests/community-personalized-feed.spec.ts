@@ -204,7 +204,7 @@ test("member follows drive Following mode and admin boosts stay explainable", as
     testInfo.project.name !== "chromium",
     "isolated workflow runs once",
   );
-  test.setTimeout(90_000);
+  test.setTimeout(120_000);
 
   const sql = postgres(databaseUrl, { prepare: false });
   const suffix = `${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -322,6 +322,24 @@ test("member follows drive Following mode and admin boosts stay explainable", as
       'section[aria-labelledby="community-boost-heading"]',
     );
     await expect(manager).toBeVisible();
+    const boostEndpoint = `/api/admin/community/boosts/${encodeURIComponent(authorId)}`;
+    const saveBoostAndWait = async () => {
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (candidate) =>
+            candidate.request().method() === "PUT" &&
+            new URL(candidate.url()).pathname === boostEndpoint,
+          { timeout: 60_000 },
+        ),
+        manager
+          .getByRole("button", { name: adminCopy.common.save, exact: true })
+          .click(),
+      ]);
+      expect(
+        response.ok(),
+        `Reach-Boost save failed with HTTP ${response.status()}.`,
+      ).toBe(true);
+    };
     const startsAt = new Date(Date.now() - 60_000);
     const endsAt = new Date(Date.now() + 7 * 24 * 60 * 60_000);
     await manager
@@ -337,9 +355,7 @@ test("member follows drive Following mode and admin boosts stay explainable", as
     await manager
       .getByLabel(adminCopy.boost.internalReason)
       .fill(initialReason);
-    await manager
-      .getByRole("button", { name: adminCopy.common.save, exact: true })
-      .click();
+    await saveBoostAndWait();
 
     const editBoost = manager.getByRole("button", {
       name: adminCopy.boost.editNamed(authorName),
@@ -358,9 +374,7 @@ test("member follows drive Following mode and admin boosts stay explainable", as
     await manager
       .getByLabel(adminCopy.boost.internalReason)
       .fill(updatedReason);
-    await manager
-      .getByRole("button", { name: adminCopy.common.save, exact: true })
-      .click();
+    await saveBoostAndWait();
     await expect(
       boostRow.getByText(adminCopy.boost.strengths.high, { exact: true }),
     ).toBeVisible();
