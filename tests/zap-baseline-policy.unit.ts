@@ -53,12 +53,13 @@ function documentPolicy(nonceCharacter: string) {
 function cspAlert(
   alertRef: "10055-4" | "10055-6",
 ): TestAlert {
-  const paths = [
-    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=384&q=75",
-    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=750&q=75",
-    "/login",
-    "/login",
-    "/password/forgot",
+  const observations: Array<[method: string, path: string]> = [
+    ["GET", "/%2Fimages%2Fcourses%2Fworkflows.webp&w=384&q=75"],
+    ["GET", "/%2Fimages%2Fcourses%2Fworkflows.webp&w=750&q=75"],
+    ["GET", "/login"],
+    ["GET", "/login"],
+    ["GET", "/password/forgot"],
+    ["POST", "/login"],
   ];
   return {
     pluginid: "10055",
@@ -69,9 +70,9 @@ function cspAlert(
         : "CSP: style-src unsafe-inline",
     riskcode: "2",
     confidence: "3",
-    instances: paths.map((path, index) => ({
+    instances: observations.map(([method, path], index) => ({
       uri: `${origin}${path}`,
-      method: "GET",
+      method,
       param: "content-security-policy",
       attack: "",
       evidence: documentPolicy(String(index + 1)),
@@ -80,7 +81,7 @@ function cspAlert(
           ? "The following directives either allow wildcard sources (or ancestors), are not defined, or are overly broadly defined:\nimg-src, connect-src, frame-src, media-src"
           : "style-src includes unsafe-inline.",
     })),
-    count: String(paths.length),
+    count: String(observations.length),
   };
 }
 
@@ -177,16 +178,23 @@ function assertPolicyRejects(report: unknown) {
 test("accepts the reviewed ZAP 2.17.0 report contract", () => {
   assert.deepEqual(validateZapBaselineReport(reviewedReport()), {
     alertCount: 4,
-    instanceCount: 13,
+    instanceCount: 15,
     informationalAlertCount: 1,
     acceptedExceptionAlertCount: 3,
-    acceptedExceptionInstanceCount: 12,
+    acceptedExceptionInstanceCount: 14,
   });
 });
 
 test("accepts reversed GET and POST login instance order", () => {
   const report = cloneReport();
   report.site[0]!.alerts[0]!.instances.reverse();
+
+  assert.doesNotThrow(() => validateZapBaselineReport(report));
+});
+
+test("accepts reviewed alerts independently of report order", () => {
+  const report = cloneReport();
+  report.site[0]!.alerts.push(report.site[0]!.alerts.shift()!);
 
   assert.doesNotThrow(() => validateZapBaselineReport(report));
 });
@@ -201,14 +209,14 @@ test("accepts the reported CSP route multiset in any instance order", () => {
 
   assert.deepEqual(validateZapBaselineReport(report), {
     alertCount: 4,
-    instanceCount: 13,
+    instanceCount: 15,
     informationalAlertCount: 1,
     acceptedExceptionAlertCount: 3,
-    acceptedExceptionInstanceCount: 12,
+    acceptedExceptionInstanceCount: 14,
   });
 });
 
-test("accepts arbitrary canonical same-origin CSP samples without pinning spider order", () => {
+test("accepts arbitrary canonical same-origin GET CSP samples without pinning spider order", () => {
   const report = cloneReport();
   const paths = [
     "/",
@@ -385,11 +393,27 @@ test("rejects foreign origins, noncanonical raw routes, and methods", async (t) 
     assertPolicyRejects(report);
   });
 
-  await t.test("unreviewed CSP method", () => {
+  await t.test("POST outside the reviewed login form", () => {
     const report = cloneReport();
-    report.site[0]!.alerts[1]!.instances[0]!.method = "POST";
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      alert.instances[0]!.method = "POST";
+    }
     assertPolicyRejects(report);
   });
+
+  for (const method of ["HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    await t.test(`${method} login observation`, () => {
+      const report = cloneReport();
+      for (const alert of report.site[0]!.alerts.filter((candidate) =>
+        candidate.alertRef.startsWith("10055-"),
+      )) {
+        alert.instances.at(-1)!.method = method;
+      }
+      assertPolicyRejects(report);
+    });
+  }
 });
 
 test("rejects different route multisets between the two CSP alerts", () => {
@@ -402,6 +426,39 @@ test("rejects different route multisets between the two CSP alerts", () => {
     "/different",
   ]);
   assertPolicyRejects(report);
+});
+
+test("binds CSP POST observations to the single reviewed Server Action submission", async (t) => {
+  await t.test("POST on another canonical route", () => {
+    const report = cloneReport();
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      alert.instances.at(-1)!.uri = `${origin}/password/forgot`;
+    }
+    assertPolicyRejects(report);
+  });
+
+  await t.test("duplicate POST login observations", () => {
+    const report = cloneReport();
+    for (const alert of report.site[0]!.alerts.filter((candidate) =>
+      candidate.alertRef.startsWith("10055-"),
+    )) {
+      alert.instances.push(structuredClone(alert.instances.at(-1)!));
+      alert.count = String(alert.instances.length);
+    }
+    assertPolicyRejects(report);
+  });
+
+  await t.test("POST reported by only one CSP sub-alert", () => {
+    const report = cloneReport();
+    const alert = report.site[0]!.alerts.find(
+      (candidate) => candidate.alertRef === "10055-6",
+    )!;
+    alert.instances.pop();
+    alert.count = String(alert.instances.length);
+    assertPolicyRejects(report);
+  });
 });
 
 test("rejects an extra login form field or a foreign CSRF path", async (t) => {

@@ -73,8 +73,12 @@ origin, alert references, methods, counts, evidence, and request details for
 every reported exception instance. CSP alert instances are scanner observations,
 not a deterministic crawl inventory: spider order, deduplication, and MIME type
 can change which same-origin examples appear. Every observed raw URI must still
-be an exact canonical route on the disposable origin, and `10055-4` and
-`10055-6` must report the same non-empty method-and-URI multiset. The validator's
+be an exact canonical route on the disposable origin. CSP observations must use
+GET except for at most one exact canonical `POST /login`, emitted when the spider
+submits the independently validated Server Action form. That POST must match the
+single fully validated `10202` POST observation; every other method/path pair or
+duplicate is rejected. Alerts `10055-4` and `10055-6` must report the same
+non-empty method-and-URI multiset. The validator's
 independently pinned CSP literal is not derived from the application's CSP
 builder. It accepts only the exact login Server Action form, CSP `10055-4`, and
 style-only `10055-6`. Script `unsafe-inline`, `unsafe-eval`, a changed CSP, an

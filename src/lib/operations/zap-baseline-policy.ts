@@ -126,18 +126,29 @@ function validateCanonicalCspRoutes(
   instances: JsonRecord[],
   label: string,
 ) {
-  return instances
-    .map((instance, index) => {
-      const instanceLabel = `${label}.instances[${index}]`;
-      const rawUri = string(instance.uri, `${instanceLabel}.uri`);
-      const url = instanceUrl(instance, instanceLabel);
-      if (url.search || url.hash || rawUri !== `${EXPECTED_ORIGIN}${url.pathname}`) {
-        fail(`${instanceLabel}.uri must be an exact canonical raw route.`);
-      }
-      return `${string(instance.method, `${instanceLabel}.method`)} ${rawUri}`;
-    })
-    .sort()
-    .join("\n");
+  const observations = instances.map((instance, index) => {
+    const instanceLabel = `${label}.instances[${index}]`;
+    const rawUri = string(instance.uri, `${instanceLabel}.uri`);
+    const url = instanceUrl(instance, instanceLabel);
+    if (
+      url.search ||
+      url.hash ||
+      rawUri !== `${EXPECTED_ORIGIN}${url.pathname}`
+    ) {
+      fail(`${instanceLabel}.uri must be an exact canonical raw route.`);
+    }
+    const method = string(instance.method, `${instanceLabel}.method`);
+    return { method, signature: `${method} ${rawUri}` };
+  });
+
+  return {
+    all: observations.map(({ signature }) => signature).sort().join("\n"),
+    post: observations
+      .filter(({ method }) => method === "POST")
+      .map(({ signature }) => signature)
+      .sort()
+      .join("\n"),
+  };
 }
 
 function belongsToRuleFamily(
@@ -164,11 +175,18 @@ function validateCspException(
       : "CSP: style-src unsafe-inline",
     `${label}.alert`,
   );
-  const routeSignature = validateCanonicalCspRoutes(instances, label);
+  const routeSignatures = validateCanonicalCspRoutes(instances, label);
 
   for (const [index, instance] of instances.entries()) {
     const instanceLabel = `${label}.instances[${index}]`;
-    exact(instance.method, "GET", `${instanceLabel}.method`);
+    const method = string(instance.method, `${instanceLabel}.method`);
+    const uri = string(instance.uri, `${instanceLabel}.uri`);
+    if (
+      method !== "GET" &&
+      !(method === "POST" && uri === EXPECTED_LOGIN_URI)
+    ) {
+      fail(`${instanceLabel}.method and URI are not a reviewed CSP observation.`);
+    }
     exact(instance.param, "content-security-policy", `${instanceLabel}.param`);
     exact(instance.attack, "", `${instanceLabel}.attack`);
     exact(
@@ -188,7 +206,7 @@ function validateCspException(
     }
   }
 
-  return routeSignature;
+  return routeSignatures;
 }
 
 function validateServerActionCsrfException(
@@ -233,6 +251,8 @@ function validateServerActionCsrfException(
       fail(`${instanceLabel}.otherinfo contains an unreviewed form field.`);
     }
   }
+
+  return `POST ${EXPECTED_LOGIN_URI}`;
 }
 
 export function validateZapBaselineReport(
@@ -258,6 +278,8 @@ export function validateZapBaselineReport(
   let acceptedExceptionAlertCount = 0;
   let acceptedExceptionInstanceCount = 0;
   let cspRouteSignature: string | null = null;
+  let cspPostRouteSignature: string | null = null;
+  let serverActionPostRouteSignature: string | null = null;
   const seenAlertRefs = new Set<string>();
 
   for (const [index, rawAlert] of alerts.entries()) {
@@ -282,22 +304,27 @@ export function validateZapBaselineReport(
       if (alertRef !== "10055-4" && alertRef !== "10055-6") {
         fail(`Unexpected CSP ZAP alert reference: ${alertRef}.`);
       }
-      const routeSignature = validateCspException(
+      const routeSignatures = validateCspException(
         alert,
         alertRef,
         instances,
         label,
       );
       if (cspRouteSignature === null) {
-        cspRouteSignature = routeSignature;
-      } else if (routeSignature !== cspRouteSignature) {
+        cspRouteSignature = routeSignatures.all;
+        cspPostRouteSignature = routeSignatures.post;
+      } else if (routeSignatures.all !== cspRouteSignature) {
         fail("The reviewed CSP alerts must cover the same route multiset.");
       }
     } else if (belongsToRuleFamily(pluginId, alertRef, "10202")) {
       if (alertRef !== "10202") {
         fail(`Unexpected anti-CSRF ZAP alert reference: ${alertRef}.`);
       }
-      validateServerActionCsrfException(alert, instances, label);
+      serverActionPostRouteSignature = validateServerActionCsrfException(
+        alert,
+        instances,
+        label,
+      );
     } else if (riskCode === "0") {
       informationalAlertCount += 1;
       continue;
@@ -312,6 +339,13 @@ export function validateZapBaselineReport(
     if (!seenAlertRefs.has(expectedAlertRef)) {
       fail(`The reviewed ZAP alert reference is missing: ${expectedAlertRef}.`);
     }
+  }
+
+  if (
+    cspPostRouteSignature !== "" &&
+    cspPostRouteSignature !== serverActionPostRouteSignature
+  ) {
+    fail("CSP POST observations must match the reviewed Server Action form.");
   }
 
   return {
