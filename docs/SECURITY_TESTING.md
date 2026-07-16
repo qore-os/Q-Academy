@@ -46,13 +46,18 @@ excludes internal job and OIDC callback routes. The scan has no credentials and
 does not enable the Ajax spider, alpha rules, API scan, full scan, or active
 scanner.
 
-The packaged ZAP scan normally stops each passive rule after ten alerts. The
-reviewed `zap-baseline-hooks.py` hook runs after that built-in tuning, sets the
-per-rule limit to unlimited, and reads the setting back before crawling starts.
-This prevents a noisy CSP rule from silently truncating coverage of later
-responses. A rejected or ineffective hook fails the scanner operationally. The
-runner also fails if `zap.out` is missing or reports that any passive rule was
-disabled, and preserves that independent coverage check as release evidence.
+ZAP has three independent alert caps. The packaged baseline normally stops each
+passive rule after ten alerts, ZAP 2.17 keeps only five examples for a systemic
+alert, and reports normally expose at most twenty instances. The runner disables
+the systemic and report caps at startup with the pinned ZAP 2.17 configuration.
+The reviewed `zap-baseline-hooks.py` hook then disables the packaged passive-rule
+cap and uses the supported API to disable the report cap again; both supported
+API values are read back before crawling starts. ZAP 2.17 has no API readback for
+`alert.systemicLimit`, so its exact startup setting is part of the immutable
+runner contract. A rejected or ineffective hook fails the scanner
+operationally. The runner also fails if `zap.out` is missing or reports that any
+passive rule was disabled, and preserves that independent check as release
+evidence.
 
 `deploy/security/zap-baseline.conf` promotes browser-policy, cookie,
 information-disclosure, mixed-content, vulnerable-library, and application-error
@@ -64,19 +69,31 @@ ZAP can configure only a whole rule family, while CSP rule `10055` contains
 separate sub-alerts. Rules `10055` and `10202` are therefore marked `INFO` only
 at the scanner layer and passed to
 `scripts/ci/validate-zap-baseline.ts`. That validator pins the exact ZAP version,
-origin, alert references, the complete uncapped route multiset, methods, counts,
-evidence, and request details. Both CSP alerts must contain exactly two login
-instances plus password recovery, robots, and sitemap coverage. Historical
-root-page and Next-image profiles observed while ZAP still truncated the rule are
-intentionally rejected. Raw URIs are compared for both CSP and login instances,
-so arbitrary paths, normalization tricks, crawler variants, and mixed profiles
-fail. Its independently pinned CSP
-literal is not derived from the application's CSP builder. It accepts only the
-exact login Server Action form, CSP `10055-4`, and style-only `10055-6`. Script
-`unsafe-inline`, `unsafe-eval`, a changed CSP, an extra form field, an unknown
-sub-alert, malformed JSON, or a second target remains a hard failure. Exit codes
-from the scanner, coverage check, validator, and their evidence writers are
-preserved separately; none can mask another.
+origin, alert references, methods, counts, evidence, and request details for
+every reported exception instance. CSP alert instances are scanner observations,
+not a deterministic crawl inventory: spider order, deduplication, and MIME type
+can change which same-origin examples appear. Every observed raw URI must still
+be an exact canonical route on the disposable origin, and `10055-4` and
+`10055-6` must report the same non-empty method-and-URI multiset. The validator's
+independently pinned CSP literal is not derived from the application's CSP
+builder. It accepts only the exact login Server Action form, CSP `10055-4`, and
+style-only `10055-6`. Script `unsafe-inline`, `unsafe-eval`, a changed CSP, an
+extra form field, an unknown sub-alert, malformed JSON, or a second target
+remains a hard failure.
+
+Route coverage is a separate fail-closed contract. After the scan,
+`scripts/ci/validate-zap-route-contract.ts` connects directly to loopback with
+the exact disposable Host header and deterministically requests `/login`,
+`/password/forgot`, `/robots.txt`, and `/sitemap.xml`. It requires status 200,
+the exact production security headers and normalized document CSP, no redirect,
+cookie, or framework disclosure, and binds each HTML nonce to its response body.
+Robots must be `text/plain` with a site-wide disallow rule; the sitemap must be
+`application/xml` with the exact empty URL set. These resource MIME types are
+therefore not expected to appear as HTML-CSP alerts. The bounded
+`route-contract.json` evidence contains only status, selected metadata, sizes,
+hashes, and issue codes, never response bodies or nonce values. Exit codes from
+the scanner, passive-cap check, route contract, policy validator, and every
+evidence writer are preserved separately; none can mask another.
 
 The scanner exceptions are narrowly bounded, but the underlying CSP network
 sources are not host-bounded: the browser may load images, media and frames from
@@ -110,8 +127,8 @@ The container runs read-only without Linux capabilities or new privileges, with
 CPU, memory, process, and writable-tmpfs limits. Its only writable bind mount is
 `.artifacts/zap-baseline`. ZAP runs with `-silent`, so the rules bundled into the
 pinned image are not updated over the network during CI. HTML, JSON, Markdown,
-log, exact policy/context/hook snapshots, metadata, and exit-code evidence is
-uploaded with `if: always()`, including failed scans.
+route-contract evidence, log, exact policy/context/hook snapshots, metadata, and
+exit-code evidence are uploaded with `if: always()`, including failed scans.
 
 Run the identical scan locally while the disposable CI production image is
 listening on port 3000 and Docker is available:

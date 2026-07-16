@@ -66,12 +66,20 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
   assert.match(runner, /-n zap-ci\.context/);
   assert.match(runner, /-c zap-baseline\.conf/);
   assert.match(runner, /-T 5/);
-  assert.match(runner, /-z "-silent -dir \/tmp\/\.ZAP"/);
+  assert.match(
+    runner,
+    /-z "-silent -dir \/tmp\/\.ZAP -config alert\.systemicLimit=0 -config alert\.maxInstances=0"/,
+  );
   assert.match(runner, /scan_pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)/);
   assert.match(runner, /coverage_pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)/);
+  assert.match(runner, /route_contract_pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)/);
   assert.match(runner, /policy_pipeline_status=\("\$\{PIPESTATUS\[@\]\}"\)/);
   assert.match(runner, /\[\[ ! -s "\$output_dir\/zap\.out" \]\]/);
   assert.match(runner, /grep -Fq "Disabling passive scan rule"/);
+  assert.match(
+    runner,
+    /"\$tsx_cli" "\$route_contract_validator" "\$route_contract_file"[\s\\]*2>&1 \| tee "\$output_dir\/route-contract-validation\.txt"/,
+  );
   assert.match(
     runner,
     /"\$tsx_cli" "\$policy_validator" "\$report_file"[\s\\]*2>&1 \| tee "\$output_dir\/policy-validation\.txt"/,
@@ -83,6 +91,14 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
   assert.match(
     runner,
     /scan_evidence_status="\$\{scan_pipeline_status\[1\]\}"/,
+  );
+  assert.match(
+    runner,
+    /route_contract_status="\$\{route_contract_pipeline_status\[0\]\}"/,
+  );
+  assert.match(
+    runner,
+    /route_contract_evidence_status="\$\{route_contract_pipeline_status\[1\]\}"/,
   );
   assert.match(
     runner,
@@ -110,6 +126,14 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
   );
   assert.match(
     runner,
+    /printf '%s\\n' "\$route_contract_status" >"\$output_dir\/route-contract-exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
+    /printf '%s\\n' "\$route_contract_evidence_status" >"\$output_dir\/route-contract-evidence-exit-code\.txt"/,
+  );
+  assert.match(
+    runner,
     /printf '%s\\n' "\$policy_status" >"\$output_dir\/policy-exit-code\.txt"/,
   );
   assert.match(
@@ -122,13 +146,20 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
   );
   assert.match(
     runner,
-    /if \(\( scan_status != 0 \)\); then\s+final_status="\$scan_status"\s+elif \(\( scan_evidence_status != 0 \)\); then\s+final_status="\$scan_evidence_status"\s+elif \(\( coverage_status != 0 \)\); then\s+final_status="\$coverage_status"\s+elif \(\( coverage_evidence_status != 0 \)\); then\s+final_status="\$coverage_evidence_status"\s+elif \(\( policy_status != 0 \)\); then\s+final_status="\$policy_status"\s+elif \(\( policy_evidence_status != 0 \)\); then\s+final_status="\$policy_evidence_status"/,
+    /if \(\( scan_status != 0 \)\); then\s+final_status="\$scan_status"\s+elif \(\( scan_evidence_status != 0 \)\); then\s+final_status="\$scan_evidence_status"\s+elif \(\( coverage_status != 0 \)\); then\s+final_status="\$coverage_status"\s+elif \(\( coverage_evidence_status != 0 \)\); then\s+final_status="\$coverage_evidence_status"\s+elif \(\( route_contract_status != 0 \)\); then\s+final_status="\$route_contract_status"\s+elif \(\( route_contract_evidence_status != 0 \)\); then\s+final_status="\$route_contract_evidence_status"\s+elif \(\( policy_status != 0 \)\); then\s+final_status="\$policy_status"\s+elif \(\( policy_evidence_status != 0 \)\); then\s+final_status="\$policy_evidence_status"/,
   );
   assert.match(runner, /exit "\$final_status"/);
 
   const scannerRun = runner.indexOf("docker run --rm");
+  const routeContractRun = runner.indexOf(
+    '"$tsx_cli" "$route_contract_validator" "$route_contract_file"',
+  );
   const policyRun = runner.indexOf('"$tsx_cli" "$policy_validator" "$report_file"');
-  assert.ok(scannerRun >= 0 && policyRun > scannerRun);
+  assert.ok(
+    scannerRun >= 0 &&
+      routeContractRun > scannerRun &&
+      policyRun > routeContractRun,
+  );
 
   assert.doesNotMatch(runner, /^\s*-(?:I|i|a|j)(?:\s|$)/m);
   assert.doesNotMatch(runner, /zap-(?:full|api)-scan\.py/);
@@ -150,6 +181,10 @@ test("ZAP runner is scoped, passive, least-privileged, and fail-closed", () => {
     "coverage-exit-code.txt",
     "coverage-evidence-exit-code.txt",
     "coverage-validation.txt",
+    "route-contract.json",
+    "route-contract-exit-code.txt",
+    "route-contract-evidence-exit-code.txt",
+    "route-contract-validation.txt",
     "policy-exit-code.txt",
     "policy-evidence-exit-code.txt",
     "policy-validation.txt",
@@ -165,8 +200,18 @@ test("ZAP hook removes packaged passive-alert truncation and verifies it", () =>
   assert.match(hook, /def zap_tuned\(zap\):/);
   assert.match(hook, /zap\.pscan\.set_max_alerts_per_rule\(0\)/);
   assert.match(hook, /zap\.pscan\.max_alerts_per_rule/);
+  assert.match(hook, /zap\.core\.set_option_maximum_alert_instances\(0\)/);
+  assert.match(hook, /zap\.core\.option_maximum_alert_instances/);
   assert.match(hook, /raise RuntimeError/);
   assert.doesNotMatch(hook, /set_max_alerts_per_rule\((?:[1-9]\d*)\)/);
+  assert.doesNotMatch(
+    hook,
+    /set_option_maximum_alert_instances\((?:[1-9]\d*)\)/,
+  );
+
+  const runner = source("scripts/ops/run-zap-baseline.sh");
+  assert.match(runner, /-config alert\.systemicLimit=0/);
+  assert.match(runner, /-config alert\.maxInstances=0/);
 });
 
 test("ZAP context is valid XML and cannot crawl outside the disposable origin", () => {

@@ -2,13 +2,6 @@ const EXPECTED_ZAP_VERSION = "2.17.0";
 const EXPECTED_ORIGIN = "http://academy.ci.q-academy.de:3000";
 const EXPECTED_LOGIN_URI = `${EXPECTED_ORIGIN}/login`;
 const NONCE_SOURCE_PATTERN = /'nonce-[A-Za-z0-9_-]{32,128}'/g;
-const EXPECTED_CSP_PATHS = [
-  "/login",
-  "/login",
-  "/password/forgot",
-  "/robots.txt",
-  "/sitemap.xml",
-] as const;
 const EXPECTED_WILDCARD_DETAIL =
   "The following directives either allow wildcard sources (or ancestors), are not defined, or are overly broadly defined:\n" +
   "img-src, connect-src, frame-src, media-src";
@@ -102,8 +95,8 @@ function instanceUrl(instance: JsonRecord, label: string) {
 
 function alertInstances(alert: JsonRecord, label: string) {
   const values = array(alert.instances, `${label}.instances`);
-  if (values.length === 0 || values.length > 20) {
-    fail(`${label}.instances must contain between one and twenty entries.`);
+  if (values.length === 0 || values.length > 500) {
+    fail(`${label}.instances must contain between one and five hundred entries.`);
   }
   return values.map((value, index) => {
     const instance = record(value, `${label}.instances[${index}]`);
@@ -129,31 +122,22 @@ function validateEmptyRequestMetadata(instance: JsonRecord, label: string) {
   exact(instance.attack, "", `${label}.attack`);
 }
 
-function validateCspRouteCoverage(
+function validateCanonicalCspRoutes(
   instances: JsonRecord[],
   label: string,
 ) {
-  const actualUris = instances
+  return instances
     .map((instance, index) => {
       const instanceLabel = `${label}.instances[${index}]`;
       const rawUri = string(instance.uri, `${instanceLabel}.uri`);
       const url = instanceUrl(instance, instanceLabel);
-      if (url.search || url.hash) {
-        fail(`${instanceLabel}.uri must not contain query or fragment data.`);
+      if (url.search || url.hash || rawUri !== `${EXPECTED_ORIGIN}${url.pathname}`) {
+        fail(`${instanceLabel}.uri must be an exact canonical raw route.`);
       }
-      return rawUri;
+      return `${string(instance.method, `${instanceLabel}.method`)} ${rawUri}`;
     })
-    .sort();
-
-  const expectedUris = EXPECTED_CSP_PATHS
-    .map((path) => `${EXPECTED_ORIGIN}${path}`)
-    .sort();
-  if (
-    actualUris.length !== expectedUris.length ||
-    actualUris.some((uri, index) => uri !== expectedUris[index])
-  ) {
-    fail(`${label}.instances does not match the reviewed CSP route profile.`);
-  }
+    .sort()
+    .join("\n");
 }
 
 function belongsToRuleFamily(
@@ -180,7 +164,7 @@ function validateCspException(
       : "CSP: style-src unsafe-inline",
     `${label}.alert`,
   );
-  validateCspRouteCoverage(instances, label);
+  const routeSignature = validateCanonicalCspRoutes(instances, label);
 
   for (const [index, instance] of instances.entries()) {
     const instanceLabel = `${label}.instances[${index}]`;
@@ -203,6 +187,8 @@ function validateCspException(
       fail(`${instanceLabel}.evidence is not the reviewed CSP.`);
     }
   }
+
+  return routeSignature;
 }
 
 function validateServerActionCsrfException(
@@ -271,6 +257,7 @@ export function validateZapBaselineReport(
   let informationalAlertCount = 0;
   let acceptedExceptionAlertCount = 0;
   let acceptedExceptionInstanceCount = 0;
+  let cspRouteSignature: string | null = null;
   const seenAlertRefs = new Set<string>();
 
   for (const [index, rawAlert] of alerts.entries()) {
@@ -295,7 +282,17 @@ export function validateZapBaselineReport(
       if (alertRef !== "10055-4" && alertRef !== "10055-6") {
         fail(`Unexpected CSP ZAP alert reference: ${alertRef}.`);
       }
-      validateCspException(alert, alertRef, instances, label);
+      const routeSignature = validateCspException(
+        alert,
+        alertRef,
+        instances,
+        label,
+      );
+      if (cspRouteSignature === null) {
+        cspRouteSignature = routeSignature;
+      } else if (routeSignature !== cspRouteSignature) {
+        fail("The reviewed CSP alerts must cover the same route multiset.");
+      }
     } else if (belongsToRuleFamily(pluginId, alertRef, "10202")) {
       if (alertRef !== "10202") {
         fail(`Unexpected anti-CSRF ZAP alert reference: ${alertRef}.`);

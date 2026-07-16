@@ -10,6 +10,8 @@ readonly context_file="$repository_root/deploy/security/zap-ci.context"
 readonly hook_file="$repository_root/deploy/security/zap-baseline-hooks.py"
 readonly report_file="$output_dir/zap-report.json"
 readonly policy_validator="$repository_root/scripts/ci/validate-zap-baseline.ts"
+readonly route_contract_validator="$repository_root/scripts/ci/validate-zap-route-contract.ts"
+readonly route_contract_file="$output_dir/route-contract.json"
 readonly tsx_cli="$repository_root/node_modules/.bin/tsx"
 
 if [[ ! "$zap_image" =~ ^zaproxy/zap-stable:2\.17\.0@sha256:[a-f0-9]{64}$ ]]; then
@@ -17,7 +19,12 @@ if [[ ! "$zap_image" =~ ^zaproxy/zap-stable:2\.17\.0@sha256:[a-f0-9]{64}$ ]]; th
   exit 64
 fi
 
-for required_file in "$policy_file" "$context_file" "$hook_file" "$policy_validator"; do
+for required_file in \
+  "$policy_file" \
+  "$context_file" \
+  "$hook_file" \
+  "$policy_validator" \
+  "$route_contract_validator"; do
   if [[ ! -r "$required_file" ]]; then
     echo "Required ZAP input is not readable: $required_file" >&2
     exit 66
@@ -45,6 +52,10 @@ rm -f -- \
   "$output_dir/policy-exit-code.txt" \
   "$output_dir/policy-evidence-exit-code.txt" \
   "$output_dir/policy-validation.txt" \
+  "$output_dir/route-contract-evidence-exit-code.txt" \
+  "$output_dir/route-contract-exit-code.txt" \
+  "$output_dir/route-contract-validation.txt" \
+  "$route_contract_file" \
   "$output_dir/zap-baseline-hooks.py" \
   "$output_dir/zap-baseline.log" \
   "$output_dir/zap-report.html" \
@@ -54,7 +65,7 @@ rm -f -- \
 install -m 0444 "$policy_file" "$output_dir/zap-baseline.conf"
 install -m 0444 "$context_file" "$output_dir/zap-ci.context"
 install -m 0444 "$hook_file" "$output_dir/zap-baseline-hooks.py"
-printf 'image=%s\ntarget=%s\nmode=baseline-passive\n' \
+printf 'image=%s\ntarget=%s\nmode=baseline-passive\npassive-max-alerts-per-rule=0\nsystemic-limit=0\nreport-max-instances=0\n' \
   "$zap_image" "$target_url" >"$output_dir/run-metadata.txt"
 
 set +e
@@ -82,7 +93,7 @@ docker run --rm \
   -m 2 \
   -T 5 \
   -D 5 \
-  -z "-silent -dir /tmp/.ZAP" \
+  -z "-silent -dir /tmp/.ZAP -config alert.systemicLimit=0 -config alert.maxInstances=0" \
   -l WARN \
   -s \
   -r zap-report.html \
@@ -120,6 +131,20 @@ set -e
 printf '%s\n' "$coverage_status" >"$output_dir/coverage-exit-code.txt"
 printf '%s\n' "$coverage_evidence_status" >"$output_dir/coverage-evidence-exit-code.txt"
 
+# Alert examples are not a route-coverage inventory. Probe the four production
+# route sentinels directly on loopback with the exact disposable Host header and
+# preserve a bounded, body-free evidence record independently of the scan.
+set +e
+"$tsx_cli" "$route_contract_validator" "$route_contract_file" \
+  2>&1 | tee "$output_dir/route-contract-validation.txt"
+route_contract_pipeline_status=("${PIPESTATUS[@]}")
+route_contract_status="${route_contract_pipeline_status[0]}"
+route_contract_evidence_status="${route_contract_pipeline_status[1]}"
+set -e
+
+printf '%s\n' "$route_contract_status" >"$output_dir/route-contract-exit-code.txt"
+printf '%s\n' "$route_contract_evidence_status" >"$output_dir/route-contract-evidence-exit-code.txt"
+
 # The ZAP baseline configuration can only classify whole rule families. The
 # report validator restores sub-alert granularity and therefore runs even when
 # the scanner itself fails or cannot produce a report.
@@ -145,6 +170,10 @@ elif (( coverage_status != 0 )); then
   final_status="$coverage_status"
 elif (( coverage_evidence_status != 0 )); then
   final_status="$coverage_evidence_status"
+elif (( route_contract_status != 0 )); then
+  final_status="$route_contract_status"
+elif (( route_contract_evidence_status != 0 )); then
+  final_status="$route_contract_evidence_status"
 elif (( policy_status != 0 )); then
   final_status="$policy_status"
 elif (( policy_evidence_status != 0 )); then

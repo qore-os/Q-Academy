@@ -54,11 +54,11 @@ function cspAlert(
   alertRef: "10055-4" | "10055-6",
 ): TestAlert {
   const paths = [
+    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=384&q=75",
+    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=750&q=75",
     "/login",
     "/login",
     "/password/forgot",
-    "/robots.txt",
-    "/sitemap.xml",
   ];
   return {
     pluginid: "10055",
@@ -191,7 +191,7 @@ test("accepts reversed GET and POST login instance order", () => {
   assert.doesNotThrow(() => validateZapBaselineReport(report));
 });
 
-test("accepts the complete uncapped crawl in any CSP instance order", () => {
+test("accepts the reported CSP route multiset in any instance order", () => {
   const report = cloneReport();
   for (const [index, alert] of report.site[0]!.alerts
     .filter((candidate) => candidate.alertRef.startsWith("10055-"))
@@ -206,6 +206,24 @@ test("accepts the complete uncapped crawl in any CSP instance order", () => {
     acceptedExceptionAlertCount: 3,
     acceptedExceptionInstanceCount: 12,
   });
+});
+
+test("accepts arbitrary canonical same-origin CSP samples without pinning spider order", () => {
+  const report = cloneReport();
+  const paths = [
+    "/",
+    "/admin",
+    "/%2Fimages%2Fcourses%2Fother.webp&w=1920&q=76",
+    "/login",
+    "/robots.txt",
+  ];
+  for (const alert of report.site[0]!.alerts.filter((candidate) =>
+    candidate.alertRef.startsWith("10055-"),
+  )) {
+    setCspPaths(alert, paths);
+  }
+
+  assert.doesNotThrow(() => validateZapBaselineReport(report));
 });
 
 test("rejects an unexpected ZAP version or disposable site identity", async (t) => {
@@ -332,7 +350,7 @@ test("rejects CSP evidence that differs from the central production policy", () 
   assertPolicyRejects(report);
 });
 
-test("rejects foreign origins, unreviewed paths, and methods", async (t) => {
+test("rejects foreign origins, noncanonical raw routes, and methods", async (t) => {
   await t.test("foreign origin", () => {
     const report = cloneReport();
     report.site[0]!.alerts[1]!.instances[0]!.uri =
@@ -340,23 +358,30 @@ test("rejects foreign origins, unreviewed paths, and methods", async (t) => {
     assertPolicyRejects(report);
   });
 
-  await t.test("unreviewed same-origin CSP path", () => {
-    const report = cloneReport();
-    report.site[0]!.alerts[1]!.instances[0]!.uri = `${origin}/admin`;
-    assertPolicyRejects(report);
-  });
-
-  await t.test("raw path normalization cannot enter a reviewed profile", () => {
+  await t.test("raw path normalization alias", () => {
     const report = cloneReport();
     report.site[0]!.alerts[1]!.instances[0]!.uri =
       `${origin}/admin/../`;
     assertPolicyRejects(report);
   });
 
-  await t.test("unreviewed Next image crawler variant", () => {
+  await t.test("host casing alias", () => {
     const report = cloneReport();
     report.site[0]!.alerts[1]!.instances[0]!.uri =
-      `${origin}/%2Fimages%2Fcourses%2Fworkflows.webp&w=750&q=75`;
+      "http://ACADEMY.CI.Q-ACADEMY.DE:3000/login";
+    assertPolicyRejects(report);
+  });
+
+  await t.test("query variant", () => {
+    const report = cloneReport();
+    report.site[0]!.alerts[1]!.instances[0]!.uri =
+      `${origin}/login?next=/`;
+    assertPolicyRejects(report);
+  });
+
+  await t.test("fragment variant", () => {
+    const report = cloneReport();
+    report.site[0]!.alerts[1]!.instances[0]!.uri = `${origin}/login#form`;
     assertPolicyRejects(report);
   });
 
@@ -367,70 +392,16 @@ test("rejects foreign origins, unreviewed paths, and methods", async (t) => {
   });
 });
 
-test("rejects retired, incomplete, or inconsistent CSP route profiles", async (t) => {
-  await t.test("retired truncated root-page profile", () => {
-    const report = cloneReport();
-    for (const alert of report.site[0]!.alerts.filter((candidate) =>
-      candidate.alertRef.startsWith("10055-"),
-    )) {
-      setCspPaths(alert, ["/", "/", "/login", "/robots.txt", "/sitemap.xml"]);
-    }
-    assertPolicyRejects(report);
-  });
-
-  await t.test("retired truncated Next-image profile", () => {
-    const report = cloneReport();
-    for (const alert of report.site[0]!.alerts.filter((candidate) =>
-      candidate.alertRef.startsWith("10055-"),
-    )) {
-      setCspPaths(alert, [
-        "/%2Fimages%2Fcourses%2Fworkflows.webp&w=640&q=75",
-        "/login",
-        "/login",
-        "/robots.txt",
-        "/sitemap.xml",
-      ]);
-    }
-    assertPolicyRejects(report);
-  });
-
-  await t.test("missing required sitemap coverage", () => {
-    const report = cloneReport();
-    for (const alert of report.site[0]!.alerts.filter((candidate) =>
-      candidate.alertRef.startsWith("10055-"),
-    )) {
-      setCspPaths(alert, ["/", "/", "/login", "/login", "/robots.txt"]);
-    }
-    assertPolicyRejects(report);
-  });
-
-  await t.test("unreviewed login duplicate count", () => {
-    const report = cloneReport();
-    for (const alert of report.site[0]!.alerts.filter((candidate) =>
-      candidate.alertRef.startsWith("10055-"),
-    )) {
-      setCspPaths(alert, [
-        "/login",
-        "/login",
-        "/login",
-        "/robots.txt",
-        "/sitemap.xml",
-      ]);
-    }
-    assertPolicyRejects(report);
-  });
-
-  await t.test("different route multisets between CSP alerts", () => {
-    const report = cloneReport();
-    setCspPaths(report.site[0]!.alerts[1]!, [
-      "/login",
-      "/login",
-      "/password/forgot",
-      "/password/forgot",
-      "/robots.txt",
-    ]);
-    assertPolicyRejects(report);
-  });
+test("rejects different route multisets between the two CSP alerts", () => {
+  const report = cloneReport();
+  setCspPaths(report.site[0]!.alerts[1]!, [
+    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=384&q=75",
+    "/%2Fimages%2Fcourses%2Fworkflows.webp&w=750&q=75",
+    "/login",
+    "/login",
+    "/different",
+  ]);
+  assertPolicyRejects(report);
 });
 
 test("rejects an extra login form field or a foreign CSRF path", async (t) => {
