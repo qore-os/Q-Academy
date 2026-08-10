@@ -71,6 +71,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Isolate tested Docker CLI state
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_config="$(
+            mktemp -d "$RUNNER_TEMP/q-academy-docker-config.XXXXXX"
+          )"
+          chmod 0700 "$docker_config"
+          printf 'DOCKER_CONFIG=%s\n' "$docker_config" >>"$GITHUB_ENV"
+
       - name: Set up tested Docker image store
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         uses: docker/setup-docker-action@6d7cfa65f60a9dda7b46e5513fa982536f3c9877 # v5.3.0
@@ -273,6 +284,7 @@ jobs:
           MEDIA_S3_ENDPOINT: https://objects.ci.q-academy.de
           MEDIA_S3_REGION: eu-central-1
           MEDIA_S3_BUCKET: q-academy-ci-media
+          MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON: '["https://academy.ci.q-academy.de"]'
           MEDIA_S3_APP_ACCESS_KEY_ID: QACADEMYCIMEDIAAPP
           MEDIA_S3_APP_SECRET_ACCESS_KEY: CiMediaApp-6TyU2iO8pA4sD0fG5hJ7kL1zX3cVbNmQ
           MEDIA_S3_ACCESS_KEY_ID: QACADEMYCIMEDIA
@@ -1207,11 +1219,26 @@ jobs:
     runs-on: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.Q_ACADEMY_CI_RUNNER) || 'ubuntu-latest' }}
     timeout-minutes: 45
     env:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_CONTEXT: default
       Q_ACADEMY_DRILL_NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
       Q_ACADEMY_DRILL_POSTGRES_IMAGE: postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3
     steps:
       - name: Check out repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Verify local system Docker target
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DOCKER_HOST" == "unix:///var/run/docker.sock" ]]
+          [[ "$DOCKER_CONTEXT" == "default" ]]
+          [[ -S /var/run/docker.sock ]]
+          context_host="$(
+            docker context inspect default --format '{{.Endpoints.docker.Host}}'
+          )"
+          [[ "$context_host" == "$DOCKER_HOST" ]]
+          docker version --format '{{.Server.Version}}' >/dev/null
 
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6

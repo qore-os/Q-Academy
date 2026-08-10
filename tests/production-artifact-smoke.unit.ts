@@ -355,6 +355,30 @@ test("production builds retain type checks with a bounded four-GiB heap", () => 
   assert.doesNotMatch(nextConfig, /ignoreBuildErrors/);
 });
 
+test("production Compose validation supplies its browser upload origin fixture", () => {
+  const workflow = source(".github/workflows/ci.yml");
+  const composeStart = workflow.indexOf(
+    "- name: Validate production Compose configuration",
+  );
+  const prometheusStart = workflow.indexOf(
+    "- name: Validate Prometheus configuration and alert rules",
+  );
+  assert.ok(composeStart >= 0 && prometheusStart > composeStart);
+
+  const composeStep = workflow.slice(composeStart, prometheusStart);
+  const domain = composeStep.match(/^\s+APP_DOMAIN:\s+(\S+)\s*$/m)?.[1];
+  const encodedOrigins = composeStep.match(
+    /^\s+MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON:\s+'([^']+)'\s*$/m,
+  )?.[1];
+  assert.ok(domain);
+  assert.ok(encodedOrigins);
+  assert.deepEqual(JSON.parse(encodedOrigins), [`https://${domain}`]);
+  assert.match(
+    composeStep,
+    /run: docker compose -f compose\.production\.yml config --quiet/,
+  );
+});
+
 test("next start runner packages local next.config dependencies", () => {
   const dockerfile = source("Dockerfile");
   const nextConfig = source("next.config.ts");

@@ -155,7 +155,16 @@ USER 1001:1001
 
 FROM base AS dependencies
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,id=q-academy-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci \
+      --no-audit \
+      --no-fund \
+      --prefer-offline \
+      --fetch-retries=5 \
+      --fetch-retry-factor=2 \
+      --fetch-retry-mintimeout=10000 \
+      --fetch-retry-maxtimeout=60000 \
+      --maxsockets=5
 
 FROM dependencies AS release-verifier
 COPY --chown=nextjs:nodejs scripts/secret-scan.ts ./scripts/
@@ -175,8 +184,16 @@ RUN test -n "$NEXT_PUBLIC_APP_URL" \
 
 FROM base AS production-dependencies
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev \
-    && npm cache clean --force
+RUN --mount=type=cache,id=q-academy-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci --omit=dev \
+      --no-audit \
+      --no-fund \
+      --prefer-offline \
+      --fetch-retries=5 \
+      --fetch-retry-factor=2 \
+      --fetch-retry-mintimeout=10000 \
+      --fetch-retry-maxtimeout=60000 \
+      --maxsockets=5
 
 FROM runtime-base AS migrator
 ENV NODE_ENV=production
