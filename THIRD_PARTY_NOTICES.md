@@ -4,7 +4,7 @@ This checked inventory lists production npm packages resolved by `package-lock.j
 The exact container contents are additionally recorded in the release CycloneDX SBOMs.
 Package distributions in the release image contain their authoritative license texts.
 
-Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d4af`
+Lockfile SHA-256: `623714baa6d3cea0f8dd830597a6010bd5c34ee056bcb693840deb594ef7e3fb`
 
 | Package | Version | Declared license |
 | --- | --- | --- |
@@ -71,30 +71,32 @@ Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d
 | [@floating-ui/react-dom](https://www.npmjs.com/package/%40floating-ui%2Freact-dom) | 2.1.9 | MIT |
 | [@floating-ui/utils](https://www.npmjs.com/package/%40floating-ui%2Futils) | 0.2.12 | MIT |
 | [@img/colour](https://www.npmjs.com/package/%40img%2Fcolour) | 1.1.0 | MIT |
-| [@img/sharp-darwin-arm64](https://www.npmjs.com/package/%40img%2Fsharp-darwin-arm64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-darwin-x64](https://www.npmjs.com/package/%40img%2Fsharp-darwin-x64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-libvips-darwin-arm64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-darwin-arm64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-darwin-x64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-darwin-x64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linux-arm](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-arm) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linux-arm64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-arm64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linux-ppc64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-ppc64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linux-riscv64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-riscv64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linux-s390x](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-s390x) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linux-x64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-x64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linuxmusl-arm64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linuxmusl-arm64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-libvips-linuxmusl-x64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linuxmusl-x64) | 1.2.4 | LGPL-3.0-or-later |
-| [@img/sharp-linux-arm](https://www.npmjs.com/package/%40img%2Fsharp-linux-arm) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linux-arm64](https://www.npmjs.com/package/%40img%2Fsharp-linux-arm64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linux-ppc64](https://www.npmjs.com/package/%40img%2Fsharp-linux-ppc64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linux-riscv64](https://www.npmjs.com/package/%40img%2Fsharp-linux-riscv64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linux-s390x](https://www.npmjs.com/package/%40img%2Fsharp-linux-s390x) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linux-x64](https://www.npmjs.com/package/%40img%2Fsharp-linux-x64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linuxmusl-arm64](https://www.npmjs.com/package/%40img%2Fsharp-linuxmusl-arm64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-linuxmusl-x64](https://www.npmjs.com/package/%40img%2Fsharp-linuxmusl-x64) | 0.34.5 | Apache-2.0 |
-| [@img/sharp-wasm32](https://www.npmjs.com/package/%40img%2Fsharp-wasm32) | 0.34.5 | Apache-2.0 AND LGPL-3.0-or-later AND MIT |
-| [@img/sharp-win32-arm64](https://www.npmjs.com/package/%40img%2Fsharp-win32-arm64) | 0.34.5 | Apache-2.0 AND LGPL-3.0-or-later |
-| [@img/sharp-win32-ia32](https://www.npmjs.com/package/%40img%2Fsharp-win32-ia32) | 0.34.5 | Apache-2.0 AND LGPL-3.0-or-later |
-| [@img/sharp-win32-x64](https://www.npmjs.com/package/%40img%2Fsharp-win32-x64) | 0.34.5 | Apache-2.0 AND LGPL-3.0-or-later |
+| [@img/sharp-darwin-arm64](https://www.npmjs.com/package/%40img%2Fsharp-darwin-arm64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-darwin-x64](https://www.npmjs.com/package/%40img%2Fsharp-darwin-x64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-freebsd-wasm32](https://www.npmjs.com/package/%40img%2Fsharp-freebsd-wasm32) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-libvips-darwin-arm64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-darwin-arm64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-darwin-x64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-darwin-x64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linux-arm](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-arm) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linux-arm64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-arm64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linux-ppc64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-ppc64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linux-riscv64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-riscv64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linux-s390x](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-s390x) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linux-x64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linux-x64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linuxmusl-arm64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linuxmusl-arm64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-libvips-linuxmusl-x64](https://www.npmjs.com/package/%40img%2Fsharp-libvips-linuxmusl-x64) | 1.3.2 | LGPL-3.0-or-later |
+| [@img/sharp-linux-arm](https://www.npmjs.com/package/%40img%2Fsharp-linux-arm) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linux-arm64](https://www.npmjs.com/package/%40img%2Fsharp-linux-arm64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linux-ppc64](https://www.npmjs.com/package/%40img%2Fsharp-linux-ppc64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linux-riscv64](https://www.npmjs.com/package/%40img%2Fsharp-linux-riscv64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linux-s390x](https://www.npmjs.com/package/%40img%2Fsharp-linux-s390x) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linux-x64](https://www.npmjs.com/package/%40img%2Fsharp-linux-x64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linuxmusl-arm64](https://www.npmjs.com/package/%40img%2Fsharp-linuxmusl-arm64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-linuxmusl-x64](https://www.npmjs.com/package/%40img%2Fsharp-linuxmusl-x64) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-wasm32](https://www.npmjs.com/package/%40img%2Fsharp-wasm32) | 0.35.3 | Apache-2.0 AND LGPL-3.0-or-later AND MIT |
+| [@img/sharp-webcontainers-wasm32](https://www.npmjs.com/package/%40img%2Fsharp-webcontainers-wasm32) | 0.35.3 | Apache-2.0 |
+| [@img/sharp-win32-arm64](https://www.npmjs.com/package/%40img%2Fsharp-win32-arm64) | 0.35.3 | Apache-2.0 AND LGPL-3.0-or-later |
+| [@img/sharp-win32-ia32](https://www.npmjs.com/package/%40img%2Fsharp-win32-ia32) | 0.35.3 | Apache-2.0 AND LGPL-3.0-or-later |
+| [@img/sharp-win32-x64](https://www.npmjs.com/package/%40img%2Fsharp-win32-x64) | 0.35.3 | Apache-2.0 AND LGPL-3.0-or-later |
 | [@lexical/a11y](https://www.npmjs.com/package/%40lexical%2Fa11y) | 0.47.0 | MIT |
 | [@lexical/clipboard](https://www.npmjs.com/package/%40lexical%2Fclipboard) | 0.47.0 | MIT |
 | [@lexical/code-core](https://www.npmjs.com/package/%40lexical%2Fcode-core) | 0.47.0 | MIT |
@@ -118,27 +120,27 @@ Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d
 | [@lexical/text](https://www.npmjs.com/package/%40lexical%2Ftext) | 0.47.0 | MIT |
 | [@lexical/utils](https://www.npmjs.com/package/%40lexical%2Futils) | 0.47.0 | MIT |
 | [@lexical/yjs](https://www.npmjs.com/package/%40lexical%2Fyjs) | 0.47.0 | MIT |
-| [@napi-rs/canvas](https://www.npmjs.com/package/%40napi-rs%2Fcanvas) | 0.1.100 | MIT |
-| [@napi-rs/canvas-android-arm64](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-android-arm64) | 0.1.100 | MIT |
-| [@napi-rs/canvas-darwin-arm64](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-arm64) | 0.1.100 | MIT |
-| [@napi-rs/canvas-darwin-x64](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-x64) | 0.1.100 | MIT |
-| [@napi-rs/canvas-linux-arm-gnueabihf](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm-gnueabihf) | 0.1.100 | MIT |
-| [@napi-rs/canvas-linux-arm64-gnu](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm64-gnu) | 0.1.100 | MIT |
-| [@napi-rs/canvas-linux-arm64-musl](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm64-musl) | 0.1.100 | MIT |
-| [@napi-rs/canvas-linux-riscv64-gnu](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-riscv64-gnu) | 0.1.100 | MIT |
-| [@napi-rs/canvas-linux-x64-gnu](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-x64-gnu) | 0.1.100 | MIT |
-| [@napi-rs/canvas-linux-x64-musl](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-x64-musl) | 0.1.100 | MIT |
-| [@napi-rs/canvas-win32-arm64-msvc](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-arm64-msvc) | 0.1.100 | MIT |
-| [@napi-rs/canvas-win32-x64-msvc](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-x64-msvc) | 0.1.100 | MIT |
-| [@next/env](https://www.npmjs.com/package/%40next%2Fenv) | 16.2.10 | MIT |
-| [@next/swc-darwin-arm64](https://www.npmjs.com/package/%40next%2Fswc-darwin-arm64) | 16.2.10 | MIT |
-| [@next/swc-darwin-x64](https://www.npmjs.com/package/%40next%2Fswc-darwin-x64) | 16.2.10 | MIT |
-| [@next/swc-linux-arm64-gnu](https://www.npmjs.com/package/%40next%2Fswc-linux-arm64-gnu) | 16.2.10 | MIT |
-| [@next/swc-linux-arm64-musl](https://www.npmjs.com/package/%40next%2Fswc-linux-arm64-musl) | 16.2.10 | MIT |
-| [@next/swc-linux-x64-gnu](https://www.npmjs.com/package/%40next%2Fswc-linux-x64-gnu) | 16.2.10 | MIT |
-| [@next/swc-linux-x64-musl](https://www.npmjs.com/package/%40next%2Fswc-linux-x64-musl) | 16.2.10 | MIT |
-| [@next/swc-win32-arm64-msvc](https://www.npmjs.com/package/%40next%2Fswc-win32-arm64-msvc) | 16.2.10 | MIT |
-| [@next/swc-win32-x64-msvc](https://www.npmjs.com/package/%40next%2Fswc-win32-x64-msvc) | 16.2.10 | MIT |
+| [@napi-rs/canvas](https://www.npmjs.com/package/%40napi-rs%2Fcanvas) | 1.0.5 | MIT |
+| [@napi-rs/canvas-android-arm64](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-android-arm64) | 1.0.5 | MIT |
+| [@napi-rs/canvas-darwin-arm64](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-arm64) | 1.0.5 | MIT |
+| [@napi-rs/canvas-darwin-x64](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-darwin-x64) | 1.0.5 | MIT |
+| [@napi-rs/canvas-linux-arm-gnueabihf](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm-gnueabihf) | 1.0.5 | MIT |
+| [@napi-rs/canvas-linux-arm64-gnu](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm64-gnu) | 1.0.5 | MIT |
+| [@napi-rs/canvas-linux-arm64-musl](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-arm64-musl) | 1.0.5 | MIT |
+| [@napi-rs/canvas-linux-riscv64-gnu](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-riscv64-gnu) | 1.0.5 | MIT |
+| [@napi-rs/canvas-linux-x64-gnu](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-x64-gnu) | 1.0.5 | MIT |
+| [@napi-rs/canvas-linux-x64-musl](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-linux-x64-musl) | 1.0.5 | MIT |
+| [@napi-rs/canvas-win32-arm64-msvc](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-arm64-msvc) | 1.0.5 | MIT |
+| [@napi-rs/canvas-win32-x64-msvc](https://www.npmjs.com/package/%40napi-rs%2Fcanvas-win32-x64-msvc) | 1.0.5 | MIT |
+| [@next/env](https://www.npmjs.com/package/%40next%2Fenv) | 16.3.0 | MIT |
+| [@next/swc-darwin-arm64](https://www.npmjs.com/package/%40next%2Fswc-darwin-arm64) | 16.3.0 | MIT |
+| [@next/swc-darwin-x64](https://www.npmjs.com/package/%40next%2Fswc-darwin-x64) | 16.3.0 | MIT |
+| [@next/swc-linux-arm64-gnu](https://www.npmjs.com/package/%40next%2Fswc-linux-arm64-gnu) | 16.3.0 | MIT |
+| [@next/swc-linux-arm64-musl](https://www.npmjs.com/package/%40next%2Fswc-linux-arm64-musl) | 16.3.0 | MIT |
+| [@next/swc-linux-x64-gnu](https://www.npmjs.com/package/%40next%2Fswc-linux-x64-gnu) | 16.3.0 | MIT |
+| [@next/swc-linux-x64-musl](https://www.npmjs.com/package/%40next%2Fswc-linux-x64-musl) | 16.3.0 | MIT |
+| [@next/swc-win32-arm64-msvc](https://www.npmjs.com/package/%40next%2Fswc-win32-arm64-msvc) | 16.3.0 | MIT |
+| [@next/swc-win32-x64-msvc](https://www.npmjs.com/package/%40next%2Fswc-win32-x64-msvc) | 16.3.0 | MIT |
 | [@playwright/test](https://www.npmjs.com/package/%40playwright%2Ftest) | 1.61.1 | Apache-2.0 |
 | [@preact/signals-core](https://www.npmjs.com/package/%40preact%2Fsignals-core) | 1.14.4 | MIT |
 | [@reduxjs/toolkit](https://www.npmjs.com/package/%40reduxjs%2Ftoolkit) | 2.12.0 | MIT |
@@ -233,8 +235,8 @@ Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d
 | [mp4box](https://www.npmjs.com/package/mp4box) | 2.4.1 | BSD-3-Clause |
 | [ms](https://www.npmjs.com/package/ms) | 2.1.3 | MIT |
 | [music-metadata](https://www.npmjs.com/package/music-metadata) | 11.13.0 | MIT |
-| [nanoid](https://www.npmjs.com/package/nanoid) | 3.3.15 | MIT |
-| [next](https://www.npmjs.com/package/next) | 16.2.10 | MIT |
+| [nanoid](https://www.npmjs.com/package/nanoid) | 3.3.18 | MIT |
+| [next](https://www.npmjs.com/package/next) | 16.3.0 | MIT |
 | [oauth4webapi](https://www.npmjs.com/package/oauth4webapi) | 3.8.6 | MIT |
 | [openid-client](https://www.npmjs.com/package/openid-client) | 6.8.4 | MIT |
 | [p-limit](https://www.npmjs.com/package/p-limit) | 2.3.0 | MIT |
@@ -243,7 +245,7 @@ Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d
 | [papaparse](https://www.npmjs.com/package/papaparse) | 5.5.4 | MIT |
 | [parse5](https://www.npmjs.com/package/parse5) | 8.0.1 | MIT |
 | [path-exists](https://www.npmjs.com/package/path-exists) | 4.0.0 | MIT |
-| [pdfjs-dist](https://www.npmjs.com/package/pdfjs-dist) | 5.7.284 | Apache-2.0 |
+| [pdfjs-dist](https://www.npmjs.com/package/pdfjs-dist) | 6.2.108 | Apache-2.0 |
 | [pend](https://www.npmjs.com/package/pend) | 1.2.0 | MIT |
 | [pg](https://www.npmjs.com/package/pg) | 8.22.0 | MIT |
 | [pg-connection-string](https://www.npmjs.com/package/pg-connection-string) | 2.14.0 | MIT |
@@ -256,7 +258,7 @@ Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d
 | [playwright](https://www.npmjs.com/package/playwright) | 1.61.1 | Apache-2.0 |
 | [playwright-core](https://www.npmjs.com/package/playwright-core) | 1.61.1 | Apache-2.0 |
 | [pngjs](https://www.npmjs.com/package/pngjs) | 5.0.0 | MIT |
-| [postcss](https://www.npmjs.com/package/postcss) | 8.5.16 | MIT |
+| [postcss](https://www.npmjs.com/package/postcss) | 8.5.23 | MIT |
 | [postgres](https://www.npmjs.com/package/postgres) | 3.4.9 | Unlicense |
 | [postgres-array](https://www.npmjs.com/package/postgres-array) | 2.0.0 | MIT |
 | [postgres-bytea](https://www.npmjs.com/package/postgres-bytea) | 1.0.1 | MIT |
@@ -280,7 +282,7 @@ Lockfile SHA-256: `e705216e4053b9cd675395938f6786faa937d14f43369c77006f36197aa9d
 | [semver](https://www.npmjs.com/package/semver) | 7.8.5 | ISC |
 | [server-only](https://www.npmjs.com/package/server-only) | 0.0.1 | MIT |
 | [set-blocking](https://www.npmjs.com/package/set-blocking) | 2.0.0 | ISC |
-| [sharp](https://www.npmjs.com/package/sharp) | 0.34.5 | Apache-2.0 |
+| [sharp](https://www.npmjs.com/package/sharp) | 0.35.3 | Apache-2.0 |
 | [sonner](https://www.npmjs.com/package/sonner) | 2.0.7 | MIT |
 | [source-map-js](https://www.npmjs.com/package/source-map-js) | 1.2.1 | BSD-3-Clause |
 | [split2](https://www.npmjs.com/package/split2) | 4.2.0 | ISC |

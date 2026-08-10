@@ -303,6 +303,10 @@ test("generated drill environment overrides poisoned host Compose and database v
     values.get("CADDY_TLS_ASK_SECRET"),
     "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   );
+  assert.equal(
+    values.get("MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON"),
+    '["https://drill.invalid"]',
+  );
   values.set("COMPOSE_PROJECT_NAME", projectName);
   values.set("APP_IMAGE_TAG", "git-0000000000000000000000000000000000000000");
   values.set("NODE_IMAGE", `node:22@sha256:${"1".repeat(64)}`);

@@ -176,6 +176,7 @@ CLAMAV_IMAGE=${postgres_image}
 PROMETHEUS_IMAGE=${postgres_image}
 NODE_EXPORTER_IMAGE=${postgres_image}
 APP_DOMAIN=drill.invalid
+MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON=["https://drill.invalid"]
 CADDY_SITE_ADDRESSES=drill.invalid
 ACME_EMAIL=drill@invalid.example
 POSTGRES_DB=${database_name}

@@ -21,7 +21,7 @@ jobs:
     env:
       SEMGREP_IMAGE: semgrep/semgrep:1.169.0-nonroot@sha256:7fe2d3ab4bbb60412c9edb833fd36bb1dec3c955f09b91a4725cf027718ee4b1
       SEMGREP_RULESET_COUNT: "1074"
-      SEMGREP_RULESET_SHA256: 7c6e80adeb6ede2016aebfb4292513d1f7832aad778fc5d395a240bc48452e55
+      SEMGREP_RULESET_SHA256: 0cfcba111781ed0d7f8d4da5bf93e954ac7913066adb1ac554f6e9de38cc7de5
       SEMGREP_VERSION: 1.169.0
     steps:
       - name: Check out repository
