@@ -36,6 +36,8 @@ jobs:
       CI_FFMPEG_VERSION: 7:5.1.9-0+deb12u1
       CI_MESA_VERSION: 22.3.6-1+deb12u2
       Q_ACADEMY_CI_RELEASE_TAG: git-${{ github.sha }}
+      RUNTIME_APP_URL: https://academy.ci.q-academy.de
+      RUNTIME_SMOKE_ORIGIN: https://academy.ci.q-academy.de:3443
       DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@127.0.0.1:54329/q_academy
       POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:54329/postgres
       MIGRATION_TEST_DATABASE: q_academy_ci_migration_test
@@ -248,9 +250,9 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
           DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@ci-postgres.internal:54329/q_academy
-          NEXT_PUBLIC_APP_URL: https://academy.ci.q-academy.de
+          NEXT_PUBLIC_APP_URL: ${{ env.RUNTIME_APP_URL }}
           NEXT_PUBLIC_ENABLE_PWA: "true"
-          API_ALLOWED_ORIGIN: https://academy.ci.q-academy.de
+          API_ALLOWED_ORIGIN: ${{ env.RUNTIME_APP_URL }}
           TRUST_PROXY_HEADERS: "true"
         run: npm run build
 
@@ -318,7 +320,6 @@ jobs:
           RUNTIME_OWNER_DATABASE_URL: postgresql://q_academy_ci:CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV@ci-postgres.internal:54329/q_academy
           RUNTIME_DATABASE_URL: postgresql://q_academy_ci_app:4a3b2c1d0e9f8877665544332211aabbccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
           RUNTIME_MEDIA_DATABASE_URL: postgresql://q_academy_ci_media:8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aabb@ci-postgres.internal:54329/q_academy
-          RUNTIME_APP_URL: https://academy.ci.q-academy.de:3443
           RUNTIME_MAIL_SECRET: CiMail-4ErT0yU6iO2pA8sD3fG5hJ9kL1zXcVb
           RUNTIME_MAIL_INBOUND_SECRET: CiMailInbound-8RwT4yU0iO6pA3sD9fG5hJ1kL7zXcVb
           RUNTIME_MEDIA_CRON_SECRET: 7d6e5f4a3b2c11009988776655443322bbccddeeff00112233445566778899aa
@@ -713,7 +714,7 @@ jobs:
             -e NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
             -e APP_DOMAIN=academy.ci.q-academy.de \
             -e DEFAULT_ORGANIZATION_SLUG=q-academy \
-            -e API_ALLOWED_ORIGIN="$RUNTIME_APP_URL" \
+            -e API_ALLOWED_ORIGIN="$RUNTIME_SMOKE_ORIGIN" \
             -e SESSION_SECRET="$SESSION_SECRET" \
             -e AUTH_RATE_LIMIT_SECRET="$AUTH_RATE_LIMIT_SECRET" \
             -e CADDY_TLS_ASK_SECRET="$CADDY_TLS_ASK_SECRET" \
@@ -746,6 +747,7 @@ jobs:
             -e MEDIA_S3_ENDPOINT=https://objects.ci.q-academy.de \
             -e MEDIA_S3_REGION=eu-central-1 \
             -e MEDIA_S3_BUCKET=q-academy-ci-media \
+            -e MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON="[\"$RUNTIME_APP_URL\"]" \
             -e MEDIA_S3_ACCESS_KEY_ID=QACADEMYCIMEDIA \
             -e MEDIA_S3_SECRET_ACCESS_KEY=CiMedia-5RtY1uI7oP3aS9dF4gH6jK0lZ2xCvBnM \
             -e MEDIA_S3_FORCE_PATH_STYLE=false \
@@ -798,7 +800,7 @@ jobs:
       - name: Smoke-test exact production app image
         shell: bash
         env:
-          PLAYWRIGHT_PRODUCTION_BASE_URL: https://academy.ci.q-academy.de:3443
+          PLAYWRIGHT_PRODUCTION_BASE_URL: ${{ env.RUNTIME_SMOKE_ORIGIN }}
           PLAYWRIGHT_EXPECTED_RELEASE: ${{ env.Q_ACADEMY_CI_RELEASE_TAG }}
           PLAYWRIGHT_ADMIN_EMAIL: admin@q-academy.de
           PLAYWRIGHT_MEMBER_EMAIL: lea@q-academy.de

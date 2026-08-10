@@ -117,7 +117,7 @@ test("CI smoke runs against the exact app image before the media worker replaces
   const smokeStep = workflow.slice(smokeStart, mediaStart);
   assert.match(
     smokeStep,
-    /PLAYWRIGHT_PRODUCTION_BASE_URL: https:\/\/academy\.ci\.q-academy\.de:3443/,
+    /PLAYWRIGHT_PRODUCTION_BASE_URL: \$\{\{ env\.RUNTIME_SMOKE_ORIGIN \}\}/,
   );
   assert.match(
     smokeStep,
@@ -168,7 +168,15 @@ test("CI provides canonical TLS and a non-development seeded API key", () => {
 
   assert.match(
     workflow,
-    /RUNTIME_APP_URL: https:\/\/academy\.ci\.q-academy\.de:3443/,
+    /^      RUNTIME_APP_URL: https:\/\/academy\.ci\.q-academy\.de$/m,
+  );
+  assert.match(
+    workflow,
+    /^      RUNTIME_SMOKE_ORIGIN: https:\/\/academy\.ci\.q-academy\.de:3443$/m,
+  );
+  assert.match(
+    workflow,
+    /^          PLAYWRIGHT_PRODUCTION_BASE_URL: \$\{\{ env\.RUNTIME_SMOKE_ORIGIN \}\}$/m,
   );
   assert.match(workflow, /openssl req -x509 -newkey rsa:2048/);
   assert.match(

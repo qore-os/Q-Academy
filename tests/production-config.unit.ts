@@ -1029,6 +1029,58 @@ test("production isolates media scans from the public app runtime", () => {
   );
 });
 
+test("direct CI app runtime forwards an exact validator-approved browser upload origin", () => {
+  const step = continuousIntegration.match(
+    /- name: Build and start production containers[\s\S]*?\n\s+- name: Run passive OWASP ZAP baseline/,
+  )?.[0];
+  assert.ok(step, "Missing disposable production runtime step.");
+
+  const runtimeAppUrl = continuousIntegration.match(
+    /^      RUNTIME_APP_URL: (https:\/\/\S+)$/m,
+  )?.[1];
+  const runtimeSmokeOrigin = continuousIntegration.match(
+    /^      RUNTIME_SMOKE_ORIGIN: (https:\/\/\S+)$/m,
+  )?.[1];
+  assert.equal(runtimeAppUrl, "https://academy.ci.q-academy.de");
+  assert.equal(runtimeSmokeOrigin, "https://academy.ci.q-academy.de:3443");
+
+  const appRun = step.match(
+    /docker run --detach --name q-academy-ci-runtime[\s\S]*?"q-academy-app:\$Q_ACADEMY_CI_RELEASE_TAG"/,
+  )?.[0];
+  assert.ok(appRun, "Missing direct production app container run.");
+  assert.match(appRun, /-e NEXT_PUBLIC_APP_URL="\$RUNTIME_APP_URL"/);
+  assert.match(
+    appRun,
+    /-e MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON="\[\\"\$RUNTIME_APP_URL\\"\]"/,
+  );
+  assert.match(appRun, /-e API_ALLOWED_ORIGIN="\$RUNTIME_SMOKE_ORIGIN"/);
+  assert.match(
+    continuousIntegration,
+    /^          PLAYWRIGHT_PRODUCTION_BASE_URL: \$\{\{ env\.RUNTIME_SMOKE_ORIGIN \}\}$/m,
+  );
+  assert.match(
+    continuousIntegration,
+    /PRODUCTION_SMOKE_PUBLIC_ORIGIN="\$PLAYWRIGHT_PRODUCTION_BASE_URL"/,
+  );
+
+  const environment = validProductionEnvironment();
+  environment.Q_ACADEMY_RUNTIME_ROLE = "app";
+  environment.NEXT_PUBLIC_APP_URL = runtimeAppUrl;
+  environment.APP_DOMAIN = new URL(runtimeAppUrl).hostname;
+  environment.DEFAULT_ORGANIZATION_SLUG = "q-academy";
+  delete environment.TENANT_BASE_DOMAIN;
+  environment.MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON = JSON.stringify([
+    runtimeAppUrl,
+  ]);
+  environment.API_ALLOWED_ORIGIN = runtimeSmokeOrigin;
+
+  const validated = validateProductionServerEnvironment(environment);
+  assert.ok(validated);
+  assert.equal(validated.publicAppUrl, runtimeAppUrl);
+  assert.equal(validated.apiAllowedOrigin, runtimeSmokeOrigin);
+  assert.deepEqual(validated.browserUploadOrigins, [runtimeAppUrl]);
+});
+
 test("CI grants the cleanup-only replication parameter only around Playwright", () => {
   const browserInstallStart = continuousIntegration.indexOf(
     "- name: Install browser engines",
