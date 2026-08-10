@@ -112,7 +112,79 @@ test("API exposes consistent authentication, problem details and OpenAPI", async
   const openApi = await request.get("/api/v1/openapi");
   expect(openApi.status()).toBe(200);
   const openApiBody = await openApi.json();
-  expect(Object.keys(openApiBody.paths)).toHaveLength(215);
+  expect(Object.keys(openApiBody.paths)).toHaveLength(217);
+  const multipartOperations = [
+    {
+      path: "/media-assets/{id}/multipart",
+      method: "get",
+      operationId: "getMediaAssetMultipartStatus",
+      responseSchema: "MediaMultipartStatus",
+    },
+    {
+      path: "/media-assets/{id}/multipart",
+      method: "post",
+      operationId: "recoverMediaAssetMultipartStatus",
+      responseSchema: "MediaMultipartStatus",
+    },
+    {
+      path: "/media-assets/{id}/multipart",
+      method: "delete",
+      operationId: "abortMediaAssetMultipartUpload",
+      responseSchema: "MediaMultipartAbortResult",
+    },
+    {
+      path: "/media-assets/{id}/multipart/parts",
+      method: "post",
+      operationId: "authorizeMediaAssetMultipartPart",
+      responseSchema: "MediaMultipartPartAuthorization",
+    },
+  ] as const;
+  for (const contract of multipartOperations) {
+    const operation = openApiBody.paths[contract.path][contract.method];
+    expect(operation).toMatchObject({
+      operationId: contract.operationId,
+      security: [{ BearerApiKey: [] }],
+      "x-required-scopes": [],
+      responses: {
+        "200": {
+          content: {
+            "application/json": {
+              schema: {
+                properties: {
+                  data: {
+                    $ref: `#/components/schemas/${contract.responseSchema}`,
+                  },
+                },
+              },
+            },
+          },
+        },
+        "503": { $ref: "#/components/responses/ServiceUnavailable" },
+      },
+    });
+    expect(operation.parameters).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "id",
+          in: "path",
+          required: true,
+          schema: { type: "string", format: "uuid" },
+        }),
+      ]),
+    );
+  }
+  expect(
+    openApiBody.paths["/media-assets/{id}/multipart/parts"].post.requestBody,
+  ).toMatchObject({
+    required: true,
+    content: {
+      "application/json": {
+        schema: {
+          $ref: "#/components/schemas/MediaMultipartPartAuthorizeRequest",
+        },
+      },
+    },
+  });
   expect(openApiBody.paths["/privacy-requests"].get).toMatchObject({
     operationId: "listPrivacyRequests",
     "x-required-scopes": ["privacy:read"],
