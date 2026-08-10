@@ -50,6 +50,13 @@ test("STRATO startup contract executes browser POST and positive, negative, and 
   assert.match(preflight, /headers: \{ Origin: input\.expectedOrigin \}/);
   assert.match(preflight, /browserPostResponse\.status !== 201/);
   assert.match(preflight, /access-control-allow-origin/);
+  assert.match(preflight, /normalizeS3BrowserUploadOrigins/);
+  assert.match(
+    preflight,
+    /for \(const \[index, origin\] of expectedOrigins\.entries\(\)\)/,
+  );
+  assert.match(preflight, /response\.allowedOrigin !== origin/);
+  assert.match(preflight, /browserUploadOriginCount: expectedOrigins\.length/);
   assert.match(
     preflight,
     /Key: browserPostKey,[\s\S]*IfMatch: quotedEtag\(browserPostIdentity\.etag\)/,

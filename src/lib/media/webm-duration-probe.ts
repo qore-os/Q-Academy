@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { MediaContentInspectionError } from "@/lib/media/content-inspection";
 
@@ -69,7 +69,7 @@ function boundedPositiveInteger(
     : fallback;
 }
 
-function terminateProcess(child: ReturnType<typeof spawn>) {
+function terminateProcess(child: ChildProcessWithoutNullStreams) {
   const pid = child.pid;
   if (process.platform !== "win32" && pid) {
     try {
@@ -151,6 +151,14 @@ export async function probeWebmDurationStream(
     MAX_PACKET_RECORDS,
     MAX_PACKET_RECORDS,
   );
+  const childProcess = process.getBuiltinModule("node:child_process");
+  if (!childProcess) {
+    throw new WebmDurationProbeError(
+      "probe_unavailable",
+      "The WebM duration probe process runtime is unavailable.",
+    );
+  }
+  const { spawn } = childProcess;
   const child = spawn(
     executable, // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
     [...(options.arguments ?? WEBM_DURATION_FFPROBE_ARGUMENTS)],

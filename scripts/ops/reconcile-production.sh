@@ -87,12 +87,14 @@ configured_project="$(production_env_value "$env_file" COMPOSE_PROJECT_NAME)" ||
 
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
+verify_caddy_sites_directory "$env_file" || fail "external Caddy sites directory is invalid"
 configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 
 [[ -f "$state_file" && ! -L "$state_file" ]] || fail "release state is missing or unsafe: $state_file"
 [[ "$(stat -c '%u:%g:%a' "$state_file")" == "0:0:600" ]] || fail "release state must be root-owned with mode 0600"
 state_schema="$(production_env_value "$state_file" SCHEMA_VERSION)" || fail "release state schema is invalid"
 [[ "$state_schema" == "$RELEASE_STATE_SCHEMA_VERSION" ]] || fail "release state schema is unsupported"
+validate_media_storage_release_state "$state_file" || fail "release state media storage identity is invalid"
 controller_commit="$(production_env_value "$state_file" CONTROLLER_COMMIT)" || fail "release state CONTROLLER_COMMIT is invalid"
 current_tag="$(production_env_value "$state_file" CURRENT_TAG)" || fail "release state CURRENT_TAG is invalid"
 previous_tag="$(production_env_value "$state_file" PREVIOUS_TAG)" || fail "release state PREVIOUS_TAG is invalid"
@@ -104,6 +106,8 @@ deployed_at="$(production_env_value "$state_file" DEPLOYED_AT)" || fail "release
 
 configured_tag="$(production_env_value "$env_file" APP_IMAGE_TAG)" || fail "APP_IMAGE_TAG is invalid"
 [[ "$configured_tag" == "$current_tag" ]] || fail "release state and production APP_IMAGE_TAG disagree"
+media_storage_release_state_matches "$state_file" "$env_file" ||
+  fail "release state and production media storage identity disagree"
 
 repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "working directory is not a Git repository"
 [[ "$(cd -- "$repository_root" && pwd -P)" == "$(pwd -P)" ]] || fail "reconcile must run from the repository root"

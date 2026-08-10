@@ -94,9 +94,13 @@ test("Compose separates tenant admin, export, erasure, verification and SLO priv
   const admin = composeService(compose, "tenant-admin-ops");
   assert.match(admin, /Q_ACADEMY_OPS_SCOPE: admin/);
   assert.match(admin, /APP_POSTGRES_USER/);
+  assert.match(admin, /MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON/);
   assert.match(admin, /DATA_ENCRYPTION_KEY/);
   assert.match(admin, /networks:\s+- database/);
-  assert.doesNotMatch(admin, /OWNER_POSTGRES|AUDIT_EXPORT|MEDIA_S3|egress/);
+  assert.doesNotMatch(
+    admin,
+    /OWNER_POSTGRES|AUDIT_EXPORT|MEDIA_S3_(?:APP_)?(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN)|\begress\b/,
+  );
 
   const exporter = composeService(compose, "tenant-export-ops");
   assert.match(exporter, /Q_ACADEMY_OPS_SCOPE: export/);

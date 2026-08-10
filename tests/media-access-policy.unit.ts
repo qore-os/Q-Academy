@@ -177,6 +177,10 @@ test("API media keeps scoped tenant reads separate from session course grants", 
     "src/app/api/v1/media-assets/[id]/complete/route.ts",
     "utf8",
   );
+  const multipartService = readFileSync(
+    "src/lib/media/api-multipart-service.ts",
+    "utf8",
+  );
 
   assert.match(scopes, /export function apiMediaReadVisibility\(actor: MediaActor\)/);
   assert.match(scopes, /ne\(mediaAssets\.purpose, "submission"\)/);
@@ -186,5 +190,10 @@ test("API media keeps scoped tenant reads separate from session course grants", 
   assert.match(listRoute, /conditions\.push\(apiMediaReadVisibility\(actor\)\)/);
   assert.match(detailRoute, /apiMediaManageVisibility\(prepared\.actor\)/);
   assert.match(contentRoute, /apiMediaManageVisibility\(actor\)/);
-  assert.match(completeRoute, /apiMediaManageVisibility\(prepared\.actor\)/);
+  assert.match(completeRoute, /completeApiMediaAsset\(context, id\)/);
+  assert.match(
+    multipartService,
+    /const actor = await assertApiMediaManageVisibility\(context, asset\)/,
+  );
+  assert.match(multipartService, /apiMediaManageVisibility\(actor\)/);
 });

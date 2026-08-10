@@ -1215,6 +1215,142 @@ try {
     "pending media duration state",
   );
 
+  const [multipartAbortAssetIdentity] = await testClient<[{ id: string }]>`
+    select gen_random_uuid() as id
+  `;
+  await testClient`
+    insert into media_assets (
+      id, organization_id, purpose, kind, status, storage_driver,
+      storage_key, staging_storage_key, original_file_name, safe_file_name,
+      declared_mime_type, declared_size_bytes, quota_bytes, upload_expires_at,
+      deleted_at
+    ) values (
+      ${multipartAbortAssetIdentity.id}, ${organization.id}, 'submission',
+      'video', 'deleted', 's3',
+      ${`tenants/${organization.id}/assets/${multipartAbortAssetIdentity.id}/ready.mp4`},
+      ${`incoming/tenants/${organization.id}/assets/${multipartAbortAssetIdentity.id}/incoming.mp4`},
+      'multipart-abort.mp4', 'multipart-abort.mp4', 'video/mp4',
+      2000000000, 2000000000, now() + interval '24 hours', now()
+    )
+  `;
+  await expectConstraintViolation(
+    () =>
+      testClient!`
+        update media_assets
+        set quota_bytes = 0,
+            staging_deleted_at = now(),
+            storage_deleted_at = now()
+        where id = ${multipartAbortAssetIdentity.id}
+      `,
+    "multipart quota release without verified abort proof",
+  );
+  await testClient`
+    update media_assets
+    set quota_bytes = 0,
+        staging_deleted_at = now(),
+        storage_deleted_at = now(),
+        multipart_abort_verified_at = now()
+    where id = ${multipartAbortAssetIdentity.id}
+  `;
+  const [releasedMultipartAbortAsset] = await testClient<
+    [{ quotaBytes: number; abortVerifiedAt: Date | null }]
+  >`
+    select quota_bytes::int as "quotaBytes",
+           multipart_abort_verified_at as "abortVerifiedAt"
+    from media_assets
+    where id = ${multipartAbortAssetIdentity.id}
+  `;
+  if (
+    releasedMultipartAbortAsset.quotaBytes !== 0 ||
+    !releasedMultipartAbortAsset.abortVerifiedAt
+  ) {
+    throw new Error("Verified multipart abort did not release reserved quota.");
+  }
+  await expectConstraintViolation(
+    () =>
+      testClient!`
+        update media_assets
+        set multipart_abort_verified_at = null
+        where id = ${multipartAbortAssetIdentity.id}
+      `,
+    "multipart quota release proof removal",
+  );
+  await expectConstraintViolation(
+    () =>
+      testClient!`
+        update media_assets
+        set staging_deleted_at = null
+        where id = ${multipartAbortAssetIdentity.id}
+      `,
+    "multipart abort proof without staging deletion",
+  );
+  await expectConstraintViolation(
+    () =>
+      testClient!`
+        update media_assets
+        set storage_deleted_at = null
+        where id = ${multipartAbortAssetIdentity.id}
+      `,
+    "multipart abort proof without final storage deletion",
+  );
+  const [multipartRecoveryAssetIdentity] = await testClient<[{ id: string }]>`
+    select gen_random_uuid() as id
+  `;
+  await testClient`
+    insert into media_assets (
+      id, organization_id, purpose, kind, status, storage_driver,
+      storage_key, staging_storage_key, original_file_name, safe_file_name,
+      declared_mime_type, declared_size_bytes, quota_bytes, upload_expires_at
+    ) values (
+      ${multipartRecoveryAssetIdentity.id}, ${organization.id}, 'submission',
+      'video', 'pending', 's3',
+      ${`tenants/${organization.id}/assets/${multipartRecoveryAssetIdentity.id}/ready.mp4`},
+      ${`incoming/tenants/${organization.id}/assets/${multipartRecoveryAssetIdentity.id}/incoming.mp4`},
+      'multipart-recovery.mp4', 'multipart-recovery.mp4', 'video/mp4',
+      67108864, 67108864, now() + interval '24 hours'
+    )
+  `;
+  await testClient`
+    insert into media_upload_sessions (
+      asset_id, organization_id, provider_upload_id, part_size_bytes,
+      expected_part_count, expires_at, upload_deadline_at, state
+    ) values (
+      ${multipartRecoveryAssetIdentity.id}, ${organization.id},
+      'migration-recovery-upload', 33554432, 2,
+      now() + interval '24 hours', now() + interval '24 hours', 'uploading'
+    )
+  `;
+  await testClient`
+    update media_upload_sessions
+    set provider_upload_id = null,
+        initialization_token = gen_random_uuid(),
+        state = 'recovering',
+        updated_at = now()
+    where asset_id = ${multipartRecoveryAssetIdentity.id}
+  `;
+  const [recoveringMultipartSession] = await testClient<
+    [{ state: string; providerUploadId: string | null }]
+  >`
+    select state, provider_upload_id as "providerUploadId"
+    from media_upload_sessions
+    where asset_id = ${multipartRecoveryAssetIdentity.id}
+  `;
+  if (
+    recoveringMultipartSession.state !== "recovering" ||
+    recoveringMultipartSession.providerUploadId !== null
+  ) {
+    throw new Error("Multipart recovery claim did not preserve its DB invariant.");
+  }
+  await expectConstraintViolation(
+    () =>
+      testClient!`
+        update media_upload_sessions
+        set state = 'unknown_state', provider_upload_id = 'unexpected'
+        where asset_id = ${multipartRecoveryAssetIdentity.id}
+      `,
+    "multipart upload session allowed states",
+  );
+
   const [communityAuthor] = await testClient<[{ id: string }]>`
     insert into users (
       organization_id, email, password_hash, first_name, last_name

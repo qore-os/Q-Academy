@@ -7,7 +7,6 @@ import {
   parseInternalJobQuery,
 } from "@/lib/internal-job-request";
 import { processMediaMaintenanceQueues } from "@/lib/media/scan-worker";
-import { cleanupMediaProcessingArtifacts } from "@/lib/media/processing-worker";
 import { recordOperationalWorkerSuccess } from "@/lib/operational-heartbeats";
 
 export const dynamic = "force-dynamic";
@@ -16,11 +15,7 @@ export const maxDuration = 540;
 export async function POST(request: Request) {
   const requestId = randomUUID();
   if (!authorizeInternalJobRequest(request)) {
-    return internalJobProblem(
-      requestId,
-      401,
-      "Ungueltiges Worker-Geheimnis.",
-    );
+    return internalJobProblem(requestId, 401, "Ungueltiges Worker-Geheimnis.");
   }
   const query = parseInternalJobQuery(
     request,
@@ -31,14 +26,15 @@ export async function POST(request: Request) {
   }
   const { limit } = query.value;
 
-  const removedProcessingArtifacts =
-    await cleanupMediaProcessingArtifacts(limit);
   const result = await processMediaMaintenanceQueues(limit);
   await recordOperationalWorkerSuccess("media-maintenance");
   return Response.json(
     {
       data: {
         processed:
+          result.cleanedMultipartSessions +
+          result.cancelledProcessingJobs +
+          result.releasedQuotaAssets +
           result.expired +
           result.expiredUnattachedSubmissionAssets +
           result.expiredUnattachedCourseAssets +
@@ -48,9 +44,12 @@ export async function POST(request: Request) {
           result.expiredUnattachedBrandingAssets +
           result.cleaned +
           result.purged +
-          removedProcessingArtifacts,
+          result.removedProcessingArtifacts,
         skipped: result.skipped,
         timedOut: result.timedOut,
+        cleanedMultipartSessions: result.cleanedMultipartSessions,
+        cancelledProcessingJobs: result.cancelledProcessingJobs,
+        releasedQuotaAssets: result.releasedQuotaAssets,
         expiredUploads: result.expired,
         expiredUnattachedSubmissionAssets:
           result.expiredUnattachedSubmissionAssets,
@@ -63,7 +62,7 @@ export async function POST(request: Request) {
         expiredUnattachedBrandingAssets: result.expiredUnattachedBrandingAssets,
         cleanedObjects: result.cleaned,
         purgedTombstones: result.purged,
-        removedProcessingArtifacts,
+        removedProcessingArtifacts: result.removedProcessingArtifacts,
       },
       meta: { requestId, timestamp: new Date().toISOString() },
     },

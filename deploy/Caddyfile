@@ -28,24 +28,80 @@
 		}
 	}
 
-	@internal_jobs path /api/internal/*
-	respond @internal_jobs 404
+	route {
+		@internal_jobs path /api/internal/*
+		respond @internal_jobs 404
 
-	reverse_proxy app:3000 {
-		health_uri /api/v1/health/ready
-		health_interval 15s
-		health_timeout 5s
-		fail_duration 30s
-		flush_interval -1
+		@multipart_status_recovery {
+			method GET POST
+			path_regexp multipart_status_recovery ^/api/v1/media-assets/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}/multipart$
+		}
+		reverse_proxy @multipart_status_recovery app:3000 {
+			fail_duration 30s
+			flush_interval -1
 
-		header_up Host {host}
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-For {remote_host}
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
 
-		transport http {
-			dial_timeout 5s
-			response_header_timeout 60s
-			keepalive 30s
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 5m
+				keepalive 30s
+			}
+		}
+
+		@multipart_complete path_regexp multipart_complete ^/api/(v1/)?media-assets/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}/complete$
+		reverse_proxy @multipart_complete app:3000 {
+			fail_duration 30s
+			flush_interval -1
+
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 15m
+				keepalive 30s
+			}
+		}
+
+		@multipart_delete {
+			method DELETE
+			path_regexp multipart_delete ^/api/(media-assets/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|v1/media-assets/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}/multipart)$
+		}
+		reverse_proxy @multipart_delete app:3000 {
+			fail_duration 30s
+			flush_interval -1
+
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 15m
+				keepalive 30s
+			}
+		}
+
+		reverse_proxy app:3000 {
+			health_uri /api/v1/health/ready
+			health_interval 15s
+			health_timeout 5s
+			fail_duration 30s
+			flush_interval -1
+
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 60s
+				keepalive 30s
+			}
 		}
 	}
 }
@@ -82,3 +138,7 @@ http://127.0.0.1:9080 {
 		respond 404
 	}
 }
+
+# Root-owned co-hosted site definitions live outside the release checkout so
+# deployments cannot silently discard or absorb another application's route.
+import /etc/caddy/sites/*.caddy

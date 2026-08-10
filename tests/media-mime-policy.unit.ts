@@ -114,14 +114,25 @@ test("media upload policy accepts the purpose boundary and rejects one byte over
 });
 
 test("video policy stays inside the ClamAV 1.5 hard scan boundary", () => {
-  assert.equal(
-    MEDIA_SIZE_LIMITS_BY_PURPOSE.course_content.video,
-    MAX_SCANNABLE_MEDIA_BYTES,
-  );
-  assert.equal(
-    MEDIA_SIZE_LIMITS_BY_PURPOSE.submission.video,
-    MAX_SCANNABLE_MEDIA_BYTES,
-  );
+  for (const purpose of [
+    "course_content",
+    "submission",
+    "community",
+    "profile",
+  ] as const) {
+    assert.equal(
+      MEDIA_SIZE_LIMITS_BY_PURPOSE[purpose].video,
+      MAX_SCANNABLE_MEDIA_BYTES,
+    );
+    assert.doesNotThrow(() =>
+      validateMediaUploadPolicy({
+        purpose,
+        declaredMimeType: "video/mp4",
+        originalFileName: `${purpose}.mp4`,
+        sizeBytes: MAX_SCANNABLE_MEDIA_BYTES,
+      }),
+    );
+  }
   assert.throws(
     () =>
       validateMediaUploadPolicy({

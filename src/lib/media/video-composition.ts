@@ -1,7 +1,9 @@
+import { MAX_SCANNABLE_MEDIA_BYTES } from "@/lib/media/storage-configuration";
+
 export const VIDEO_COMPOSITION_VERSION = 1 as const;
 export const MAX_VIDEO_COMPOSITION_AUDIO_TRACKS = 8;
 export const MAX_VIDEO_COMPOSITION_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
-export const MAX_VIDEO_COMPOSITION_SOURCE_BYTES = 1_000_000_000;
+export const MAX_VIDEO_COMPOSITION_SOURCE_BYTES = MAX_SCANNABLE_MEDIA_BYTES;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

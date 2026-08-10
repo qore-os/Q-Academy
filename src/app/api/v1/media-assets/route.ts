@@ -3,12 +3,7 @@ import { and, desc, eq, inArray, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { mediaAssets } from "@/db/schema";
 import { ApiError } from "@/lib/api/errors";
-import {
-  apiOptions,
-  handleApi,
-  handleTransactionalApiCommand,
-  parseJson,
-} from "@/lib/api/handler";
+import { apiOptions, handleApi, parseJson } from "@/lib/api/handler";
 import { paginationMeta, parsePagination } from "@/lib/api/pagination";
 import { mediaAssetCreateSchema } from "@/lib/media/api-schemas";
 import {
@@ -19,11 +14,14 @@ import {
   resolveMediaOwner,
 } from "@/lib/media/api-scopes";
 import {
+  initializeApiMultipartUpload,
+  reserveApiMediaUploadIntent,
+} from "@/lib/media/api-multipart-service";
+import {
   mediaAssetIdentity,
   consumeMediaUploadIntentRateLimit,
   publicMediaAsset,
   publicMediaAssetFields,
-  reserveMediaAsset,
 } from "@/lib/media/asset-service";
 import {
   MEDIA_PURPOSES,
@@ -67,7 +65,9 @@ export async function GET(request: Request) {
       ];
       const purpose = url.searchParams.get("purpose");
       if (purpose) {
-        if (!MEDIA_PURPOSES.includes(purpose as (typeof MEDIA_PURPOSES)[number])) {
+        if (
+          !MEDIA_PURPOSES.includes(purpose as (typeof MEDIA_PURPOSES)[number])
+        ) {
           throw new ApiError(400, "bad_request", "purpose ist ungueltig.");
         }
         assertMediaPurposeAccess(
@@ -109,7 +109,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  return handleTransactionalApiCommand(
+  return handleApi(
     request,
     {
       scopes: [],
@@ -117,69 +117,62 @@ export async function POST(request: Request) {
       resourceType: "media_asset",
       idempotent: true,
     },
-    {
-      async prepare(context) {
-        const input = await parseJson(request, mediaAssetCreateSchema);
-        assertMediaPurposeAccess(context, input.purpose, "write");
-        const actor = await mediaActorForContext(context);
-        await consumeMediaUploadIntentRateLimit(context);
-        const ownerUserId = await resolveMediaOwner({
-          context,
-          actor,
+    async (context) => {
+      const input = await parseJson(request, mediaAssetCreateSchema);
+      assertMediaPurposeAccess(context, input.purpose, "write");
+      const actor = await mediaActorForContext(context);
+      await consumeMediaUploadIntentRateLimit(context);
+      const ownerUserId = await resolveMediaOwner({
+        context,
+        actor,
+        purpose: input.purpose,
+        requestedOwnerUserId: input.ownerUserId,
+      });
+      const configuration = getMediaStorageConfiguration();
+      let policy: ReturnType<typeof validateMediaUploadPolicy>;
+      try {
+        policy = validateMediaUploadPolicy({
           purpose: input.purpose,
-          requestedOwnerUserId: input.ownerUserId,
+          declaredMimeType: input.declaredMimeType,
+          originalFileName: input.originalFileName,
+          sizeBytes: input.sizeBytes,
+          globalMaxUploadBytes: configuration.limits.maxUploadBytes,
         });
-        const configuration = getMediaStorageConfiguration();
-        try {
-          const policy = validateMediaUploadPolicy({
-            purpose: input.purpose,
-            declaredMimeType: input.declaredMimeType,
-            originalFileName: input.originalFileName,
-            sizeBytes: input.sizeBytes,
-            globalMaxUploadBytes: configuration.limits.maxUploadBytes,
+      } catch (error) {
+        if (error instanceof MediaPolicyError) {
+          throw new ApiError(422, "validation_error", error.message, {
+            code: error.code,
+            ...error.details,
           });
-          return { input, actor, ownerUserId, configuration, policy };
-        } catch (error) {
-          if (error instanceof MediaPolicyError) {
-            throw new ApiError(422, "validation_error", error.message, {
-              code: error.code,
-            });
-          }
-          throw error;
         }
-      },
-      async execute(tools, prepared) {
-        const asset = await reserveMediaAsset({
-          tx: tools.tx,
-          organizationId: tools.context.organizationId,
-          actor: prepared.actor,
-          ownerUserId: prepared.ownerUserId,
-          policy: prepared.policy,
-          originalFileName: prepared.input.originalFileName,
-          configuration: prepared.configuration,
-        });
-        const upload = await createMediaUploadAuthorization({
-          ...mediaAssetIdentity(asset, "staging"),
-          mimeType: asset.declaredMimeType,
-          sizeBytes: asset.declaredSizeBytes,
-        });
-        await tools.activity({
-          type: "media_asset.created",
-          entityType: "media_asset",
-          entityId: asset.id,
-          userId: prepared.actor.id,
-          metadata: {
-            purpose: asset.purpose,
-            kind: asset.kind,
-            sizeBytes: asset.declaredSizeBytes,
-          },
-        });
-        return {
-          data: { ...publicMediaAsset(asset), upload },
-          status: 201,
-          resourceId: asset.id,
-        };
-      },
+        throw error;
+      }
+
+      const reservation = await reserveApiMediaUploadIntent({
+        context,
+        actor,
+        ownerUserId,
+        policy,
+        originalFileName: input.originalFileName,
+        configuration,
+        idempotencyKey: request.headers.get("idempotency-key"),
+      });
+      const upload = reservation.multipart
+        ? await initializeApiMultipartUpload(
+            reservation.asset,
+            configuration,
+            reservation.ownedInitializationToken,
+          )
+        : await createMediaUploadAuthorization({
+            ...mediaAssetIdentity(reservation.asset, "staging"),
+            mimeType: reservation.asset.declaredMimeType,
+            sizeBytes: reservation.asset.declaredSizeBytes,
+          });
+      return {
+        data: { ...publicMediaAsset(reservation.asset), upload },
+        status: 201,
+        resourceId: reservation.asset.id,
+      };
     },
   );
 }

@@ -45,6 +45,7 @@ test("media storage resolves explicit production S3 and scanner settings", () =>
     MEDIA_MAX_UPLOAD_BYTES: "1500000000",
     MEDIA_TENANT_QUOTA_BYTES: String(50 * 1024 * 1024 * 1024),
     MEDIA_SIGNED_UPLOAD_TTL_SECONDS: "300",
+    MEDIA_MULTIPART_UPLOAD_TTL_SECONDS: "172800",
     MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS: "1800",
     MEDIA_S3_FORCE_PATH_STYLE: "true",
   });
@@ -58,6 +59,7 @@ test("media storage resolves explicit production S3 and scanner settings", () =>
   assert.equal(configuration.limits.maxUploadBytes, 1_500_000_000);
   assert.equal(configuration.limits.tenantQuotaBytes, 50 * 1024 * 1024 * 1024);
   assert.equal(configuration.limits.signedUploadTtlSeconds, 300);
+  assert.equal(configuration.limits.multipartUploadTtlSeconds, 172800);
   assert.equal(configuration.limits.signedDownloadTtlSeconds, 1800);
   assert.deepEqual(configuration.clamAv, {
     host: "clamav.internal",
@@ -130,6 +132,7 @@ test("media storage rejects unsafe filesystem paths and invalid limits", () => {
         MEDIA_MAX_UPLOAD_BYTES: String(20 * 1024 * 1024),
         MEDIA_TENANT_QUOTA_BYTES: String(10 * 1024 * 1024),
         MEDIA_SIGNED_UPLOAD_TTL_SECONDS: "59",
+        MEDIA_MULTIPART_UPLOAD_TTL_SECONDS: "3599",
         MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS: "86401",
         MEDIA_CLAMAV_PORT: "0",
       }),
@@ -138,6 +141,7 @@ test("media storage rejects unsafe filesystem paths and invalid limits", () => {
       assert.match(error.message, /MEDIA_FILESYSTEM_ROOT/);
       assert.match(error.message, /MEDIA_TENANT_QUOTA_BYTES/);
       assert.match(error.message, /MEDIA_SIGNED_UPLOAD_TTL_SECONDS/);
+      assert.match(error.message, /MEDIA_MULTIPART_UPLOAD_TTL_SECONDS/);
       assert.match(error.message, /MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS/);
       assert.match(error.message, /MEDIA_CLAMAV_PORT/);
       return true;

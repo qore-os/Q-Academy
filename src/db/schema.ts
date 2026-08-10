@@ -313,6 +313,15 @@ export const mediaStorageDriverEnum = pgEnum("media_storage_driver", [
   "filesystem",
   "s3",
 ]);
+export const MEDIA_UPLOAD_SESSION_STATES = [
+  "initializing",
+  "recovering",
+  "uploading",
+  "completing",
+  "aborting",
+] as const;
+export type MediaUploadSessionState =
+  (typeof MEDIA_UPLOAD_SESSION_STATES)[number];
 export const mediaProcessingJobTypeEnum = pgEnum("media_processing_job_type", [
   "thumbnail",
   "transcode",
@@ -3414,6 +3423,9 @@ export const mediaAssets = pgTable(
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     storageDeletedAt: timestamp("storage_deleted_at", { withTimezone: true }),
     stagingDeletedAt: timestamp("staging_deleted_at", { withTimezone: true }),
+    multipartAbortVerifiedAt: timestamp("multipart_abort_verified_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),
@@ -3494,7 +3506,11 @@ export const mediaAssets = pgTable(
     check("media_assets_scan_attempt_check", sql`${table.scanAttempt} >= 0`),
     check(
       "media_assets_quota_state_check",
-      sql`((${table.status} = 'deleted' and ${table.deletedAt} is not null) or (${table.status} in ('quarantined', 'failed') and ${table.deletedAt} is null)) and (${table.quotaBytes} = ${table.declaredSizeBytes} or (${table.quotaBytes} = 0 and ${table.storageDeletedAt} is not null and ${table.stagingDeletedAt} >= ${table.uploadExpiresAt} + interval '1 hour')) or (${table.status} not in ('deleted', 'quarantined', 'failed') and ${table.quotaBytes} = ${table.declaredSizeBytes} and ${table.deletedAt} is null)`,
+      sql`((${table.status} = 'deleted' and ${table.deletedAt} is not null) or (${table.status} in ('quarantined', 'failed') and ${table.deletedAt} is null)) and (${table.quotaBytes} = ${table.declaredSizeBytes} or (${table.quotaBytes} = 0 and ${table.storageDeletedAt} is not null and ${table.stagingDeletedAt} is not null and (${table.stagingDeletedAt} >= ${table.uploadExpiresAt} + interval '1 hour' or (${table.multipartAbortVerifiedAt} is not null and ${table.stagingDeletedAt} >= ${table.multipartAbortVerifiedAt})))) or (${table.status} not in ('deleted', 'quarantined', 'failed') and ${table.quotaBytes} = ${table.declaredSizeBytes} and ${table.deletedAt} is null)`,
+    ),
+    check(
+      "media_assets_multipart_abort_proof_check",
+      sql`${table.multipartAbortVerifiedAt} is null or (${table.status} = 'deleted' and ${table.deletedAt} is not null and ${table.quotaBytes} = 0 and ${table.storageDeletedAt} is not null and ${table.stagingDeletedAt} is not null and ${table.multipartAbortVerifiedAt} >= ${table.deletedAt} and ${table.storageDeletedAt} >= ${table.multipartAbortVerifiedAt} and ${table.stagingDeletedAt} >= ${table.multipartAbortVerifiedAt})`,
     ),
     check(
       "media_assets_upload_state_check",
@@ -3523,6 +3539,64 @@ export const mediaAssets = pgTable(
     check(
       "media_assets_content_digest_state_check",
       sql`${table.storageDriver} = 'filesystem' or (${table.contentSha256} is null and ${table.status} <> 'ready') or (${table.contentSha256} ~ '^[0-9a-f]{64}$' and ${table.status} in ('ready', 'deleted'))`,
+    ),
+  ],
+);
+
+export const mediaUploadSessions = pgTable(
+  "media_upload_sessions",
+  {
+    assetId: uuid("asset_id").primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    initializationToken: uuid("initialization_token").defaultRandom().notNull(),
+    providerUploadId: varchar("provider_upload_id", { length: 1024 }),
+    partSizeBytes: bigint("part_size_bytes", { mode: "number" }).notNull(),
+    expectedPartCount: integer("expected_part_count").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    uploadDeadlineAt: timestamp("upload_deadline_at", {
+      withTimezone: true,
+    }).notNull(),
+    state: varchar("state", { length: 32 })
+      .$type<MediaUploadSessionState>()
+      .default("uploading")
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "media_upload_sessions_asset_tenant_fk",
+      columns: [table.assetId, table.organizationId],
+      foreignColumns: [mediaAssets.id, mediaAssets.organizationId],
+    }).onDelete("cascade"),
+    index("media_upload_sessions_org_expiry_state_idx").on(
+      table.organizationId,
+      table.expiresAt,
+      table.state,
+    ),
+    check(
+      "media_upload_sessions_provider_state_check",
+      sql`(${table.state} in ('initializing', 'recovering') and ${table.providerUploadId} is null) or (${table.state} = 'aborting' and (${table.providerUploadId} is null or length(${table.providerUploadId}) between 1 and 1024)) or (${table.state} not in ('initializing', 'recovering', 'aborting') and ${table.providerUploadId} is not null and length(${table.providerUploadId}) between 1 and 1024)`,
+    ),
+    check(
+      "media_upload_sessions_state_check",
+      sql`${table.state} in ('initializing', 'recovering', 'uploading', 'completing', 'aborting')`,
+    ),
+    check(
+      "media_upload_sessions_part_size_check",
+      sql`${table.partSizeBytes} >= 5242880`,
+    ),
+    check(
+      "media_upload_sessions_expected_part_count_check",
+      sql`${table.expectedPartCount} between 1 and 10000`,
+    ),
+    check(
+      "media_upload_sessions_deadline_check",
+      sql`${table.uploadDeadlineAt} <= ${table.expiresAt}`,
     ),
   ],
 );

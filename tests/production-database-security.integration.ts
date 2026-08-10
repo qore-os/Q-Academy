@@ -320,6 +320,13 @@ test(
           'incoming/tenants/${organizationId}/assets/${assetId}/original.png',
           'original.png', 'original.png', 'image/png', 100, 100, now() + interval '1 hour'
         );
+        insert into media_upload_sessions (
+          asset_id, organization_id, provider_upload_id, part_size_bytes,
+          expected_part_count, expires_at, upload_deadline_at
+        ) values (
+          '${assetId}', '${organizationId}', 'security-upload-id', 5242880,
+          1, now() + interval '1 hour', now() + interval '1 hour'
+        );
         insert into media_processing_jobs (
           id, organization_id, source_asset_id, type, request_key,
           source_content_sha256, provider
@@ -399,6 +406,40 @@ test(
         update media_assets
         set status = status
         where id = '${assetId}'
+      `);
+      const multipartSessions = await media.unsafe(`
+        select provider_upload_id
+        from media_upload_sessions
+        where asset_id = '${assetId}'
+      `);
+      assert.equal(multipartSessions[0]?.provider_upload_id, "security-upload-id");
+      await media.unsafe(`
+        update media_upload_sessions
+        set state = 'aborting', updated_at = now()
+        where asset_id = '${assetId}'
+      `);
+      await assert.rejects(
+        media.unsafe(`
+          update media_upload_sessions
+          set expires_at = expires_at + interval '1 hour'
+          where asset_id = '${assetId}'
+        `),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await assert.rejects(
+        media.unsafe(`
+          insert into media_upload_sessions (
+            asset_id, organization_id, provider_upload_id, part_size_bytes,
+            expected_part_count, expires_at, upload_deadline_at
+          ) values (
+            '${assetId}', '${organizationId}', 'forbidden', 5242880, 1,
+            now() + interval '1 hour', now() + interval '1 hour'
+          )
+        `),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await media.unsafe(`
+        delete from media_upload_sessions where asset_id = '${assetId}'
       `);
       await media.unsafe(`
         insert into media_asset_derivatives (

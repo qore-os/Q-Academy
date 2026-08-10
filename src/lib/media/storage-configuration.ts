@@ -16,6 +16,7 @@ export type MediaStorageLimits = Readonly<{
   maxUploadBytes: number;
   tenantQuotaBytes: number;
   signedUploadTtlSeconds: number;
+  multipartUploadTtlSeconds: number;
   signedDownloadTtlSeconds: number;
 }>;
 
@@ -85,6 +86,7 @@ export const DEFAULT_MEDIA_STORAGE_LIMITS: MediaStorageLimits = Object.freeze({
   maxUploadBytes: MAX_SCANNABLE_MEDIA_BYTES,
   tenantQuotaBytes: 500 * GIBIBYTE,
   signedUploadTtlSeconds: 15 * 60,
+  multipartUploadTtlSeconds: 24 * 60 * 60,
   signedDownloadTtlSeconds: 15 * 60,
 });
 
@@ -189,6 +191,14 @@ function storageLimits(
     3600,
     issues,
   );
+  const multipartUploadTtlSeconds = wholeNumber(
+    environment,
+    "MEDIA_MULTIPART_UPLOAD_TTL_SECONDS",
+    DEFAULT_MEDIA_STORAGE_LIMITS.multipartUploadTtlSeconds,
+    60 * 60,
+    7 * 24 * 60 * 60,
+    issues,
+  );
   const signedDownloadTtlSeconds = wholeNumber(
     environment,
     "MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS",
@@ -210,6 +220,7 @@ function storageLimits(
     maxUploadBytes,
     tenantQuotaBytes,
     signedUploadTtlSeconds,
+    multipartUploadTtlSeconds,
     signedDownloadTtlSeconds,
   };
 }

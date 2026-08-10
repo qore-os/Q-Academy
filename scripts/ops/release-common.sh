@@ -37,7 +37,9 @@ RELEASE_IMAGE_MANIFEST_VARIABLES=(
 MEDIA_WORK_MOUNT=/var/lib/q-academy-media-processing
 MEDIA_WORK_SENTINEL=.q-academy-media-work-root
 MEDIA_WORK_SENTINEL_VALUE=q-academy-media-processing-v1
-RELEASE_STATE_SCHEMA_VERSION=2
+CADDY_SITES_DIRECTORY_DEFAULT=/etc/q-academy/caddy-sites
+LEGACY_RELEASE_STATE_SCHEMA_VERSION=2
+RELEASE_STATE_SCHEMA_VERSION=3
 PENDING_RELEASE_SCHEMA_VERSION=1
 PRODUCTION_COMPOSE_PROJECT=q-academy
 RELEASE_LOCK_FILE_DEFAULT=/var/lock/q-academy-release.lock
@@ -53,6 +55,165 @@ CADDY_WAIT_TIMEOUT_SECONDS=300
 S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS=1200
 MEDIA_PROCESSING_PREFLIGHT_TIMEOUT_SECONDS=1800
 STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS=1800
+MEDIA_STORAGE_RELEASE_STATE_VARIABLES=(
+  MEDIA_S3_COMPATIBILITY_MODE
+  MEDIA_S3_ENDPOINT
+  MEDIA_S3_REGION
+  MEDIA_S3_BUCKET
+  MEDIA_S3_FORCE_PATH_STYLE
+)
+
+verify_caddy_sites_directory() {
+  local env_file="$1"
+  local directory entry entry_count=0
+
+  directory="$(production_env_value "$env_file" CADDY_SITES_DIRECTORY)" || return 1
+  [[ "$directory" =~ ^/[A-Za-z0-9._/-]+$ && "$directory" != *'/../'* && "$directory" != */.. ]] || return 1
+  [[ -d "$directory" && ! -L "$directory" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "$directory")" == "0:0:755" ]] || return 1
+
+  while IFS= read -r -d '' entry; do
+    entry_count=$((entry_count + 1))
+    (( entry_count <= 20 )) || return 1
+    [[ "$entry" == *.caddy ]] || return 1
+    [[ -f "$entry" && ! -L "$entry" ]] || return 1
+    [[ "$(stat -c '%u:%g:%a' "$entry")" == "0:0:644" ]] || return 1
+    [[ "$(stat -c '%s' "$entry")" -le 65536 ]] || return 1
+  done < <(find "$directory" -mindepth 1 -maxdepth 1 -print0)
+}
+
+upgrade_legacy_release_state() {
+  local state_file="$1"
+  local env_file="$2"
+  local persist="${3:-true}"
+  local schema controller_commit current_tag previous_tag deployed_at configured_tag
+  local app_container_id active_image name configured_value active_line active_value
+  local temporary_state
+
+  [[ "$persist" == "true" || "$persist" == "false" ]] || return 1
+  schema="$(production_env_value "$state_file" SCHEMA_VERSION)" || return 1
+  [[ "$schema" == "$LEGACY_RELEASE_STATE_SCHEMA_VERSION" ]] || return 1
+  [[ -f "$state_file" && ! -L "$state_file" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "$state_file")" == "0:0:600" ]] || return 1
+
+  controller_commit="$(production_env_value "$state_file" CONTROLLER_COMMIT)" || return 1
+  current_tag="$(production_env_value "$state_file" CURRENT_TAG)" || return 1
+  previous_tag="$(production_env_value "$state_file" PREVIOUS_TAG)" || return 1
+  deployed_at="$(production_env_value "$state_file" DEPLOYED_AT)" || return 1
+  configured_tag="$(production_env_value "$env_file" APP_IMAGE_TAG)" || return 1
+  [[ "$controller_commit" =~ ^[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$current_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  [[ -z "$previous_tag" || "$previous_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$deployed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
+  [[ "$configured_tag" == "$current_tag" ]] || return 1
+
+  app_container_id="$(
+    docker ps --quiet --no-trunc \
+      --filter "label=com.docker.compose.project=$PRODUCTION_COMPOSE_PROJECT" \
+      --filter "label=com.docker.compose.service=app"
+  )" || return 1
+  [[ "$app_container_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+  active_image="$(docker inspect --format '{{.Config.Image}}' "$app_container_id")" || return 1
+  [[ "$active_image" == "q-academy-app:$current_tag" ]] || return 1
+
+  for name in "${MEDIA_STORAGE_RELEASE_STATE_VARIABLES[@]}"; do
+    configured_value="$(production_env_value "$env_file" "$name")" || return 1
+    active_line="$(
+      docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$app_container_id" |
+        grep "^${name}="
+    )" || return 1
+    [[ "$active_line" != *$'\n'* ]] || return 1
+    active_value="${active_line#*=}"
+    [[ "$active_value" == "$configured_value" ]] || return 1
+  done
+
+  [[ "$persist" == "true" ]] || return 0
+
+  temporary_state="${state_file}.upgrade.$$"
+  [[ ! -e "$temporary_state" && ! -L "$temporary_state" ]] || return 1
+  umask 077
+  if ! {
+    {
+      printf 'SCHEMA_VERSION=%s\n' "$RELEASE_STATE_SCHEMA_VERSION"
+      printf 'CONTROLLER_COMMIT=%s\n' "$controller_commit"
+      printf 'CURRENT_TAG=%s\n' "$current_tag"
+      printf 'PREVIOUS_TAG=%s\n' "$previous_tag"
+      printf 'DEPLOYED_AT=%s\n' "$deployed_at"
+      write_media_storage_release_state "$env_file"
+    } >"$temporary_state" &&
+      sync "$temporary_state" &&
+      mv -f "$temporary_state" "$state_file" &&
+      sync -f "$(dirname -- "$state_file")"
+  }; then
+    rm -f -- "$temporary_state"
+    return 1
+  fi
+  validate_media_storage_release_state "$state_file"
+}
+
+validate_media_storage_release_state() {
+  local state_file="$1"
+  local name value
+
+  for name in "${MEDIA_STORAGE_RELEASE_STATE_VARIABLES[@]}"; do
+    value="$(production_env_value "$state_file" "$name")" || return 1
+    [[ -n "$value" ]] || {
+      printf '%s must not be empty in the release state.\n' "$name" >&2
+      return 1
+    }
+  done
+  value="$(production_env_value "$state_file" MEDIA_S3_COMPATIBILITY_MODE)" || return 1
+  [[ "$value" == "versioned" || "$value" == "strato-hidrive" ]] || return 1
+  value="$(production_env_value "$state_file" MEDIA_S3_ENDPOINT)" || return 1
+  [[ "$value" =~ ^https://[^[:space:]]+$ ]] || return 1
+  value="$(production_env_value "$state_file" MEDIA_S3_REGION)" || return 1
+  [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  value="$(production_env_value "$state_file" MEDIA_S3_BUCKET)" || return 1
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{1,61}[A-Za-z0-9]$ ]] || return 1
+  value="$(production_env_value "$state_file" MEDIA_S3_FORCE_PATH_STYLE)" || return 1
+  [[ "$value" == "true" || "$value" == "false" ]]
+}
+
+media_storage_release_state_matches() {
+  local state_file="$1"
+  local env_file="$2"
+  local name state_value configured_value
+
+  for name in "${MEDIA_STORAGE_RELEASE_STATE_VARIABLES[@]}"; do
+    state_value="$(production_env_value "$state_file" "$name")" || return 1
+    configured_value="$(production_env_value "$env_file" "$name")" || return 1
+    [[ "$state_value" == "$configured_value" ]] || return 1
+  done
+}
+
+write_media_storage_release_state() {
+  local env_file="$1"
+  local name value
+
+  for name in "${MEDIA_STORAGE_RELEASE_STATE_VARIABLES[@]}"; do
+    value="$(production_env_value "$env_file" "$name")" || return 1
+    printf '%s=%s\n' "$name" "$value"
+  done
+}
+
+assert_media_storage_change_is_drained() {
+  local state_file="$1"
+  local env_file="$2"
+  local active_binding_count="$3"
+
+  if media_storage_release_state_matches "$state_file" "$env_file"; then
+    return 0
+  fi
+  [[ "$active_binding_count" =~ ^[0-9]+$ ]] || {
+    printf 'Active media-storage binding count is invalid.\n' >&2
+    return 1
+  }
+  [[ "$active_binding_count" == "0" ]] || {
+    printf 'Media storage identity cannot change while %s media object, derivative, privacy export, or multipart session binding(s) remain on the active provider. Run a verified object migration or remove them with the old provider configuration first.\n' \
+      "$active_binding_count" >&2
+    return 1
+  }
+}
 STRATO_PRIVACY_SWEEPER_SERVICE=strato-privacy-sweeper
 MEDIA_S3_COMPOSE_PROFILE_ARGS=()
 MEDIA_S3_RELEASE_SERVICES=()

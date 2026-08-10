@@ -30,6 +30,16 @@
       "Expiration": {
         "ExpiredObjectDeleteMarker": true
       }
+    },
+    {
+      "ID": "q-academy-abort-incomplete-multipart-v1",
+      "Filter": {
+        "Prefix": ""
+      },
+      "Status": "Enabled",
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 2
+      }
     }
   ]
 }

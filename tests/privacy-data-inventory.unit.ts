@@ -35,7 +35,7 @@ type DrizzleJournal = {
 
 const snapshot = JSON.parse(
   readFileSync(
-    path.resolve(process.cwd(), "drizzle/meta/0072_snapshot.json"),
+    path.resolve(process.cwd(), "drizzle/meta/0080_snapshot.json"),
     "utf8",
   ),
 ) as DrizzleSnapshot;
@@ -56,7 +56,7 @@ function unique(values: readonly string[]) {
   return [...new Set(values)];
 }
 
-test("privacy inventory covers the current 170-table schema and 0074 migration history", () => {
+test("privacy inventory covers the current 171-table schema and 0080 migration history", () => {
   const inventoryNames = Object.keys(PRIVACY_DATA_INVENTORY).sort();
   const missing = publicTableNames.filter(
     (name) => !(name in PRIVACY_DATA_INVENTORY),
@@ -67,14 +67,14 @@ test("privacy inventory covers the current 170-table schema and 0074 migration h
 
   assert.equal(
     publicTables.length,
-    170,
-    "Snapshot 0074 table count changed; update the explicit privacy inventory.",
+    171,
+    "Snapshot 0080 table count changed; update the explicit privacy inventory.",
   );
-  assert.equal(journal.entries.length, 75, "Expected 75 versioned migrations.");
-  assert.equal(journal.entries.at(-1)?.idx, 74);
+  assert.equal(journal.entries.length, 81, "Expected 81 versioned migrations.");
+  assert.equal(journal.entries.at(-1)?.idx, 80);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0074_runtime_trigger_role_guards",
+    "0080_closed_catseye",
   );
   assert.deepEqual(
     missing,
@@ -308,6 +308,7 @@ test("credential and immutable storage identities are excluded from subject payl
       "staging_storage_version_id",
       "storage_version_id",
     ],
+    media_upload_sessions: ["initialization_token", "provider_upload_id"],
     privacy_export_artifacts: [
       "storage_key",
       "storage_version_id",
@@ -410,6 +411,22 @@ test("credential and immutable storage identities are excluded from subject payl
       );
     }
   }
+});
+
+test("multipart upload sessions are transient internal media state", () => {
+  const sessions = PRIVACY_DATA_INVENTORY.media_upload_sessions;
+
+  assert.equal(sessions.subjectRelation.kind, "indirect");
+  assert.deepEqual(sessions.subjectRelation.columns, ["asset_id"]);
+  assert.deepEqual(sessions.subjectRelation.viaTables, ["media_assets"]);
+  assert.equal(sessions.exportPolicy.mode, "internal_only");
+  assert.deepEqual(sessions.exportPolicy.excludedColumns, [
+    "initialization_token",
+    "provider_upload_id",
+  ]);
+  assert.equal(sessions.erasurePolicy.action, "cascade_delete");
+  assert.ok(sessions.erasurePolicy.prerequisites.includes("parent_erasure"));
+  assert.deepEqual(sessions.legalHold.scopes, []);
 });
 
 test("community completion configuration remains shared context", () => {

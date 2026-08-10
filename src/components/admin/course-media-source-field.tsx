@@ -7,6 +7,7 @@ import {
   Link2,
   Library,
   LoaderCircle,
+  RefreshCw,
   ShieldAlert,
   Search,
   Trash2,
@@ -17,6 +18,7 @@ import {
   deleteBrowserSessionMediaAsset,
   uploadBrowserSessionMedia,
 } from "@/lib/media/browser-session-upload";
+import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { SubmissionRecorder } from "@/components/academy/submission-recorder";
 import { cn } from "@/lib/utils";
 import { getCourseSupportCopy } from "@/lib/i18n/course-support";
@@ -80,12 +82,17 @@ function CourseMediaUpload({
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  const retryUploadRef = useRef<{
+    file: File;
+    clientUploadId: string;
+  } | null>(null);
   const newAssetIdRef = useRef("");
   const uploadedExternalFileRef = useRef<File | undefined>(undefined);
   const [assetId, setAssetId] = useState(initialAssetId ?? "");
   const [newAssetId, setNewAssetId] = useState("");
   const [fileName, setFileName] = useState(initialFileName ?? "");
   const [progress, setProgress] = useState(0);
+  const [canRetry, setCanRetry] = useState(false);
   const [state, setState] = useState<UploadState>(initialAssetId ? "ready" : "idle");
   const [error, setError] = useState<string | null>(null);
   const [recorderBlocking, setRecorderBlocking] = useState(false);
@@ -123,6 +130,8 @@ function CourseMediaUpload({
 
   const remove = async () => {
     controllerRef.current?.abort();
+    retryUploadRef.current = null;
+    setCanRetry(false);
     if (newAssetId) {
       try {
         await deleteBrowserSessionMediaAsset(newAssetId);
@@ -142,24 +151,32 @@ function CourseMediaUpload({
     if (inputRef.current) inputRef.current.value = "";
   };
 
-  const select = useCallback(async (file: File | undefined) => {
+  const select = useCallback(async (
+    file: File | undefined,
+    resume?: Readonly<{ clientUploadId: string }>,
+  ) => {
     if (!file) return;
     if (!file.type || file.size <= 0) {
       setState("error");
+      setCanRetry(false);
       setError(copy.errors.invalidFile);
       onAssetChange?.(null);
       onAssetSelection?.(null);
       return;
     }
-    if (newAssetId) {
+    controllerRef.current?.abort();
+    if (!resume && newAssetId) {
       await deleteBrowserSessionMediaAsset(newAssetId).catch(() => undefined);
     }
-    controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    const clientUploadId = crypto.randomUUID();
-    setAssetId("");
-    setNewAssetId("");
+    const clientUploadId = resume?.clientUploadId ?? crypto.randomUUID();
+    retryUploadRef.current = { file, clientUploadId };
+    setCanRetry(true);
+    if (!resume) {
+      setAssetId("");
+      setNewAssetId("");
+    }
     setFileName(file.name);
     setProgress(0);
     setState("preparing");
@@ -182,6 +199,8 @@ function CourseMediaUpload({
       const expectedKind = kind === "file" ? "document" : kind;
       if (asset.kind !== expectedKind) {
         await deleteBrowserSessionMediaAsset(asset.id).catch(() => undefined);
+        retryUploadRef.current = null;
+        setCanRetry(false);
         setState("error");
         setError(copy.errors.wrongKind);
         onAssetChange?.(null);
@@ -192,6 +211,8 @@ function CourseMediaUpload({
       setNewAssetId(asset.id);
       setFileName(asset.originalFileName);
       setState("ready");
+      retryUploadRef.current = null;
+      setCanRetry(false);
       const selection = {
         id: asset.id,
         originalFileName: asset.originalFileName,
@@ -202,11 +223,17 @@ function CourseMediaUpload({
     } catch (uploadError) {
       if (uploadError instanceof DOMException && uploadError.name === "AbortError") return;
       setState("error");
-      setError(copy.errors.upload);
+      setError(browserUploadErrorMessage(uploadError, copy.errors.upload));
       onAssetChange?.(null);
       onAssetSelection?.(null);
     }
   }, [copy.errors.invalidFile, copy.errors.upload, copy.errors.wrongKind, kind, newAssetId, onAssetChange, onAssetSelection]);
+
+  const retryUpload = () => {
+    const pending = retryUploadRef.current;
+    if (!pending) return;
+    void select(pending.file, { clientUploadId: pending.clientUploadId });
+  };
 
   useEffect(() => {
     if (!externalFile || uploadedExternalFileRef.current === externalFile) return;
@@ -300,6 +327,17 @@ function CourseMediaUpload({
               </span>
             ) : null}
           </span>
+          {state === "error" && canRetry ? (
+            <button
+              type="button"
+              onClick={retryUpload}
+              className="focus-ring grid size-8 shrink-0 place-items-center rounded-md text-[#71808b] hover:bg-white hover:text-[var(--theme-teal-text)]"
+              aria-label={copy.retry}
+              title={copy.retry}
+            >
+              <RefreshCw className="size-4" />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => void remove()}

@@ -611,6 +611,8 @@ jobs:
           await admin.unsafe("drop policy if exists q_academy_ci_media_design_only on public.platform_settings");
           await admin.unsafe("create policy q_academy_ci_media_design_only on public.platform_settings to q_academy_ci_media using (key = 'design')");
           await admin.unsafe("grant select, update, delete on table public.media_assets to q_academy_ci_media");
+          await admin.unsafe("grant select, delete on table public.media_upload_sessions to q_academy_ci_media");
+          await admin.unsafe("grant update (state, updated_at) on table public.media_upload_sessions to q_academy_ci_media");
           await admin.unsafe("grant select, insert, update, delete on table public.media_processing_jobs to q_academy_ci_media");
           await admin.unsafe("grant select, insert, update, delete on table public.media_asset_derivatives to q_academy_ci_media");
           await admin.unsafe("grant select, insert, update, delete on table public.media_asset_transcripts to q_academy_ci_media");

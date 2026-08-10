@@ -7,6 +7,7 @@ import {
   FileText,
   LoaderCircle,
   Paperclip,
+  RefreshCw,
   ShieldAlert,
   Trash2,
   Upload,
@@ -14,8 +15,10 @@ import {
 
 import {
   deleteBrowserSessionMediaAsset,
+  discardBrowserSessionMediaAsset,
   uploadBrowserSessionMedia,
 } from "@/lib/media/browser-session-upload";
+import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { SubmissionRecorder } from "@/components/academy/submission-recorder";
 import {
   formatLearningFileSize,
@@ -47,6 +50,7 @@ const ACCEPTED_TYPES = [
 ].join(",");
 
 type UploadEntry = {
+  file: File;
   clientId: string;
   assetId: string | null;
   name: string;
@@ -116,8 +120,13 @@ export function SubmissionAttachmentUploader({
   const [message, setMessage] = useState<string | null>(null);
   const [recorderBlocking, setRecorderBlocking] = useState(false);
   const controllers = useRef(new Map<string, AbortController>());
+  const entriesRef = useRef(entries);
   const inputRef = useRef<HTMLInputElement>(null);
   const previousResetKey = useRef(resetKey);
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   const updateEntry = (clientId: string, patch: Partial<UploadEntry>) => {
     setEntries((current) =>
@@ -137,6 +146,9 @@ export function SubmissionAttachmentUploader({
     if (resetKey && resetKey !== previousResetKey.current) {
       for (const controller of controllers.current.values()) controller.abort();
       controllers.current.clear();
+      for (const entry of entriesRef.current) {
+        if (entry.assetId) discardBrowserSessionMediaAsset(entry.assetId);
+      }
       setEntries([]);
       setMessage(null);
       setRecorderBlocking(false);
@@ -148,6 +160,9 @@ export function SubmissionAttachmentUploader({
   useEffect(
     () => () => {
       for (const controller of controllers.current.values()) controller.abort();
+      for (const entry of entriesRef.current) {
+        if (entry.assetId) discardBrowserSessionMediaAsset(entry.assetId);
+      }
     },
     [],
   );
@@ -184,7 +199,10 @@ export function SubmissionAttachmentUploader({
       updateEntry(clientId, {
         assetId,
         status: "error",
-        error: copy("attachments.uploadError"),
+        error: browserUploadErrorMessage(
+          error,
+          copy("attachments.uploadError"),
+        ),
       });
     } finally {
       controllers.current.delete(clientId);
@@ -206,6 +224,7 @@ export function SubmissionAttachmentUploader({
         setEntries((current) => [
           ...current,
           {
+            file,
             clientId,
             assetId: null,
             name: file.name,
@@ -220,6 +239,7 @@ export function SubmissionAttachmentUploader({
       setEntries((current) => [
         ...current,
         {
+          file,
           clientId,
           assetId: null,
           name: file.name,
@@ -242,6 +262,7 @@ export function SubmissionAttachmentUploader({
 
   const removeEntry = async (entry: UploadEntry) => {
     const controller = controllers.current.get(entry.clientId);
+    controller?.abort();
     if (entry.assetId) {
       try {
         await deleteBrowserSessionMediaAsset(entry.assetId);
@@ -250,11 +271,20 @@ export function SubmissionAttachmentUploader({
         return;
       }
     }
-    controller?.abort();
     setEntries((current) =>
       current.filter((candidate) => candidate.clientId !== entry.clientId),
     );
     setMessage(null);
+  };
+
+  const retryEntry = (entry: UploadEntry) => {
+    if (controllers.current.has(entry.clientId)) return;
+    updateEntry(entry.clientId, {
+      progress: 0,
+      status: "preparing",
+      error: null,
+    });
+    void runUpload(entry.file, entry.clientId);
   };
 
   return (
@@ -342,6 +372,20 @@ export function SubmissionAttachmentUploader({
                   </span>
                 ) : null}
               </span>
+              {entry.status === "error" && entry.file.type && entry.file.size > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => retryEntry(entry)}
+                  className="focus-ring grid size-8 shrink-0 place-items-center rounded-md text-[var(--theme-muted-text)] hover:bg-[var(--theme-input-background)] hover:text-[var(--theme-teal-text)]"
+                  aria-label={copy("attachments.retryNamed", {
+                    name: entry.name,
+                  })}
+                  title={copy("attachments.retry")}
+                  disabled={disabled}
+                >
+                  <RefreshCw className="size-4" />
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void removeEntry(entry)}

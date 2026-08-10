@@ -17,6 +17,7 @@ import {
   ImageIcon,
   LoaderCircle,
   Paperclip,
+  RefreshCw,
   ShieldAlert,
   Trash2,
   Upload,
@@ -24,8 +25,10 @@ import {
 
 import {
   deleteBrowserSessionMediaAsset,
+  discardBrowserSessionMediaAsset,
   uploadBrowserSessionMedia,
 } from "@/lib/media/browser-session-upload";
+import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { ImageLightbox } from "@/components/content/image-lightbox";
 import { getImageLightboxCopy } from "@/lib/i18n/image-lightbox";
 import { getMainPageDictionary } from "@/lib/i18n/main-pages";
@@ -55,6 +58,7 @@ const ACCEPTED_TYPES = [
 ].join(",");
 
 type UploadEntry = {
+  file: File;
   clientId: string;
   assetId: string | null;
   name: string;
@@ -171,6 +175,9 @@ export const CommunityAttachmentUploader = forwardRef<
   useEffect(
     () => () => {
       for (const controller of controllers.current.values()) controller.abort();
+      for (const entry of entriesRef.current) {
+        if (entry.assetId) discardBrowserSessionMediaAsset(entry.assetId);
+      }
     },
     [],
   );
@@ -207,7 +214,10 @@ export const CommunityAttachmentUploader = forwardRef<
       updateEntry(clientId, {
         assetId,
         status: "error",
-        error: copy.attachments.uploadFailed,
+        error: browserUploadErrorMessage(
+          error,
+          copy.attachments.uploadFailed,
+        ),
       });
     } finally {
       controllers.current.delete(clientId);
@@ -226,6 +236,7 @@ export const CommunityAttachmentUploader = forwardRef<
     for (const file of selected) {
       const clientId = crypto.randomUUID();
       const entry: UploadEntry = {
+        file,
         clientId,
         assetId: null,
         name: file.name,
@@ -257,6 +268,16 @@ export const CommunityAttachmentUploader = forwardRef<
         setMessage(copy.attachments.removeFailed);
       });
     }
+  };
+
+  const retryEntry = (entry: UploadEntry) => {
+    if (controllers.current.has(entry.clientId)) return;
+    updateEntry(entry.clientId, {
+      progress: 0,
+      status: "preparing",
+      error: null,
+    });
+    void runUpload(entry.file, entry.clientId);
   };
 
   return (
@@ -370,6 +391,18 @@ export const CommunityAttachmentUploader = forwardRef<
                   </span>
                 ) : null}
               </span>
+              {entry.status === "error" && entry.file.type && entry.file.size > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => retryEntry(entry)}
+                  className="focus-ring grid size-8 shrink-0 place-items-center rounded-md text-[#71808b] hover:bg-[#edf9f7] hover:text-[var(--theme-teal-text)]"
+                  aria-label={copy.attachments.retry(entry.name)}
+                  title={copy.attachments.retryAttachment}
+                  disabled={disabled}
+                >
+                  <RefreshCw className="size-4" />
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => removeEntry(entry)}

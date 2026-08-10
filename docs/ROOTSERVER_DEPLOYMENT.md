@@ -92,7 +92,11 @@ implizite Default-Tenant-Bindung. Verifizierte Custom Domains und exakte
 Die Produktionsvalidierung und damit `/api/v1/health/ready` arbeiten hierbei
 fail-closed: fehlende oder widerspruechliche Werte fuer `APP_DOMAIN`,
 `NEXT_PUBLIC_APP_URL` und `DEFAULT_ORGANIZATION_SLUG` sowie eine ungueltige
-`TENANT_BASE_DOMAIN` liefern Readiness `503`. Vor dem Rollout muss der
+`TENANT_BASE_DOMAIN` oder ein unvollstaendiges
+`MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON` liefern Readiness `503`. Das
+Origin-Inventar muss mindestens eine exakte HTTPS-Origin enthalten und die
+Plattform-Origin sowie, falls `TENANT_BASE_DOMAIN` gesetzt ist, den daraus
+abgeleiteten Default-Tenant-Host explizit nennen. Vor dem Rollout muss der
 Default-Slug deshalb als aktiver Tenant in PostgreSQL vorhanden sein.
 
 Eigene Login-Hosts werden ausschliesslich durch einen aktiven Owner unter
@@ -108,6 +112,16 @@ bleiben, liefert aber nach Revoke keine Tenantanwendung mehr. Direkte Datenbank-
 `loginHostname`-Provisionierung ist kein zulaessiger Betriebsweg. Lokale
 `<tenant-slug>.localhost`-Hosts sowie `<tenant-slug>.<TENANT_BASE_DOMAIN>`
 bleiben kontrollierte, claimfreie Plattformhosts.
+
+Vor der Provisionierung eines Tenant-Slugs muss dessen exakter
+`https://<slug>.<TENANT_BASE_DOMAIN>`-Origin zuerst in das Origin-Inventar und
+die S3-CORS-Konfiguration aufgenommen und mit beiden Release-Preflights
+abgenommen werden. Dasselbe gilt fuer Custom Domains vor dem abschliessenden
+Verify: Die Anwendung verweigert die Aktivierung trotz erfolgreichem DNS-Claim
+mit `503`, solange der exakte `https://<custom-host>`-Eintrag fehlt. Beim
+Rueckbau gilt die umgekehrte Reihenfolge: Domain zuerst revoken, danach aus
+Bucket-CORS und Inventar entfernen. Wildcard-Origins sind in keinem Schritt
+zulaessig.
 
 Der resultierende Custom Host muss in DNS auf den Rootserver zeigen und beim
 Identity Provider identisch eingetragen sein. Nur statische Plattformhosts
@@ -194,7 +208,8 @@ Die Produktionskonfiguration erzwingt den S3-Treiber und startet den internen
 ClamAV-Dienst, einen isolierten Next.js-Medienrunner, zwei kleine
 Scan-Dispatcher und genau einen Maintenance-Dispatcher. Die Scan-Dispatcher
 claimen jeweils nur ein Asset; der Maintenance-Dispatcher verarbeitet maximal
-fuenf Storage-Assets als gemeinsames I/O-Budget. Alle drei rufen den
+fuenf Storage-Assets als gemeinsames I/O-Budget fuer Multipart-Abbrueche,
+Objekt-, Derivat- und Tombstone-Loeschungen. Alle drei rufen den
 Medienrunner ueber das interne `jobs`-Netz auf. Der Medienrunner verwendet
 dasselbe unveraenderliche App-Image wie die Web-App, ist aber ein eigener
 Prozess ohne Proxy-Netz und mit einem Limit von 2 vCPU und 2 GiB RAM. Seine
@@ -262,14 +277,28 @@ einstuendigen Loeschmarge bleiben. Der Healthcheck gewaehrt beim Containerstart
 25 Minuten fuer diesen ersten Vollzyklus. Manuelle
 Compose-Aufrufe muessen das Profil ebenfalls explizit aktivieren.
 
+Der Release-State bindet Modus, Endpoint, Region, Bucket und Path-Style an den
+aktiven Release. Aendert sich einer dieser Werte, stoppen Deploy oder Rollback
+zuerst Caddy und alle Datenbank-Writer. Danach duerfen weder eine Zeile in
+`media_upload_sessions` noch ein nicht physisch entferntes S3-Medienobjekt, ein
+S3-Derivat oder ein nicht geloeschter S3-Datenschutzexport verbleiben. Andernfalls
+bricht der Vorgang fail-closed ab. Ein Providerwechsel mit Bestandsdaten braucht
+einen separaten, verifizierten Objektmigrationslauf; eine reine Env-Aenderung ist
+kein zulaessiger Migrationspfad. Boot-Reconcile verweigert eine manuell
+abweichende Storage-Identitaet ebenfalls.
+
 - `MEDIA_S3_ENDPOINT` muss ein vom Rootserver erreichbarer HTTPS-Ursprung mit
   gueltiger Zertifikatskette sein. Bucket, Region und Path-Style-Einstellung
   muessen zum Anbieter passen.
 - Pro Umgebung sind zwei verschiedene technische Principals erforderlich.
-  `MEDIA_S3_APP_ACCESS_KEY_ID` darf fuer Medien nur kurzlebige Browser-PUTs unter
-  `incoming/` signieren, die zugehoerigen Upload-Metadaten lesen und exakt
+  `MEDIA_S3_APP_ACCESS_KEY_ID` darf fuer Medien nur kurzlebige Browser-PUTs und
+  native Multipart-Parts unter `incoming/` signieren, die zugehoerigen
+  Upload-Metadaten lesen und exakt
   freigegebene Objektversionen unter `tenants/` lesen. Dieser Principal erhaelt
-  fuer Asset-Pfade keine Copy-, List- oder Delete-Rechte. Unter dem getrennten
+  dort `s3:PutObject` (dies autorisiert bei AWS CreateMultipartUpload,
+  UploadPart und CompleteMultipartUpload), `s3:ListMultipartUploadParts` und
+  `s3:AbortMultipartUpload`, aber keine Bucket-, Versions-, Copy- oder
+  Objektdelisting-Rechte. Unter dem getrennten
   Schluesselform `tenants/<tenant-uuid>/privacy-exports/<object>` braucht die
   App dagegen `PutObject`,
   `PutObjectTagging`, `GetObjectVersion` und `DeleteObjectVersion`, damit GET/HEAD,
@@ -279,7 +308,9 @@ Compose-Aufrufe muessen das Profil ebenfalls explizit aktivieren.
   zum Medienrunner und erhaelt die minimalen Rechte fuer Scan, Copy-Promotion
   und Harddelete. Fuer ihn sind `ListBucketVersions`, `DeleteObject`,
   `DeleteObjectVersion` und fuer die App-Principal-Abnahme
-  `GetObjectVersionTagging` sowie `s3:GetLifecycleConfiguration` zwingend
+  `GetObjectVersionTagging`, `s3:GetBucketCORS`,
+  `s3:GetLifecycleConfiguration`, `s3:ListMultipartUploadParts` und
+  `s3:AbortMultipartUpload` zwingend
   erforderlich, weil der Loeschpfad bei
   jedem Objekt prueft, dass weder Versionen noch Delete-Marker uebrig sind und
   der Canary das verpflichtende Export-Tag nachweist. Beide
@@ -296,9 +327,15 @@ Compose-Aufrufe muessen das Profil ebenfalls explizit aktivieren.
   als `ready` freigegeben. Download-Autorisierungen pruefen Metadaten, ETag,
   SHA-256 und Groesse gegen die Datenbank und signieren genau die beim Scan
   gespeicherte Version. Eine
-  serverseitige Lifecycle-Regel soll unvollstaendige Multipart-Uploads nach
-  hoechstens sieben Tagen abbrechen und verwaiste aktuelle Objekte unter
-  `incoming/` fruehestens nach sieben Tagen entfernen. Der Worker
+  separate serverseitige, bucketweite Lifecycle-Regel muss unvollstaendige
+  Multipart-Uploads nach mindestens
+  `ceil((MEDIA_MULTIPART_UPLOAD_TTL_SECONDS + 2700) / 86400)` und hoechstens
+  acht Tagen abbrechen. Die 2700 Sekunden decken das 30-minuetige
+  Completion-Recovery-Fenster sowie 15 Minuten Provider- und Uhrzeitreserve ab;
+  bei der Standard-TTL von 24 Stunden sind deshalb zwei Tage erforderlich. Eine
+  weitere globale oder fuer `incoming/` zutreffende Regel
+  darf nicht frueher abbrechen. Verwaiste aktuelle Objekte unter `incoming/`
+  duerfen fruehestens nach sieben Tagen entfernt werden. Der Worker
   entfernt Incoming-Objekte regulaer erst nach Ablauf der signierten URL plus
   einer Sicherheitsstunde. Unter `tenants/.../assets/...` duerfen weder aktuelle
   noch nicht aktuelle Versionen pauschal ablaufen: Die in PostgreSQL gebundene
@@ -347,10 +384,12 @@ Vor dem Deployment ist der sichere, schreibende Provider-Preflight aus
 [S3_PROVIDER_CONTRACT.md](./S3_PROVIDER_CONTRACT.md) vollstaendig auszufuehren
 und mit verifiziertem Canary-Cleanup zu dokumentieren.
 
-Die Beispieldatei enthaelt nur die beiden verpflichtenden DSAR-Regeln. Da
+Die Beispieldatei enthaelt die beiden verpflichtenden DSAR-Regeln und die
+bucketweite Zwei-Tage-Regel fuer unvollstaendige Multipart-Uploads. Da
 `PutBucketLifecycleConfiguration` immer die gesamte Bucket-Konfiguration
-ersetzt, muessen sie mit vorhandenen Regeln (etwa fuer abgebrochene
-Multipart-Uploads) zu einem Gesamtdokument zusammengefuehrt werden. Nach dem
+ersetzt, muessen sie mit vorhandenen Regeln zu einem Gesamtdokument
+zusammengefuehrt werden. Keine weitere Regel darf aktive Multipart-Sessions vor
+der konfigurierten Session-TTL abbrechen. Nach dem
 Einspielen mit einem Provider-Administrator wird die wirksame Konfiguration
 mit `GetBucketLifecycleConfiguration` gelesen und der Provider-Preflight
 ausgefuehrt. Der Operator-Principal des Preflights braucht dieses Leserecht;
@@ -361,15 +400,25 @@ Bucket-CORS-Regel.
 `AllowedOrigins` muss jeden tatsaechlichen kanonischen HTTPS-Ursprung einzeln
 nennen; Wildcards und `*` sind unzulaessig. Der aktuelle signierte PUT bindet
 `Content-Type`, die vom Browser gesetzte exakte `Content-Length` und
-`If-None-Match: *`. Fuer den Browser-Preflight sind `PUT`, `Content-Type` und
-`If-None-Match` freizugeben:
+`If-None-Match: *`. Multipart-Part-URLs binden stattdessen die Part-Groesse und
+`X-Amz-Checksum-Sha256`; der Dateiinhalt fliesst nie durch Next.js oder Caddy.
+Fuer den Browser-Preflight sind `PUT`, `Content-Type`, `If-None-Match` und
+`X-Amz-Checksum-Sha256` freizugeben und `ETag` zu exponieren:
 
 ```json
 [
   {
-    "AllowedOrigins": ["https://academy.example.com"],
+    "AllowedOrigins": [
+      "https://academy.example.com",
+      "https://q-academy.tenants.example.com",
+      "https://lernen.customer.example"
+    ],
     "AllowedMethods": ["PUT"],
-    "AllowedHeaders": ["Content-Type", "If-None-Match"],
+    "AllowedHeaders": [
+      "Content-Type",
+      "If-None-Match",
+      "X-Amz-Checksum-Sha256"
+    ],
     "ExposeHeaders": ["ETag"],
     "MaxAgeSeconds": 300
   }
@@ -377,18 +426,30 @@ nennen; Wildcards und `*` sind unzulaessig. Der aktuelle signierte PUT bindet
 ```
 
 Im Modus `strato-hidrive` gilt dieser PUT-Vertrag nicht. Die Bucket-CORS-Regel
-muss stattdessen `POST` fuer den exakten Produktionsursprung sowie `ETag` als
+muss stattdessen `POST` fuer jeden exakten Origin aus demselben Inventar sowie `ETag` als
 Expose-Header erlauben. Der Client sendet den signierten Multipart-POST ohne
 eigene Request-Header und ohne XHR-Upload-Listener, damit kein von STRATO nicht
 beantworteter OPTIONS-Preflight erforderlich wird.
 
 `Content-Length` wird vom Browser kontrolliert und deshalb nicht manuell als
-Request-Header gesetzt. Weitere Header duerfen erst ergaenzt werden, wenn der
-Client sie tatsaechlich sendet. CORS ersetzt keine Authentifizierung oder
+CORS-Header freigegeben. Die versionierte Runtime erstellt Multipart-Uploads
+mit `ChecksumAlgorithm=SHA256` und `ChecksumType=COMPOSITE`, vervollstaendigt
+sie mit exakter `MpuObjectSize` und akzeptiert erst die uebereinstimmende
+Composite-SHA-256 aus Complete und `HEAD ChecksumMode=ENABLED`. Weitere Header
+duerfen erst ergaenzt werden, wenn der Client sie tatsaechlich sendet. CORS
+ersetzt keine Authentifizierung oder
 Bucket-Policy; S3 wertet diese weiterhin aus. Details stehen in der offiziellen
 [S3-CORS-Dokumentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ManageCorsUsing.html).
-Die signierten PUT-URLs bleiben kurzlebig, werden serverseitig an einen
-tenantgebundenen Objektschluessel und `Content-Type` gebunden und duerfen ein
+Der versionierte Release-Preflight liest diese Konfiguration statisch und
+belegt den Browserpfad zusaetzlich fuer jeden Inventar-Origin mit einer echten
+signierten UploadPart-URL, einem `OPTIONS` mit den angeforderten Headern
+`content-type,x-amz-checksum-sha256` und einem anschliessenden browsergleichen
+`PUT` mit `Content-Type: video/mp4`. Ein reiner SDK-Upload ist kein ausreichender
+CORS-Nachweis.
+Die signierten PUT-URLs bleiben kurzlebig. Einzelobjekt-PUTs werden
+serverseitig an einen tenantgebundenen Objektschluessel und `Content-Type`
+gebunden; Multipart-Part-URLs an Schluessel, Upload-ID, Partnummer, Groesse und
+SHA-256-Pruefsumme. Beide Pfade duerfen ein
 Objekt erst nach Groessen-, Signatur- und Malware-Pruefung fachlich freigeben.
 
 ### Interner ClamAV-1.5-Dienst
@@ -482,10 +543,10 @@ gibt keine inspizierten Docker-Payloads aus.
 
 Die eingecheckte Policy ist absichtlich klein:
 
-| Compose-Netz | Erlaubter ausgehender Zielport | Zweck |
-| --- | --- | --- |
-| `egress` | TCP 80 und 443 | S3-/Provider-Preflight, Medienworker und ClamAV-Signaturen |
-| `proxy` | TCP 80 und 443, UDP 443 | App-Providerverkehr und Caddy ACME/HTTPS |
+| Compose-Netz | Erlaubter ausgehender Zielport | Zweck                                                      |
+| ------------ | ------------------------------ | ---------------------------------------------------------- |
+| `egress`     | TCP 80 und 443                 | S3-/Provider-Preflight, Medienworker und ClamAV-Signaturen |
+| `proxy`      | TCP 80 und 443, UDP 443        | App-Providerverkehr und Caddy ACME/HTTPS                   |
 
 Docker-internes DNS an `127.0.0.11` wird im Container-Namespace beantwortet und
 benoetigt keine Freigabe zum Host. Interne App-Protokolle bleiben auf ihren
@@ -630,6 +691,7 @@ neuem Evidence- und Abnahmelauf erforderlich.
      scripts/ops/q-academy-emergency-stop.sh \
      /usr/local/libexec/q-academy-emergency-stop
    ```
+
 2. Konfiguration ausserhalb des Repositories anlegen:
 
    ```bash
@@ -640,6 +702,8 @@ neuem Evidence- und Abnahmelauf erforderlich.
    sudo install -d -o root -g root -m 0755 /var/lib/q-academy
    sudo install -d -o root -g root -m 0700 /var/lib/q-academy/releases
    sudo test "$(stat -c '%u:%g:%a' /var/lib/q-academy/releases)" = "0:0:700"
+   sudo install -d -o root -g root -m 0755 /etc/q-academy/caddy-sites
+   sudo test "$(stat -c '%u:%g:%a' /etc/q-academy/caddy-sites)" = "0:0:755"
    ```
 
    `/var/lib/q-academy/releases` muss bereits vor dem ersten Deploy exakt
@@ -647,6 +711,16 @@ neuem Evidence- und Abnahmelauf erforderlich.
    Rechte eines vorhandenen, moeglicherweise falsch konfigurierten Verzeichnisses
    bewusst nicht. Dort liegen der root-only State und waehrend einer offenen
    Migration der Fail-closed-Marker `pending.env`.
+
+   `CADDY_SITES_DIRECTORY=/etc/q-academy/caddy-sites` bindet optionale,
+   root-eigene Konfiguration fuer weitere auf demselben Proxy betriebene Dienste
+   ein. Das Verzeichnis bleibt bei reinem Q-Academy-Betrieb leer. Zulaessig sind
+   hoechstens 20 regulaere Dateien mit Endung `.caddy`, jeweils `root:root`,
+   Modus `0644` und maximal 64 KiB; Symlinks und Unterverzeichnisse werden vom
+   Release-Skript abgelehnt. Vor dem Verschieben einer bereits aktiven
+   Co-Hosting-Konfiguration muss deren Inhalt beziehungsweise SHA-256 exakt
+   verifiziert werden. Erst danach darf die alte Repository-Datei bereinigt und
+   Caddy mit dem kanonischen Import neu erstellt werden.
 
    Die Operator-Container erhalten keine Repository- oder Host-Root-Mounts.
    Eingaben und Ausgaben werden auf zwei feste Verzeichnisse begrenzt. Das
@@ -699,7 +773,7 @@ neuem Evidence- und Abnahmelauf erforderlich.
    Restore verlangen ein eigenes `nodev,nosuid,noexec`-Mount, den root-eigenen
    exakten Sentinel und das UID/GID-1001-Unterverzeichnis `work`. Unterhalb des
    Mounts darf kein weiteres Dateisystem eingehangen sein; `findmnt -R
-   /var/lib/q-academy-media-processing` darf genau den Haupt-Mount ausgeben.
+/var/lib/q-academy-media-processing` darf genau den Haupt-Mount ausgeben.
    Der Runner leert `work` rekursiv, bleibt dabei mit `find -xdev` auf diesem
    Dateisystem und bricht bei einem nicht loeschbaren Mountpunkt ab. Der
    Sentinel-geschuetzte Mount selbst ist nie ein Loeschziel. Das Volume ist kein
@@ -740,7 +814,7 @@ neuem Evidence- und Abnahmelauf erforderlich.
    Initialisierung, Rollenpflege, Backup und Restore angelegte Superuser.
    `OWNER_POSTGRES_USER` ist davon verschieden und wird bei jedem Lauf explizit
    auf `NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-   NOINHERIT` gesetzt. Dasselbe gilt fuer App und Media. Nur dieser
+NOINHERIT` gesetzt. Dasselbe gilt fuer App und Media. Nur dieser
    Owner fuehrt Migrationen aus und besitzt Datenbank, Schemas und
    Anwendungsobjekte; App und Medienrunner erhalten eigene noch kleinere Rollen.
    Die vier Rollennamen werden beim ersten Rollenabgleich in der Datenbank
@@ -1169,19 +1243,38 @@ Genau ein `media-maintenance`-Dispatcher ruft standardmaessig alle 60 Sekunden
 `MEDIA_MAINTENANCE_INTERVAL_SECONDS` auf 30 bis 3600 Sekunden begrenzt; der
 interne Arbeitszeitraum betraegt acht Minuten, das Route-Limit neun Minuten und
 der Dispatcher-Timeout 550 Sekunden. Der Endpunkt akzeptiert maximal fuenf
-Storage-Assets als gemeinsames I/O-Budget fuer Tombstone-Purge und Cleanup. Bei
-weniger als 75 Sekunden Restbudget startet kein weiteres I/O-Asset; laufende
-Loeschungen erhalten dasselbe AbortSignal. Retention-Phasen starten nur mit
-mindestens zehn Sekunden Restbudget. Der Lauf wird mit einer globalen
+Storage-Assets als gemeinsames I/O-Budget fuer Multipart-Abbrueche, Objekt-,
+Verarbeitungsderivat- und Tombstone-Loeschungen. Bei weniger als 75 Sekunden
+Restbudget startet kein weiteres I/O-Asset; laufende Loeschungen erhalten
+dasselbe AbortSignal. Retention-Phasen starten nur mit mindestens zehn Sekunden
+Restbudget. Der Lauf wird mit einer globalen
 PostgreSQL-Session-Advisory-Lock geschuetzt. Ein paralleler manueller oder ueberlappender
 Aufruf liefert sofort `skipped: true`; ein ausgeschoepftes Arbeitsbudget wird
 als `timedOut: true` gemeldet und gibt die Lock vor dem HTTP-Timeout frei.
-Waehrend S3-I/O bleibt keine
-Datenbanktransaktion offen. Bereits physisch geloeschte alte Tombstones werden
-vor neuem Cleanup gepurgt, damit dasselbe Asset nicht im selben Lauf zweimal
-harddeleted wird. Danach werden abgelaufene Upload-Intents, seit 24 Stunden
-scanbereite aber nie gebundene Abgabeanhaenge, Kurs- oder Community-Medien,
-verwaiste Incoming-Objekte und neu faellige Harddeletes gepflegt. Die
+Waehrend S3-I/O bleibt keine Datenbanktransaktion offen. Bereits verifizierte
+Objektloeschungen geben ihr Quota in einer reinen Datenbankphase vor jeglichem
+Provider-I/O frei; auch Jobs mit nicht mehr verfuegbarer Quelle werden dort
+storniert. Ein Multipart-Cleanup lockt Asset und Session in derselben
+Transaktion und revalidiert Status, Asset-Ablaufzeit, Initialisierungstoken,
+Provider-Upload-ID sowie Session- und Upload-Deadline gegen den zuvor gelesenen
+Kandidaten. Erst nach einem erfolgreichen Claim wird I/O-Budget verbraucht.
+Dadurch kann eine inzwischen aktivierte Upload-Session nicht aus einem alten
+Maintenance-Snapshot abgebrochen werden. Danach werden abgelaufene
+Upload-Intents, seit 24 Stunden scanbereite aber nie gebundene Abgabeanhaenge,
+Kurs- oder Community-Medien, verwaiste Incoming-Objekte und
+Verarbeitungsderivate gepflegt. Die erste I/O-Runde bietet rotierend jeweils
+einem Objekt-Cleanup, einer Derivatloeschung, einem abgelaufenen Upload, einer
+verwaisten Multipart-Session und einem alten Tombstone genau einen Slot an. Mit
+dem produktiven Limit von fuenf kann daher keine dieser Klassen die anderen
+verdraengen; bei kleineren manuellen Limits wandert der Startpunkt pro Lauf.
+Slots leerer Klassen werden danach innerhalb desselben unveraenderten
+Gesamtlimits wiederverwendet. Innerhalb jeder Klasse wandert ein eigener
+Organisations-Cursor weiter und nimmt dort jeweils den aeltesten Kandidaten.
+Die 100er-Batches fuer Quota-Freigabe und Job-Stornierung ordnen zusaetzlich
+mit `row_number()` pro Organisation, bevor sie den Cursor anwenden. Ein Tenant
+mit dauerhaft hohem Uploadaufkommen kann damit weder andere Cleanup-Klassen
+noch andere Tenants derselben Klasse verdraengen. Die Derivatloeschung teilt
+Advisory-Lock, Zeitlimit, I/O-Budget und AbortSignal des gesamten Laufs. Die
 Response-Zaehler `expiredUnattachedSubmissionAssets`,
 `expiredUnattachedCourseAssets` und `expiredUnattachedCommunityAssets` muessen
 im Regelbetrieb beobachtet werden; ungewoehnliche Spitzen koennen auf
@@ -1284,6 +1377,7 @@ Session-, Cron-, Mail-, KI- oder S3-Secrets.
    bestaetigt regenerieren. Der alte Pepper darf erst entfernt werden, wenn
    `user_mfa_configurations.recovery_code_hashes` keine Envelope mit seiner
    Key-ID mehr enthaelt. Details: `docs/MFA_SECURITY.md`.
+
 5. Alte Leseschluessel mindestens fuer das freigegebene Rollback-Fenster
    behalten. Ein Konfigurationsrollback muss den dann neuen Schluessel als
    Leseschluessel enthalten. Erst nach erneutem `--check`, Ablauf des Fensters
@@ -1349,8 +1443,9 @@ zeitlich begrenzt und muss im JSON ebenfalls exakt den Zieltag melden; ein alter
 DNS-Zielhost kann das Gate damit nicht gruen machen. Erst nach
 dieser Release-Readiness schreibt das Skript `APP_IMAGE_TAG` und den
 attestierten PostgreSQL-Digest atomar in die geschuetzte
-Produktions-Env sowie State-Schema 2 mit `CONTROLLER_COMMIT`, aktuellem und
-vorherigem Runtime-Tag. Env- und State-Renames werden auf das Dateisystem
+Produktions-Env sowie State-Schema 3 mit `CONTROLLER_COMMIT`, aktuellem und
+vorherigem Runtime-Tag und der nicht geheimen, exakten Medien-Storage-Identitaet.
+Env- und State-Renames werden auf das Dateisystem
 synchronisiert; erst danach wird der Pending-Marker dauerhaft entfernt. Env und
 State muessen bei jedem weiteren Deploy, Rollback und Boot-Reconcile
 uebereinstimmen; Git `HEAD` muss beim Reconcile dem gespeicherten Controller-

@@ -89,12 +89,17 @@ export function resolveMediaProcessingPreflightConfiguration(
   if (production && environment.MEDIA_STORAGE_DRIVER?.trim() !== "s3") {
     throw new Error("MEDIA_STORAGE_DRIVER must be s3 for the production runner.");
   }
-  const rawRoot = environment.MEDIA_PROCESSING_WORK_ROOT?.trim() ||
-    resolve(process.cwd(), ".data", "media-processing");
+  const rawRoot =
+    environment.MEDIA_PROCESSING_WORK_ROOT?.trim() ||
+    resolve(
+      /* turbopackIgnore: true */ process.cwd(),
+      ".data",
+      "media-processing",
+    );
   if (production && !isAbsolute(rawRoot)) {
     throw new Error("MEDIA_PROCESSING_WORK_ROOT must be absolute in production.");
   }
-  const workRoot = resolve(rawRoot);
+  const workRoot = resolve(/* turbopackIgnore: true */ rawRoot);
   if (workRoot === parse(workRoot).root || workRoot.length < 8 || workRoot.includes("\0")) {
     throw new Error("MEDIA_PROCESSING_WORK_ROOT is unsafe.");
   }
@@ -128,6 +133,9 @@ export function resolveMediaProcessingPreflightConfiguration(
           executable: executable(transcriptCommand, "", "MEDIA_TRANSCRIPT_COMMAND"),
           arguments: commandArguments(environment.MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON),
         }
-      : { mode: "sidecar", directory: resolve(sidecar!) },
+      : {
+          mode: "sidecar",
+          directory: resolve(/* turbopackIgnore: true */ sidecar!),
+        },
   };
 }

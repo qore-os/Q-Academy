@@ -12,7 +12,10 @@ import {
   AUTOMATION_CONNECTOR_CONTRACT_VERSION,
   AUTOMATION_CONNECTOR_REQUIRED_SCOPES,
 } from "@/lib/automation-connector";
-import { mediaAssetCreateSchema } from "@/lib/media/api-schemas";
+import {
+  mediaAssetCreateSchema,
+  mediaMultipartPartAuthorizationSchema,
+} from "@/lib/media/api-schemas";
 import { MEDIA_PURPOSES } from "@/lib/media/mime-policy";
 import {
   examAttemptApiStartSchema,
@@ -106,8 +109,7 @@ function courseWidgetRequestOpenApiSchema(source: z.ZodType): OpenApiMap {
   if (!variants || variants.length !== 3) return generated;
   const imageVariant = variants[2];
   const imageProperties = imageVariant.properties as
-    | Record<string, OpenApiMap>
-    | undefined;
+    Record<string, OpenApiMap> | undefined;
   if (!imageProperties) return generated;
   const sharedProperties = {
     type: { type: "string", const: "image_link" },
@@ -147,8 +149,7 @@ function courseWidgetRequestOpenApiSchema(source: z.ZodType): OpenApiMap {
           mediaAssetId: uuidSchema,
           imageUrl: {
             type: "string",
-            pattern:
-              "^/api/media-assets/[0-9a-fA-F-]{36}/download$",
+            pattern: "^/api/media-assets/[0-9a-fA-F-]{36}/download$",
             description:
               "Optional canonical download URL. When supplied, its UUID must equal mediaAssetId.",
           },
@@ -347,40 +348,175 @@ const announcementContentDocumentOpenApi: OpenApiMap = {
 
 const structuredContentDocumentOpenApi: Record<string, OpenApiMap> = {
   callout: {
-    type: "object", additionalProperties: false, required: ["version", "tone", "body"],
-    properties: { version: { type: "integer", const: 1 }, tone: { type: "string", enum: ["info", "success", "warning", "danger"] }, heading: { type: "string", maxLength: 220 }, body: { type: "string", minLength: 1, maxLength: 12000 } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "tone", "body"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      tone: { type: "string", enum: ["info", "success", "warning", "danger"] },
+      heading: { type: "string", maxLength: 220 },
+      body: { type: "string", minLength: 1, maxLength: 12000 },
+    },
   },
   quote: {
-    type: "object", additionalProperties: false, required: ["version", "quote"],
-    properties: { version: { type: "integer", const: 1 }, quote: { type: "string", minLength: 1, maxLength: 12000 }, attribution: { type: "string", maxLength: 500 }, sourceUrl: { type: "string", maxLength: 2000 } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "quote"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      quote: { type: "string", minLength: 1, maxLength: 12000 },
+      attribution: { type: "string", maxLength: 500 },
+      sourceUrl: { type: "string", maxLength: 2000 },
+    },
   },
   divider: {
-    type: "object", additionalProperties: false, required: ["version", "style", "spacing"],
-    properties: { version: { type: "integer", const: 1 }, style: { type: "string", enum: ["solid", "dashed", "dotted"] }, spacing: { type: "string", enum: ["compact", "normal", "wide"] } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "style", "spacing"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      style: { type: "string", enum: ["solid", "dashed", "dotted"] },
+      spacing: { type: "string", enum: ["compact", "normal", "wide"] },
+    },
   },
   accordion: {
-    type: "object", additionalProperties: false, required: ["version", "items"],
-    properties: { version: { type: "integer", const: 1 }, items: { type: "array", minItems: 1, maxItems: 20, items: { type: "object", additionalProperties: false, required: ["id", "title", "body", "openByDefault"], properties: { id: { type: "string", maxLength: 80 }, title: { type: "string", minLength: 1, maxLength: 220 }, body: { type: "string", minLength: 1, maxLength: 12000 }, openByDefault: { type: "boolean" } } } } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "items"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      items: {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "title", "body", "openByDefault"],
+          properties: {
+            id: { type: "string", maxLength: 80 },
+            title: { type: "string", minLength: 1, maxLength: 220 },
+            body: { type: "string", minLength: 1, maxLength: 12000 },
+            openByDefault: { type: "boolean" },
+          },
+        },
+      },
+    },
   },
   tabs: {
-    type: "object", additionalProperties: false, required: ["version", "tabs", "defaultTabId"],
-    properties: { version: { type: "integer", const: 1 }, defaultTabId: { type: "string", maxLength: 80 }, tabs: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", additionalProperties: false, required: ["id", "label", "body"], properties: { id: { type: "string", maxLength: 80 }, label: { type: "string", minLength: 1, maxLength: 120 }, body: { type: "string", minLength: 1, maxLength: 12000 } } } } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "tabs", "defaultTabId"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      defaultTabId: { type: "string", maxLength: 80 },
+      tabs: {
+        type: "array",
+        minItems: 1,
+        maxItems: 12,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "label", "body"],
+          properties: {
+            id: { type: "string", maxLength: 80 },
+            label: { type: "string", minLength: 1, maxLength: 120 },
+            body: { type: "string", minLength: 1, maxLength: 12000 },
+          },
+        },
+      },
+    },
   },
   columns: {
-    type: "object", additionalProperties: false, required: ["version", "layout", "columns"],
-    properties: { version: { type: "integer", const: 1 }, layout: { type: "string", enum: ["equal", "sidebar_left", "sidebar_right"] }, columns: { type: "array", minItems: 2, maxItems: 3, items: { type: "object", additionalProperties: false, required: ["id", "body"], properties: { id: { type: "string", maxLength: 80 }, heading: { type: "string", maxLength: 220 }, body: { type: "string", minLength: 1, maxLength: 12000 } } } } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "layout", "columns"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      layout: {
+        type: "string",
+        enum: ["equal", "sidebar_left", "sidebar_right"],
+      },
+      columns: {
+        type: "array",
+        minItems: 2,
+        maxItems: 3,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "body"],
+          properties: {
+            id: { type: "string", maxLength: 80 },
+            heading: { type: "string", maxLength: 220 },
+            body: { type: "string", minLength: 1, maxLength: 12000 },
+          },
+        },
+      },
+    },
   },
   download: {
-    type: "object", additionalProperties: false, required: ["version", "mediaAssetId", "fileName", "label"],
-    properties: { version: { type: "integer", const: 1 }, mediaAssetId: uuidSchema, fileName: { type: "string", minLength: 1, maxLength: 500 }, label: { type: "string", minLength: 1, maxLength: 220 }, description: { type: "string", maxLength: 2000 } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "mediaAssetId", "fileName", "label"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      mediaAssetId: uuidSchema,
+      fileName: { type: "string", minLength: 1, maxLength: 500 },
+      label: { type: "string", minLength: 1, maxLength: 220 },
+      description: { type: "string", maxLength: 2000 },
+    },
   },
   code: {
-    type: "object", additionalProperties: false, required: ["version", "language", "code", "lineNumbers", "wrap"],
-    properties: { version: { type: "integer", const: 1 }, language: { type: "string", enum: ["plaintext", "bash", "css", "html", "javascript", "json", "python", "sql", "typescript"] }, code: { type: "string", minLength: 1, maxLength: 30000 }, lineNumbers: { type: "boolean" }, wrap: { type: "boolean" } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "language", "code", "lineNumbers", "wrap"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      language: {
+        type: "string",
+        enum: [
+          "plaintext",
+          "bash",
+          "css",
+          "html",
+          "javascript",
+          "json",
+          "python",
+          "sql",
+          "typescript",
+        ],
+      },
+      code: { type: "string", minLength: 1, maxLength: 30000 },
+      lineNumbers: { type: "boolean" },
+      wrap: { type: "boolean" },
+    },
   },
   table: {
-    type: "object", additionalProperties: false, required: ["version", "headers", "rows", "striped"],
-    properties: { version: { type: "integer", const: 1 }, caption: { type: "string", maxLength: 500 }, headers: { type: "array", minItems: 1, maxItems: 12, items: { type: "string", minLength: 1, maxLength: 500 } }, rows: { type: "array", minItems: 1, maxItems: 100, items: { type: "array", minItems: 1, maxItems: 12, items: { type: "string", maxLength: 2000 } } }, striped: { type: "boolean" } },
+    type: "object",
+    additionalProperties: false,
+    required: ["version", "headers", "rows", "striped"],
+    properties: {
+      version: { type: "integer", const: 1 },
+      caption: { type: "string", maxLength: 500 },
+      headers: {
+        type: "array",
+        minItems: 1,
+        maxItems: 12,
+        items: { type: "string", minLength: 1, maxLength: 500 },
+      },
+      rows: {
+        type: "array",
+        minItems: 1,
+        maxItems: 100,
+        items: {
+          type: "array",
+          minItems: 1,
+          maxItems: 12,
+          items: { type: "string", maxLength: 2000 },
+        },
+      },
+      striped: { type: "boolean" },
+    },
   },
 };
 
@@ -496,8 +632,12 @@ const requestSchemas: Record<string, OpenApiMap> = {
   CommerceConnectionCreate: zodRequestSchema(
     apiSchemas.commerceConnectionInputSchema,
   ),
-  CommerceProductCreate: zodRequestSchema(apiSchemas.commerceProductInputSchema),
-  CommerceMappingCreate: zodRequestSchema(apiSchemas.commerceMappingInputSchema),
+  CommerceProductCreate: zodRequestSchema(
+    apiSchemas.commerceProductInputSchema,
+  ),
+  CommerceMappingCreate: zodRequestSchema(
+    apiSchemas.commerceMappingInputSchema,
+  ),
   CommerceEntitlementCommand: zodRequestSchema(
     apiSchemas.commerceEntitlementCommandSchema,
   ),
@@ -506,7 +646,9 @@ const requestSchemas: Record<string, OpenApiMap> = {
   ),
   N8nWorkflowCreate: zodRequestSchema(apiSchemas.n8nWorkflowInputSchema),
   N8nTrigger: zodRequestSchema(apiSchemas.n8nTriggerSchema),
-  SupportSettingsUpdate: zodRequestSchema(apiSchemas.supportSettingsInputSchema),
+  SupportSettingsUpdate: zodRequestSchema(
+    apiSchemas.supportSettingsInputSchema,
+  ),
   CourseCreate: zodRequestSchema(apiSchemas.courseCreateSchema),
   CourseUpdate: zodRequestSchema(apiSchemas.courseUpdateSchema),
   CourseClone: zodRequestSchema(apiSchemas.courseCloneSchema),
@@ -565,8 +707,12 @@ const requestSchemas: Record<string, OpenApiMap> = {
   }),
   LessonPageCreate: zodRequestSchema(apiSchemas.lessonPageCreateSchema),
   LessonPageUpdate: zodRequestSchema(apiSchemas.lessonPageUpdateSchema),
-  ContentBlockCreate: contentBlockRequestSchema(apiSchemas.contentBlockCreateSchema),
-  ContentBlockUpdate: contentBlockRequestSchema(apiSchemas.contentBlockUpdateSchema),
+  ContentBlockCreate: contentBlockRequestSchema(
+    apiSchemas.contentBlockCreateSchema,
+  ),
+  ContentBlockUpdate: contentBlockRequestSchema(
+    apiSchemas.contentBlockUpdateSchema,
+  ),
   AssessmentAttemptSubmit: zodRequestSchema(
     apiSchemas.assessmentAttemptSubmitSchema,
   ),
@@ -636,7 +782,8 @@ const requestSchemas: Record<string, OpenApiMap> = {
   CommunityAreaCreate: zodRequestSchema(apiSchemas.communityAreaCreateSchema),
   CommunityAreaUpdate: zodRequestSchema(apiSchemas.communityAreaUpdateSchema),
   CommunityAreaMove: zodRequestSchema(apiSchemas.communityAreaMoveSchema),
-  CommunityProfileSettingsReplace: communityProfileSettingsReplaceRequestSchema(),
+  CommunityProfileSettingsReplace:
+    communityProfileSettingsReplaceRequestSchema(),
   CommunitySpaceAccessPolicy: zodRequestSchema(
     apiSchemas.communitySpaceAccessPolicySchema,
   ),
@@ -695,6 +842,9 @@ const requestSchemas: Record<string, OpenApiMap> = {
   }),
   SubmissionReview: zodRequestSchema(apiSchemas.submissionReviewSchema),
   MediaAssetCreate: zodRequestSchema(mediaAssetCreateSchema),
+  MediaMultipartPartAuthorizeRequest: zodRequestSchema(
+    mediaMultipartPartAuthorizationSchema,
+  ),
   FeedbackCreate: zodRequestSchema(apiSchemas.feedbackCreateSchema),
   FeedbackUpdate: zodRequestSchema(apiSchemas.feedbackUpdateSchema),
   FeedbackReply: zodRequestSchema(apiSchemas.feedbackReplySchema),
@@ -955,19 +1105,13 @@ const schemas: Record<string, OpenApiMap> = {
   ...requestSchemas,
   MediaAssetUploadAuthorization: {
     description:
-      "Provider-dependent upload authorization. PUT uploads send the file as the raw request body and honor the returned header contract; browser user agents supply the forbidden Content-Length header from the exact body size. POST uploads send every returned field plus the file in one multipart/form-data request and must not add custom request headers.",
+      "Provider-dependent upload authorization. PUT uploads send the file as the raw request body and honor the returned header contract; browser user agents supply the forbidden Content-Length header from the exact body size. POST uploads send every returned field plus the file in one multipart/form-data request and must not add custom request headers. Native S3 multipart sessions use the returned control-plane endpoints and sign each checksummed part separately.",
     oneOf: [
       {
         title: "Raw PUT upload",
         type: "object",
         additionalProperties: false,
-        required: [
-          "transport",
-          "method",
-          "url",
-          "headers",
-          "expiresInSeconds",
-        ],
+        required: ["transport", "method", "url", "headers", "expiresInSeconds"],
         properties: {
           transport: { type: "string", enum: ["s3", "application"] },
           method: { type: "string", const: "PUT" },
@@ -985,10 +1129,7 @@ const schemas: Record<string, OpenApiMap> = {
             additionalProperties: { type: "string" },
           },
           expiresInSeconds: {
-            anyOf: [
-              { type: "integer", minimum: 1 },
-              { type: "null" },
-            ],
+            anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
           },
         },
       },
@@ -996,13 +1137,7 @@ const schemas: Record<string, OpenApiMap> = {
         title: "Signed multipart POST upload",
         type: "object",
         additionalProperties: false,
-        required: [
-          "transport",
-          "method",
-          "url",
-          "fields",
-          "expiresInSeconds",
-        ],
+        required: ["transport", "method", "url", "fields", "expiresInSeconds"],
         properties: {
           transport: { type: "string", const: "s3" },
           method: { type: "string", const: "POST" },
@@ -1015,6 +1150,45 @@ const schemas: Record<string, OpenApiMap> = {
             additionalProperties: { type: "string" },
           },
           expiresInSeconds: { type: "integer", minimum: 1 },
+        },
+      },
+      {
+        title: "Native S3 multipart upload session",
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "transport",
+          "statusUrl",
+          "partsUrl",
+          "completeUrl",
+          "abortUrl",
+          "partSizeBytes",
+          "partCount",
+          "concurrency",
+          "expiresAt",
+        ],
+        properties: {
+          transport: { type: "string", const: "s3-multipart" },
+          statusUrl: {
+            type: "string",
+            pattern: "^/api/v1/media-assets/[0-9a-fA-F-]{36}/multipart$",
+          },
+          partsUrl: {
+            type: "string",
+            pattern: "^/api/v1/media-assets/[0-9a-fA-F-]{36}/multipart/parts$",
+          },
+          completeUrl: {
+            type: "string",
+            pattern: "^/api/v1/media-assets/[0-9a-fA-F-]{36}/complete$",
+          },
+          abortUrl: {
+            type: "string",
+            pattern: "^/api/v1/media-assets/[0-9a-fA-F-]{36}/multipart$",
+          },
+          partSizeBytes: { type: "integer", minimum: 5_242_880 },
+          partCount: { type: "integer", minimum: 1, maximum: 10_000 },
+          concurrency: { type: "integer", minimum: 1, maximum: 3 },
+          expiresAt: dateTimeSchema,
         },
       },
     ],
@@ -1072,6 +1246,88 @@ const schemas: Record<string, OpenApiMap> = {
       createdAt: dateTimeSchema,
       updatedAt: dateTimeSchema,
       upload: schemaRef("MediaAssetUploadAuthorization"),
+    },
+  },
+  MediaMultipartUploadedPart: {
+    type: "object",
+    additionalProperties: false,
+    required: ["partNumber", "sizeBytes"],
+    properties: {
+      partNumber: { type: "integer", minimum: 1, maximum: 10_000 },
+      sizeBytes: { type: "integer", minimum: 1 },
+    },
+  },
+  MediaMultipartStatus: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "state",
+      "partSizeBytes",
+      "partCount",
+      "uploadedBytes",
+      "uploadedParts",
+      "expiresAt",
+      "completeUrl",
+    ],
+    properties: {
+      state: {
+        type: "string",
+        enum: ["uploading", "completing", "completion_pending", "completed"],
+      },
+      partSizeBytes: { type: "integer", minimum: 5_242_880 },
+      partCount: { type: "integer", minimum: 1, maximum: 10_000 },
+      uploadedBytes: { type: "integer", minimum: 0 },
+      uploadedParts: {
+        type: "array",
+        maxItems: 10_000,
+        items: schemaRef("MediaMultipartUploadedPart"),
+      },
+      expiresAt: nullableDateTimeSchema,
+      completeUrl: {
+        type: "string",
+        pattern: "^/api/v1/media-assets/[0-9a-fA-F-]{36}/complete$",
+      },
+    },
+  },
+  MediaMultipartPartAuthorization: {
+    type: "object",
+    additionalProperties: false,
+    required: [
+      "method",
+      "url",
+      "headers",
+      "partNumber",
+      "sizeBytes",
+      "expiresInSeconds",
+    ],
+    properties: {
+      method: { type: "string", const: "PUT" },
+      url: { type: "string", format: "uri" },
+      headers: {
+        type: "object",
+        additionalProperties: false,
+        required: ["Content-Length", "X-Amz-Checksum-Sha256"],
+        properties: {
+          "Content-Length": { type: "string", pattern: "^[1-9][0-9]*$" },
+          "X-Amz-Checksum-Sha256": {
+            type: "string",
+            pattern: "^[A-Za-z0-9+/]{43}=$",
+          },
+        },
+      },
+      partNumber: { type: "integer", minimum: 1, maximum: 10_000 },
+      sizeBytes: { type: "integer", minimum: 1 },
+      expiresInSeconds: { type: "integer", minimum: 1 },
+    },
+  },
+  MediaMultipartAbortResult: {
+    type: "object",
+    additionalProperties: false,
+    required: ["id", "aborted", "deleted"],
+    properties: {
+      id: uuidSchema,
+      aborted: { type: "boolean", const: true },
+      deleted: { type: "boolean", const: true },
     },
   },
   AutomationConnectorStatus: {
@@ -1459,7 +1715,10 @@ const schemas: Record<string, OpenApiMap> = {
           },
         },
       },
-      profileHref: { type: "string", const: "/academy/profile?community=required" },
+      profileHref: {
+        type: "string",
+        const: "/academy/profile?community=required",
+      },
     },
   },
   CommunityProfileSettingsAdminData: {
@@ -1542,7 +1801,14 @@ const schemas: Record<string, OpenApiMap> = {
             label: { type: "string", maxLength: 180 },
             type: {
               type: "string",
-              enum: ["text", "number", "boolean", "date", "select", "multiselect"],
+              enum: [
+                "text",
+                "number",
+                "boolean",
+                "date",
+                "select",
+                "multiselect",
+              ],
             },
             options: {
               type: "array",
@@ -1663,16 +1929,29 @@ const schemas: Record<string, OpenApiMap> = {
                 type: "string",
                 enum: ["trial", "active", "past_due", "suspended", "cancelled"],
               },
-              seatLimit: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
-              courseLimit: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
-              storageLimitBytes: { anyOf: [{ type: "integer", minimum: 1048576 }, { type: "null" }] },
-              aiMonthlyCredits: { anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }] },
+              seatLimit: {
+                anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
+              },
+              courseLimit: {
+                anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }],
+              },
+              storageLimitBytes: {
+                anyOf: [
+                  { type: "integer", minimum: 1048576 },
+                  { type: "null" },
+                ],
+              },
+              aiMonthlyCredits: {
+                anyOf: [{ type: "integer", minimum: 0 }, { type: "null" }],
+              },
               featureEntitlements: {
                 type: "array",
                 maxItems: 64,
                 items: { type: "string", minLength: 2, maxLength: 64 },
               },
-              externalReference: { anyOf: [{ type: "string", maxLength: 255 }, { type: "null" }] },
+              externalReference: {
+                anyOf: [{ type: "string", maxLength: 255 }, { type: "null" }],
+              },
               startsAt: dateTimeSchema,
               endsAt: nullableDateTimeSchema,
               revision: { type: "integer", minimum: 1 },
@@ -1827,10 +2106,7 @@ const schemas: Record<string, OpenApiMap> = {
       createdAt: dateTimeSchema,
       updatedAt: dateTimeSchema,
       appeal: {
-        anyOf: [
-          schemaRef("CommunityModerationQueueAppeal"),
-          { type: "null" },
-        ],
+        anyOf: [schemaRef("CommunityModerationQueueAppeal"), { type: "null" }],
       },
     },
     description:
@@ -1941,10 +2217,7 @@ const schemas: Record<string, OpenApiMap> = {
         enum: ["off", "observe", "enforce"],
       },
       reportThreshold: {
-        anyOf: [
-          { type: "integer", minimum: 2, maximum: 20 },
-          { type: "null" },
-        ],
+        anyOf: [{ type: "integer", minimum: 2, maximum: 20 }, { type: "null" }],
       },
       duplicateWindowMinutes: {
         type: "integer",
@@ -1996,7 +2269,15 @@ const schemas: Record<string, OpenApiMap> = {
   CommunityBadge: {
     type: "object",
     additionalProperties: false,
-    required: ["id", "name", "description", "icon", "color", "groupId", "groupName"],
+    required: [
+      "id",
+      "name",
+      "description",
+      "icon",
+      "color",
+      "groupId",
+      "groupName",
+    ],
     properties: {
       id: uuidSchema,
       name: { type: "string", minLength: 1, maxLength: 160 },
@@ -2004,7 +2285,9 @@ const schemas: Record<string, OpenApiMap> = {
       icon: { type: "string", minLength: 1, maxLength: 60 },
       color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" },
       groupId: { anyOf: [uuidSchema, { type: "null" }] },
-      groupName: { anyOf: [{ type: "string", maxLength: 160 }, { type: "null" }] },
+      groupName: {
+        anyOf: [{ type: "string", maxLength: 160 }, { type: "null" }],
+      },
     },
   },
   CommunityLeaderboardEntry: {
@@ -2191,13 +2474,34 @@ const schemas: Record<string, OpenApiMap> = {
     type: "object",
     additionalProperties: false,
     required: [
-      "id", "title", "content", "contentFormat", "richText",
-      "contentProjectionVersion", "imageUrl", "pinned", "locked",
-      "createdAt", "updatedAt", "spaceId", "spaceTitle", "spaceType",
-      "authorId", "authorFirstName", "authorLastName", "authorAvatarUrl",
-      "authorProfile", "reactionCount", "likeCount", "celebrateCount",
-      "insightfulCount", "questionCount", "voteScore", "commentCount",
-      "courseLink", "attachments",
+      "id",
+      "title",
+      "content",
+      "contentFormat",
+      "richText",
+      "contentProjectionVersion",
+      "imageUrl",
+      "pinned",
+      "locked",
+      "createdAt",
+      "updatedAt",
+      "spaceId",
+      "spaceTitle",
+      "spaceType",
+      "authorId",
+      "authorFirstName",
+      "authorLastName",
+      "authorAvatarUrl",
+      "authorProfile",
+      "reactionCount",
+      "likeCount",
+      "celebrateCount",
+      "insightfulCount",
+      "questionCount",
+      "voteScore",
+      "commentCount",
+      "courseLink",
+      "attachments",
     ],
     properties: {
       id: uuidSchema,
@@ -2245,9 +2549,19 @@ const schemas: Record<string, OpenApiMap> = {
     type: "object",
     additionalProperties: false,
     required: [
-      "id", "postId", "authorId", "parentId", "content", "contentFormat",
-      "richText", "contentProjectionVersion", "moderationState",
-      "moderationVersion", "publishedAt", "createdAt", "updatedAt",
+      "id",
+      "postId",
+      "authorId",
+      "parentId",
+      "content",
+      "contentFormat",
+      "richText",
+      "contentProjectionVersion",
+      "moderationState",
+      "moderationVersion",
+      "publishedAt",
+      "createdAt",
+      "updatedAt",
       "attachments",
     ],
     properties: {
@@ -2278,10 +2592,20 @@ const schemas: Record<string, OpenApiMap> = {
     type: "object",
     additionalProperties: false,
     required: [
-      "id", "parentId", "content", "contentFormat", "richText",
-      "contentProjectionVersion", "createdAt", "updatedAt", "authorId",
-      "authorFirstName", "authorLastName", "authorAvatarUrl",
-      "authorProfile", "attachments",
+      "id",
+      "parentId",
+      "content",
+      "contentFormat",
+      "richText",
+      "contentProjectionVersion",
+      "createdAt",
+      "updatedAt",
+      "authorId",
+      "authorFirstName",
+      "authorLastName",
+      "authorAvatarUrl",
+      "authorProfile",
+      "attachments",
     ],
     properties: {
       id: uuidSchema,
@@ -3127,13 +3451,7 @@ const schemas: Record<string, OpenApiMap> = {
   EmailSuppressionReleaseResult: {
     type: "object",
     additionalProperties: false,
-    required: [
-      "id",
-      "status",
-      "releasedAt",
-      "releaseReason",
-      "changed",
-    ],
+    required: ["id", "status", "releasedAt", "releaseReason", "changed"],
     properties: {
       id: uuidSchema,
       status: { type: "string", const: "released" },
@@ -3595,7 +3913,8 @@ const lessonPageRevisionHeader: OpenApiMap = {
   name: "If-Match",
   in: "header",
   required: true,
-  description: "Current positive lesson-page revision returned by the read endpoint.",
+  description:
+    "Current positive lesson-page revision returned by the read endpoint.",
   schema: { type: "string", pattern: '^"?[1-9][0-9]*"?$' },
 };
 const courseId = pathParameter("courseId", "Course identifier.");
@@ -3625,6 +3944,7 @@ type ApiOperationOptions = {
   paginated?: boolean;
   idempotent?: boolean;
   precondition?: boolean;
+  serviceUnavailable?: boolean;
   description?: string;
 };
 
@@ -3672,6 +3992,9 @@ function apiOperation(options: ApiOperationOptions): OpenApiOperation {
       }),
       ...(options.precondition
         ? { "428": responseRef("PreconditionRequired") }
+        : {}),
+      ...(options.serviceUnavailable
+        ? { "503": responseRef("ServiceUnavailable") }
         : {}),
       ...standardErrors,
     },
@@ -7540,7 +7863,8 @@ paths["/media-assets"] = {
     responseSchema: "MediaAssetCreated",
     status: "201",
     idempotent: true,
-    description: `${mediaScopeDescription} The provider-dependent upload authorization is either a raw PUT with required headers or a multipart POST with signed form fields. The reduced STRATO transport does not provide a native write-once guarantee: Q-Academy uses a unique staging key and verifies exact length, metadata, ETag, and content digest before promotion.`,
+    serviceUnavailable: true,
+    description: `${mediaScopeDescription} Versioned S3 uses resumable native multipart uploads for large objects and the signed raw-PUT contract for smaller objects. Reduced STRATO capability remains on its bounded signed multipart/form-data POST transport and does not provide a native write-once guarantee: Q-Academy uses a unique staging key and verifies exact length, metadata, ETag, and content digest before promotion. All uploads remain below the 2,000,000,000-byte scanner boundary.`,
   }),
 };
 
@@ -7567,12 +7891,63 @@ paths["/media-assets/{id}"] = {
 paths["/media-assets/{id}/complete"] = {
   post: apiOperation({
     tag: "Media Assets",
-    summary: "Complete direct S3 upload",
+    summary: "Complete S3 upload",
     operationId: "completeMediaAssetUpload",
     scopes: [],
     parameters: [id],
     idempotent: true,
-    description: `${mediaScopeDescription} Verifies the staged object size, MIME metadata, tenant metadata, and stable ETag before queueing a scan.`,
+    serviceUnavailable: true,
+    description: `${mediaScopeDescription} For native multipart uploads, claims and verifies the provider part inventory before completion. If the provider reports a missing upload after an ambiguous completion, the exact finished staging object is verified before database finalization. Single-upload transports retain their existing staged-object verification.`,
+  }),
+};
+
+paths["/media-assets/{id}/multipart"] = {
+  get: apiOperation({
+    tag: "Media Assets",
+    summary: "Get multipart upload status",
+    operationId: "getMediaAssetMultipartStatus",
+    scopes: [],
+    parameters: [id],
+    responseSchema: "MediaMultipartStatus",
+    serviceUnavailable: true,
+    description: `${mediaScopeDescription} Read-only provider inventory lookup. A missing provider upload is reported without creating a replacement; use the recovery operation explicitly.`,
+  }),
+  post: apiOperation({
+    tag: "Media Assets",
+    summary: "Recover multipart upload status",
+    operationId: "recoverMediaAssetMultipartStatus",
+    scopes: [],
+    parameters: [id],
+    responseSchema: "MediaMultipartStatus",
+    idempotent: true,
+    serviceUnavailable: true,
+    description: `${mediaScopeDescription} Reconciles the provider upload. On NoSuchUpload, it first verifies whether the exact staging object was already completed and only creates a replacement session when the object is absent and the original upload deadline has sufficient safety reserve.`,
+  }),
+  delete: apiOperation({
+    tag: "Media Assets",
+    summary: "Abort multipart upload",
+    operationId: "abortMediaAssetMultipartUpload",
+    scopes: [],
+    parameters: [id],
+    responseSchema: "MediaMultipartAbortResult",
+    idempotent: true,
+    serviceUnavailable: true,
+    description: `${mediaScopeDescription} Fences active completion work, aborts the provider upload, removes staged data, marks the upload intent deleted, and releases its reserved quota.`,
+  }),
+};
+
+paths["/media-assets/{id}/multipart/parts"] = {
+  post: apiOperation({
+    tag: "Media Assets",
+    summary: "Authorize multipart upload part",
+    operationId: "authorizeMediaAssetMultipartPart",
+    scopes: [],
+    parameters: [id],
+    requestSchema: "MediaMultipartPartAuthorizeRequest",
+    responseSchema: "MediaMultipartPartAuthorization",
+    idempotent: true,
+    serviceUnavailable: true,
+    description: `${mediaScopeDescription} Signs one plan-bound part number and exact SHA-256 checksum. Send the exact returned Content-Length and X-Amz-Checksum-Sha256 headers with the raw part body.`,
   }),
 };
 
@@ -7988,6 +8363,9 @@ const componentResponses: Record<string, OpenApiMap> = {
     },
   },
   InternalError: problemResponse("An unexpected server error occurred."),
+  ServiceUnavailable: problemResponse(
+    "The configured media storage provider is temporarily unavailable.",
+  ),
   Http400: responseRef("BadRequest"),
   Http401: responseRef("Unauthorized"),
   Http403: responseRef("Forbidden"),
@@ -8004,7 +8382,7 @@ export const openApiDocument = {
   jsonSchemaDialect: "https://json-schema.org/draft/2020-12/schema",
   info: {
     title: "Q-Academy REST API",
-    version: "1.6.0",
+    version: "1.7.0",
     summary: "Tenant-scoped learning-platform and browser-session API.",
     description:
       "Administrative `/api/v1` operations use organization API keys and per-operation scopes. Browser identity endpoints use a persisted HttpOnly cookie session instead; public authentication and health endpoints explicitly opt out of API-key security. Standard successful JSON responses use `{ data, meta }`, where `meta` always contains `requestId` and `timestamp` and paginated lists add `meta.pagination`. Errors use `application/problem+json` and the RFC 9457 Problem Details members plus stable `code`, `requestId`, and `errors` extensions.",
@@ -8094,7 +8472,8 @@ export const openApiDocument = {
     { name: "Analytics", description: "Aggregated and activity analytics." },
     {
       name: "Commerce",
-      description: "Provider-neutral products, orders, subscriptions, and entitlements.",
+      description:
+        "Provider-neutral products, orders, subscriptions, and entitlements.",
     },
     {
       name: "Automations",

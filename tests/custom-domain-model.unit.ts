@@ -159,9 +159,15 @@ test("schema and runtime wiring persist no plaintext challenge and trust verifie
   const service = readFileSync("src/lib/custom-domains.ts", "utf8");
   assert.match(service, /custom_domain\.expired/);
   assert.match(service, /lte\(customDomainClaims\.challengeExpiresAt, issuedAt\)/);
+  assert.match(service, /assertS3BrowserUploadOriginAllowed/);
+  assert.match(
+    service,
+    /dnsResult\.code === "verified"[\s\S]*process\.env\.NODE_ENV === "production"[\s\S]*https:\/\/\$\{snapshot\.hostname\}/,
+  );
   const provisioning = readFileSync("scripts/provision-tenant.ts", "utf8");
   assert.match(provisioning, /--login-hostname darf keinen ungeprueften Host aktivieren/);
   assert.match(provisioning, /loginHostname: null/);
+  assert.match(provisioning, /assertTenantUploadOrigin\(input\.slug, origin\)/);
 });
 
 test("REST contract is owner-bound, revisioned and excludes hashes", () => {

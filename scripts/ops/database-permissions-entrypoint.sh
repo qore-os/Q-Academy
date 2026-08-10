@@ -76,6 +76,8 @@ grant usage on schema public, drizzle to :"media_user";
 revoke all on all tables in schema public from :"media_user";
 revoke all on all sequences in schema public from :"media_user";
 grant select, update, delete on table public.media_assets to :"media_user";
+grant select, delete on table public.media_upload_sessions to :"media_user";
+grant update (state, updated_at) on table public.media_upload_sessions to :"media_user";
 grant select, insert, update, delete on table public.media_processing_jobs to :"media_user";
 grant select, insert, update, delete on table public.media_asset_derivatives to :"media_user";
 grant select, insert, update, delete on table public.media_asset_transcripts to :"media_user";
@@ -358,6 +360,14 @@ select
   and not has_table_privilege(:'media_user', 'public.organizations', 'SELECT')
   and has_column_privilege(:'media_user', 'public.users', 'avatar_url', 'SELECT')
   and has_column_privilege(:'media_user', 'public.organizations', 'default_locale', 'SELECT')
+  and has_table_privilege(:'media_user', 'public.media_upload_sessions', 'SELECT')
+  and has_table_privilege(:'media_user', 'public.media_upload_sessions', 'DELETE')
+  and not has_table_privilege(:'media_user', 'public.media_upload_sessions', 'INSERT')
+  and not has_table_privilege(:'media_user', 'public.media_upload_sessions', 'UPDATE')
+  and has_column_privilege(:'media_user', 'public.media_upload_sessions', 'state', 'UPDATE')
+  and has_column_privilege(:'media_user', 'public.media_upload_sessions', 'updated_at', 'UPDATE')
+  and not has_column_privilege(:'media_user', 'public.media_upload_sessions', 'provider_upload_id', 'UPDATE')
+  and not has_column_privilege(:'media_user', 'public.media_upload_sessions', 'expires_at', 'UPDATE')
   as media_columns_are_restricted
 \gset
 \if :media_columns_are_restricted

@@ -1,19 +1,27 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectsCommand,
+  GetBucketCorsCommand,
   GetBucketLifecycleConfigurationCommand,
   GetBucketVersioningCommand,
   GetObjectCommand,
   GetObjectTaggingCommand,
   HeadObjectCommand,
+  ListPartsCommand,
   ListObjectsV2Command,
   ListObjectVersionsCommand,
   PutObjectCommand,
   DeleteObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 import type { S3MediaStorageConfiguration } from "./storage-configuration";
+import { uploadS3MultipartPartLikeBrowser } from "./s3-browser-upload-part-preflight";
 import { versionedS3CopySource } from "./s3-object-integrity";
 import {
   createS3NodeHttpHandler,
@@ -22,12 +30,13 @@ import {
   withS3StreamingOperationDeadline,
 } from "./s3-operation-timeout";
 import type { S3AppPrincipalContractAdapter } from "./s3-app-principal-contract";
+import { normalizeS3BrowserUploadCorsConfiguration } from "./s3-browser-upload-cors";
 import { normalizeS3LifecycleConfiguration } from "./s3-privacy-export-lifecycle";
 
 export type AwsS3AppPrincipalContractAdapter =
   S3AppPrincipalContractAdapter & Readonly<{ destroy(): void }>;
 
-const APP_PRINCIPAL_CANARY_KEY_COUNT = 5;
+const APP_PRINCIPAL_CANARY_KEY_COUNT = 7;
 const APP_PRINCIPAL_CLEANUP_MAX_PAGES_PER_KEY = 32;
 const APP_PRINCIPAL_CLEANUP_VERIFICATION_PASSES = 3;
 
@@ -182,6 +191,10 @@ function errorName(error: unknown) {
     : "";
 }
 
+function isMissingMultipartUpload(error: unknown) {
+  return httpStatus(error) === 404 || errorName(error) === "NoSuchUpload";
+}
+
 function quotedEtag(etag: string) {
   return /^"[^"]+"$/.test(etag) ? etag : `"${etag}"`;
 }
@@ -314,6 +327,17 @@ export function createAwsS3AppPrincipalContractAdapter(input: {
       );
       return normalizeS3LifecycleConfiguration(result);
     },
+    async getBucketCorsConfiguration() {
+      const result = await withS3OperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          workerClient.send(
+            new GetBucketCorsCommand({ Bucket: bucket }),
+            { abortSignal },
+          ),
+      );
+      return normalizeS3BrowserUploadCorsConfiguration(result);
+    },
     seedObject(value) {
       return putObject(workerClient, value);
     },
@@ -329,6 +353,7 @@ export function createAwsS3AppPrincipalContractAdapter(input: {
               Bucket: bucket,
               Key: value.key,
               VersionId: value.versionId,
+              ChecksumMode: value.checksumMode,
             }),
             { abortSignal },
           ),
@@ -375,6 +400,150 @@ export function createAwsS3AppPrincipalContractAdapter(input: {
               ContentType: value.contentType,
               MetadataDirective: "REPLACE",
               Metadata: value.metadata,
+            }),
+            { abortSignal },
+          ),
+      );
+    },
+    async appCreateMultipartUpload(value) {
+      const result = await withS3OperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          appClient.send(
+            new CreateMultipartUploadCommand({
+              Bucket: bucket,
+              Key: value.key,
+              ContentType: value.contentType,
+              Metadata: value.metadata,
+              ChecksumAlgorithm: "SHA256",
+              ChecksumType: "COMPOSITE",
+            }),
+            { abortSignal },
+          ),
+      );
+      return {
+        Bucket: result.Bucket,
+        Key: result.Key,
+        UploadId: result.UploadId,
+        ChecksumAlgorithm: result.ChecksumAlgorithm,
+        ChecksumType: result.ChecksumType,
+      };
+    },
+    async appUploadPart(value) {
+      const result = await withS3OperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          appClient.send(
+            new UploadPartCommand({
+              Bucket: bucket,
+              Key: value.key,
+              UploadId: value.uploadId,
+              PartNumber: value.partNumber,
+              Body: value.body,
+              ContentLength: value.body.byteLength,
+              ChecksumSHA256: value.checksumSha256,
+            }),
+            { abortSignal },
+          ),
+      );
+      return { ETag: result.ETag, ChecksumSHA256: result.ChecksumSHA256 };
+    },
+    async appBrowserUploadPart(value) {
+      const url = await getSignedUrl(
+        appClient,
+        new UploadPartCommand({
+          Bucket: bucket,
+          Key: value.key,
+          UploadId: value.uploadId,
+          PartNumber: value.partNumber,
+          ContentLength: value.body.byteLength,
+          ChecksumSHA256: value.checksumSha256,
+        }),
+        {
+          expiresIn:
+            input.appConfiguration.limits.signedUploadTtlSeconds,
+          signableHeaders: new Set([
+            "content-length",
+            "x-amz-checksum-sha256",
+          ]),
+          unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+        },
+      );
+      return uploadS3MultipartPartLikeBrowser({
+        url,
+        expectedOrigin: value.expectedOrigin,
+        body: value.body,
+        checksumSha256: value.checksumSha256,
+        contentType: value.contentType,
+      });
+    },
+    async appListMultipartParts(value) {
+      const result = await withS3OperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          appClient.send(
+            new ListPartsCommand({
+              Bucket: bucket,
+              Key: value.key,
+              UploadId: value.uploadId,
+              MaxParts: 1_000,
+            }),
+            { abortSignal },
+          ),
+      );
+      return {
+        isTruncated: result.IsTruncated === true,
+        bucket: result.Bucket,
+        key: result.Key,
+        uploadId: result.UploadId,
+        checksumAlgorithm: result.ChecksumAlgorithm,
+        checksumType: result.ChecksumType,
+        parts: (result.Parts ?? []).map((part) => ({
+          partNumber: part.PartNumber,
+          sizeBytes: part.Size,
+          etag: part.ETag,
+          checksumSha256: part.ChecksumSHA256,
+        })),
+      };
+    },
+    async appCompleteMultipartUpload(value) {
+      const result = await withS3OperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          appClient.send(
+            new CompleteMultipartUploadCommand({
+              Bucket: bucket,
+              Key: value.key,
+              UploadId: value.uploadId,
+              MultipartUpload: {
+                Parts: value.parts.map((part) => ({
+                  PartNumber: part.partNumber,
+                  ETag: quotedEtag(part.etag),
+                  ChecksumSHA256: part.checksumSha256,
+                })),
+              },
+              ChecksumType: "COMPOSITE",
+              MpuObjectSize: value.expectedSizeBytes,
+            }),
+            { abortSignal },
+          ),
+      );
+      return {
+        VersionId: result.VersionId,
+        ETag: result.ETag,
+        ChecksumSHA256: result.ChecksumSHA256,
+        ChecksumType: result.ChecksumType,
+      };
+    },
+    async appAbortMultipartUpload(value) {
+      await withS3OperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        (abortSignal) =>
+          appClient.send(
+            new AbortMultipartUploadCommand({
+              Bucket: bucket,
+              Key: value.key,
+              UploadId: value.uploadId,
             }),
             { abortSignal },
           ),
@@ -446,6 +615,74 @@ export function createAwsS3AppPrincipalContractAdapter(input: {
     async exactVersionExists(value) {
       const versions = await listExactVersions(value.key);
       return versions.some((entry) => entry.VersionId === value.versionId);
+    },
+    async operatorGetObject(value) {
+      return withS3StreamingOperationDeadline(
+        S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+        async (abortSignal) => {
+          const result = await workerClient.send(
+            new GetObjectCommand({
+              Bucket: bucket,
+              Key: value.key,
+              VersionId: value.versionId,
+              IfMatch: quotedEtag(value.expectedEtag),
+            }),
+            { abortSignal },
+          );
+          return {
+            VersionId: result.VersionId,
+            ETag: result.ETag,
+            ContentLength: result.ContentLength,
+            ContentType: result.ContentType,
+            Metadata: result.Metadata,
+            body: streamBody(result.Body),
+          };
+        },
+      );
+    },
+    async operatorMultipartUploadExists(value) {
+      try {
+        await withS3OperationDeadline(
+          S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+          (abortSignal) =>
+            workerClient.send(
+              new ListPartsCommand({
+                Bucket: bucket,
+                Key: value.key,
+                UploadId: value.uploadId,
+                MaxParts: 1,
+              }),
+              { abortSignal },
+            ),
+        );
+        return true;
+      } catch (error) {
+        if (isMissingMultipartUpload(error)) return false;
+        throw error;
+      }
+    },
+    async operatorObjectExists(value) {
+      return (await listExactVersions(value.key)).length > 0;
+    },
+    async cleanupMultipartUploads(targets) {
+      for (const target of targets) {
+        try {
+          await withS3OperationDeadline(
+            S3_PREFLIGHT_COMMAND_DEADLINE_MS,
+            (abortSignal) =>
+              workerClient.send(
+                new AbortMultipartUploadCommand({
+                  Bucket: bucket,
+                  Key: target.key,
+                  UploadId: target.uploadId,
+                }),
+                { abortSignal },
+              ),
+          );
+        } catch (error) {
+          if (!isMissingMultipartUpload(error)) throw error;
+        }
+      }
     },
     async cleanupExactKeys(keys) {
       await cleanupExactS3AppPrincipalKeys({

@@ -28,6 +28,7 @@ import {
   createEncryptionKeyring,
   encryptPayloadWithKeyring,
 } from "@/lib/encryption-keyring";
+import { assertS3BrowserUploadOriginAllowed } from "@/lib/media/s3-browser-upload-origins";
 
 const HELP = `Q-Academy Tenant-Provisionierung
 
@@ -272,6 +273,18 @@ function invitationOrigin(input: {
   return url.origin;
 }
 
+function assertTenantUploadOrigin(slug: string, fallbackOrigin: string) {
+  if (process.env.NODE_ENV !== "production") return;
+  const tenantBaseDomain = process.env.TENANT_BASE_DOMAIN
+    ?.trim()
+    .toLowerCase()
+    .replace(/\.$/, "");
+  const origin = tenantBaseDomain
+    ? `https://${slug}.${tenantBaseDomain}`
+    : fallbackOrigin;
+  assertS3BrowserUploadOriginAllowed(process.env, origin);
+}
+
 function opaqueTokenHash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -308,6 +321,7 @@ async function provisionTenant() {
   const databaseUrl = requireDatabaseUrl();
   const dataEncryptionKeyring = requireDataEncryptionKeyring();
   const origin = invitationOrigin(input);
+  assertTenantUploadOrigin(input.slug, origin);
   const logoMark =
     input.logoMark ?? Array.from(input.name.trim())[0]?.toUpperCase() ?? "A";
   const platformName = input.platformName ?? input.name;

@@ -106,22 +106,45 @@ app_domain="$(production_env_value "$env_file" APP_DOMAIN)" || fail "production 
 [[ -z "$requested_app_domain" || "$requested_app_domain" == "$app_domain" ]] || fail "APP_DOMAIN override disagrees with the production environment"
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
+verify_caddy_sites_directory "$env_file" || fail "external Caddy sites directory is invalid"
 configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 
 [[ "$lock_file" != "$backup_lock_file" ]] || fail "release and backup lock files must be distinct"
 
 previous_tag=""
 state_file_present=false
+media_storage_identity_changed=false
+legacy_release_state_dry_run=false
 if [[ -e "$state_file" || -L "$state_file" ]]; then
   [[ -f "$state_file" && ! -L "$state_file" ]] || fail "release state must be a regular non-symlink file: $state_file"
   [[ "$(stat -c '%u:%g:%a' "$state_file")" == "0:0:600" ]] || fail "release state must be root-owned with mode 0600"
   state_file_present=true
   state_schema="$(production_env_value "$state_file" SCHEMA_VERSION)" || fail "release state schema is invalid"
+  if [[ "$state_schema" == "$LEGACY_RELEASE_STATE_SCHEMA_VERSION" ]]; then
+    if [[ "$dry_run" == "true" ]]; then
+      upgrade_legacy_release_state "$state_file" "$env_file" false ||
+        fail "legacy release state could not be bound to the active media storage identity"
+      legacy_release_state_dry_run=true
+      state_schema="$RELEASE_STATE_SCHEMA_VERSION"
+      printf 'DRY-RUN: validated legacy release state upgrade without persisting it\n'
+    else
+      upgrade_legacy_release_state "$state_file" "$env_file" ||
+        fail "legacy release state could not be bound to the active media storage identity"
+      state_schema="$(production_env_value "$state_file" SCHEMA_VERSION)" || fail "upgraded release state schema is invalid"
+    fi
+  fi
   [[ "$state_schema" == "$RELEASE_STATE_SCHEMA_VERSION" ]] || fail "release state schema is unsupported"
+  if [[ "$legacy_release_state_dry_run" != "true" ]]; then
+    validate_media_storage_release_state "$state_file" || fail "release state media storage identity is invalid"
+  fi
   state_controller_commit="$(production_env_value "$state_file" CONTROLLER_COMMIT)" || fail "release state CONTROLLER_COMMIT is invalid"
   [[ "$state_controller_commit" =~ ^[a-f0-9]{40,64}$ ]] || fail "release state contains an invalid controller commit"
   previous_tag="$(production_env_value "$state_file" CURRENT_TAG)" || fail "release state CURRENT_TAG is invalid"
   [[ "$previous_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || fail "release state contains an invalid current tag"
+  if [[ "$legacy_release_state_dry_run" != "true" ]] &&
+     ! media_storage_release_state_matches "$state_file" "$env_file"; then
+    media_storage_identity_changed=true
+  fi
 fi
 configured_tag="$(production_env_value "$env_file" APP_IMAGE_TAG)" || fail "APP_IMAGE_TAG is invalid"
 [[ -z "$configured_tag" || "$configured_tag" =~ ^git-[a-f0-9]{40,64}$ ]] ||
@@ -331,6 +354,28 @@ fi
 run "${compose[@]}" stop -t 30 caddy
 run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"
 run "${strato_compose[@]}" rm --force --stop "$STRATO_PRIVACY_SWEEPER_SERVICE"
+if [[ "$media_storage_identity_changed" == "true" ]]; then
+  if [[ "$dry_run" == "true" ]]; then
+    printf 'DRY-RUN: verify that no S3 media object, derivative, privacy export, or multipart session remains after stopping every writer before changing media storage identity\n'
+  else
+    active_media_storage_binding_count="$(
+      "${compose[@]}" exec -T postgres sh -euc '
+        export PGPASSWORD="$POSTGRES_PASSWORD"
+        psql \
+          --host=127.0.0.1 \
+          --username="$POSTGRES_USER" \
+          --dbname="$POSTGRES_DB" \
+          --set=ON_ERROR_STOP=1 \
+          --tuples-only \
+          --no-align \
+          --command="select ((select count(*) from public.media_upload_sessions) + (select count(*) from public.media_assets where storage_driver = '\''s3'\'' and (staging_deleted_at is null or storage_deleted_at is null)) + (select count(*) from public.media_asset_derivatives where storage_driver = '\''s3'\'') + (select count(*) from public.privacy_export_artifacts where storage_driver = '\''s3'\'' and deleted_at is null))::bigint"
+      ' | tr -d '[:space:]'
+    )"
+    assert_media_storage_change_is_drained \
+      "$state_file" "$env_file" "$active_media_storage_binding_count" ||
+      fail "media storage change requires a verified migration or fully empty provider bindings"
+  fi
+fi
 if [[ "$resume_failed_release" == "true" ]]; then
   printf 'Explicitly resuming pending release %s from %s; migrations may already have run.\n' \
     "$release_tag" "${previous_tag:-initial-install}"
@@ -385,6 +430,7 @@ if [[ "$dry_run" != "true" ]]; then
     printf 'CURRENT_TAG=%s\n' "$release_tag"
     printf 'PREVIOUS_TAG=%s\n' "$previous_tag"
     printf 'DEPLOYED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    write_media_storage_release_state "$env_file"
   } >"$temporary_state"
   sync "$temporary_state"
   mv -f "$temporary_state" "$state_file"

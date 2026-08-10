@@ -4,7 +4,7 @@ Dieser Preflight prueft den produktiven S3-kompatiblen Bucket und den
 tatsaechlich vom Medienrunner verwendeten Worker-Principal vor der Freigabe.
 Die hier genannten `MEDIA_S3_ACCESS_KEY_ID`/`MEDIA_S3_SECRET_ACCESS_KEY` sind
 nicht die eingeschraenkten `MEDIA_S3_APP_*`-Zugangsdaten der Web-App. Er verwendet
-ausschliesslich zwei Objekte unter einem zufaelligen Praefix der Form
+ausschliesslich vier Objektschluessel unter einem zufaelligen Praefix der Form
 `q-academy-provider-contract-canary/v1/<uuid>/`. Die Produktpraefixe
 `incoming/` und `tenants/` werden weder gelesen noch veraendert.
 
@@ -13,6 +13,12 @@ ausschliesslich zwei Objekte unter einem zufaelligen Praefix der Form
 `MEDIA_S3_COMPATIBILITY_MODE=versioned` ist der vollstaendige Vertrag. Fuer ihn
 gelten alle nachfolgenden Anforderungen an Versionierung, Lifecycle,
 Objekt-Tags, konditionale Mutationen und getrennte Principals unveraendert.
+Modus, Endpoint, Region, Bucket und Path-Style werden im Release-State gebunden.
+Ein Provider- oder Bucketwechsel ist nur nach gestoppten Writern und ohne
+verbleibende Multipart-Sitzung, S3-Medienobjekt, S3-Derivat oder
+S3-Datenschutzexport zulaessig. Bestandsdaten erfordern vorher einen separat
+verifizierten Objektmigrationslauf. Deploy, Rollback und Boot-Reconcile erzwingen
+diesen Vertrag fail-closed.
 
 STRATO HiDrive Object Storage darf nur ueber den expliziten, anbieterspezifischen
 Modus aktiviert werden:
@@ -68,20 +74,32 @@ Least-Privilege-Eigenschaften muessen in der Abnahme sichtbar `false` bleiben.
   `MEDIA_S3_ACCESS_KEY_ID`, `MEDIA_S3_SECRET_ACCESS_KEY` und optional
   `MEDIA_S3_FORCE_PATH_STYLE` zeigen auf die abzunehmende Umgebung.
   `MEDIA_S3_COMPATIBILITY_MODE` und
-  `MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED` muessen ebenfalls an den Preflight
+  `MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED` sowie
+  `MEDIA_MULTIPART_UPLOAD_TTL_SECONDS` muessen ebenfalls an den Preflight
   weitergereicht werden. Ohne Modus gilt der strikte `versioned`-Vertrag.
+- `MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON` ist das explizite, versionierte
+  Inventar aller produktiven Plattform-, Tenant- und Custom-Domain-Origins.
+  Es muss eine JSON-Liste aus mindestens zwei kanonischen HTTPS-Origins sein
+  und `NEXT_PUBLIC_APP_URL` sowie den Default-Tenant-Host aus
+  `DEFAULT_ORGANIZATION_SLUG` und `TENANT_BASE_DOMAIN` enthalten. Wildcards,
+  Ports, Pfade, Duplikate und implizite Subdomain-Muster sind unzulaessig.
 - Der Bucket-Name wird dem Befehl ein zweites Mal und exakt mit
   `--confirm-bucket` uebergeben. Bei einer Abweichung findet kein
   Provider-Zugriff statt.
-- Der Principal benoetigt `GetBucketVersioning`,
+- Der Worker-/Operator-Principal benoetigt `s3:GetBucketVersioning`,
   `s3:GetLifecycleConfiguration` fuer den SDK-Aufruf
-  `GetBucketLifecycleConfiguration`, `PutObject`,
+  `GetBucketLifecycleConfiguration`, `s3:GetBucketCORS`, `s3:PutObject`,
+  `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload`,
   `GetObjectVersion`, `ListBucketVersions`, `DeleteObject` und
   `DeleteObjectVersion` fuer den Canary-Praefix. Copy benoetigt Lesen der
   exakten Quellversion und Schreiben des Zielobjekts. Die normalen
   Produktrechte bleiben auf `incoming/` und `tenants/` begrenzt.
 - Der Web-App-Principal ist separat abzunehmen: signierter Write-once-PUT unter
-  `incoming/`, Upload-HEAD und versionierter Download muessen funktionieren;
+  `incoming/`, nativer Multipart-Upload, Upload-HEAD und versionierter Download
+  muessen funktionieren. AWS autorisiert `CreateMultipartUpload`, `UploadPart`
+  und `CompleteMultipartUpload` ueber `s3:PutObject`; zusaetzlich braucht die
+  App auf `incoming/` `s3:ListMultipartUploadParts` und
+  `s3:AbortMultipartUpload`;
   Copy, Listing, unversioniertes Delete und `DeleteObjectVersion` muessen fuer
   Asset- und Incoming-Pfade mit `AccessDenied` scheitern. Nur unter dem
   getrennten Privacy-Export-Praefix ist die exakte Versionsloeschung Teil des
@@ -97,14 +115,21 @@ Least-Privilege-Eigenschaften muessen in der Abnahme sichtbar `false` bleiben.
   lautet der wirksame Filter `tenants/` plus Objekt-Tag
   `q-academy-lifecycle=privacy-export-v1`; ein scheinbarer Prefix
   `tenants/*/privacy-exports/` besteht den Preflight nicht.
+- Eine separate, aktivierte, bucketweite Regel mit leerem Prefix muss
+  unvollstaendige Multipart-Uploads abbrechen. Die Frist muss mindestens
+  `ceil((MEDIA_MULTIPART_UPLOAD_TTL_SECONDS + 2700) / 86400)` und hoechstens
+  acht Tage betragen. Die 2700 Sekunden bestehen aus 30 Minuten
+  Completion-Recovery und 15 Minuten Provider- und Uhrzeitreserve. Eine weitere
+  globale oder fuer `incoming/` moeglicherweise
+  zutreffende Regel mit frueherer Frist blockiert die Freigabe ebenfalls.
 
 ## Ausfuehrung
 
 Auf dem Rootserver wird ein separates, kurzlebiges Operator-Image gebaut. Der
 Container darf nicht die vollstaendige Produktionsumgebung mit Datenbank-,
 Session-, Mail-, Webhook- oder KI-Secrets erhalten. Stattdessen filtert `awk`
-ohne `source`, Shell-Evaluation oder Ausgabe der Werte ausschliesslich die acht
-S3-Einstellungen und den oeffentlichen HTTPS-Origin in eine temporaere Datei
+ohne `source`, Shell-Evaluation oder Ausgabe der Werte ausschliesslich die
+S3-Einstellungen und das explizite HTTPS-Origin-Inventar in eine temporaere Datei
 mit Modus `0600`. Ein Trap entfernt
 Datei und Operator-Image auch bei Abbruch:
 
@@ -139,7 +164,11 @@ export NODE_IMAGE="$(sed -n 's/^NODE_IMAGE=//p' "$Q_ACADEMY_ENV_FILE")"
     $1 == "MEDIA_S3_FORCE_PATH_STYLE" ||
     $1 == "MEDIA_S3_COMPATIBILITY_MODE" ||
     $1 == "MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED" ||
-    $1 == "NEXT_PUBLIC_APP_URL" { print }
+    $1 == "MEDIA_MULTIPART_UPLOAD_TTL_SECONDS" ||
+    $1 == "NEXT_PUBLIC_APP_URL" ||
+    $1 == "DEFAULT_ORGANIZATION_SLUG" ||
+    $1 == "TENANT_BASE_DOMAIN" ||
+    $1 == "MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON" { print }
   ' "$Q_ACADEMY_ENV_FILE" >"$PREFLIGHT_ENV"
   chmod 0600 "$PREFLIGHT_ENV"
 
@@ -156,7 +185,8 @@ unset NODE_IMAGE
 
 In einer vorbereiteten Operator-Arbeitskopie oder CI-Umgebung ist derselbe Test
 als NPM-Script verfuegbar. Der Prozess darf auch dort nur die oben genannten
-S3-Variablen und `NEXT_PUBLIC_APP_URL` erhalten; die Produktionsdatei wird
+S3-Variablen, `NEXT_PUBLIC_APP_URL`, `DEFAULT_ORGANIZATION_SLUG`,
+`TENANT_BASE_DOMAIN` und `MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON` erhalten; die Produktionsdatei wird
 weder geladen noch evaluiert:
 
 ```bash
@@ -169,19 +199,34 @@ Der Test verlangt und prueft:
 1. Versionierungsstatus exakt `Enabled`.
 2. Aktivierte Lifecycle-Regeln fuer aktuelle und nicht aktuelle, getaggte
    Datenschutzexport-Versionen mit exakt acht Tagen sowie die Bereinigung
-   abgelaufener Delete-Marker unter `tenants/`.
-3. Write-once-PUT mit `If-None-Match: *`, Metadaten, ETag und echter VersionId.
-4. Versioniertes HEAD und GET der Quelle mit vollstaendigem Inhalts-Hash.
-5. COPY exakt aus dieser Quellversion mit ersetzten Metadaten.
-6. Versioniertes HEAD und GET der Kopie mit ETag-, Groessen-, MIME-,
+   abgelaufener Delete-Marker unter `tenants/`; ausserdem die TTL-gebundene,
+   bucketweite Multipart-Abbruchregel mit hoechstens acht Tagen.
+3. Exakte HTTPS-Browser-CORS-Regel fuer `PUT`, `Content-Type`,
+   `If-None-Match`, `X-Amz-Checksum-Sha256` und exponierten `ETag`, ohne
+   Origin- oder Header-Wildcards. Zusaetzlich erzeugt der Preflight eine echte
+   signierte UploadPart-URL und prueft jeden Inventar-Origin einzeln. Je Origin
+   sendet er `OPTIONS` mit
+   `Access-Control-Request-Headers: content-type,x-amz-checksum-sha256` und
+   uebertraegt den dritten Part anschliessend mit realistischem
+   `Content-Type: video/mp4` sowie derselben SHA-256-Pruefsumme wie der Browser.
+4. Nativer Drei-Part-Canary mit `ChecksumAlgorithm=SHA256`,
+   `ChecksumType=COMPOSITE`, UploadPart-SHA-256, ListParts-Inventar,
+   `MpuObjectSize`, Composite-Checksumme in Complete und HEAD sowie ein
+   separater Abort-Canary mit verifizierter Abwesenheit von Upload und Objekt.
+5. Write-once-PUT mit `If-None-Match: *`, Metadaten, ETag und echter VersionId.
+6. Versioniertes HEAD und GET der Quelle mit vollstaendigem Inhalts-Hash.
+7. COPY exakt aus dieser Quellversion mit ersetzten Metadaten.
+8. Versioniertes HEAD und GET der Kopie mit ETag-, Groessen-, MIME-,
    Metadaten- und SHA-256-Pruefung.
-7. Unversionierten Delete der geprueften Kopie, einen gelisteten Delete-Marker
+9. Unversionierten Delete der geprueften Kopie, einen gelisteten Delete-Marker
    mit stabiler VersionId und damit die produktiv benoetigte
    `DeleteObject`-Berechtigung.
-8. Loeschung aller erzeugten Versionen und Delete-Marker sowie anschliessend
-   einen leeren Canary-Praefix.
+10. Loeschung aller erzeugten Versionen, Delete-Marker und offenen
+    Multipart-Uploads sowie anschliessend
+    einen leeren Canary-Praefix.
 
-Der Cleanup fuehrt fuer die beiden exakten Keys zuerst ein unversioniertes
+Der Cleanup bricht fuer alle exakten Multipart-Canaries zunaechst jeden noch
+offenen Upload ab. Fuer die vier exakten Keys fuehrt er danach ein unversioniertes
 Worker-Delete aus und entfernt danach alle paginiert gelisteten Versionen,
 `null`-Versionen und Delete-Marker in exakten Batches. Der leere
 `ListObjectVersions`-Bestand ist der Abwesenheitsnachweis. Ein unversioniertes
@@ -198,7 +243,10 @@ Der Releasepfad begrenzt zusaetzlich den gesamten App-Principal-Container auf
 
 Der Exitcode `0` und die JSON-Ausgabe mit `cleanupVerified: true`,
 `privacyExportLifecycleVerified: true` und
-`privacyExportExpirationDays: 8` sind gemeinsam die technische Abnahme.
+`privacyExportExpirationDays: 8`, `browserUploadCorsVerified: true`,
+`multipartUploadVerified: true`, `multipartAbortVerified: true` und den
+tatsaechlich wirksamen `incompleteMultipartAbortDays` sind gemeinsam die
+technische Abnahme.
 Zeitpunkt, Release-Commit, Provider/Region, Bucket,
 Exitcode und die geheimnisfreie JSON-Ausgabe werden im Betriebsprotokoll
 festgehalten. Umgebungsdateien, Access Keys, Secret Keys und SDK-Debugausgaben
@@ -241,12 +289,22 @@ Worker erneut, dass `GetBucketVersioning` exakt `Enabled` liefert. Ein
 exakte mandatory Cleanup wird trotzdem ausgefuehrt.
 
 Noch vor der ersten Canary-Mutation liest derselbe Worker-Principal die
-Bucket-Lifecycle-Konfiguration. Fehlt der exakte Acht-Tage-Vertrag, blockiert
+Bucket-Lifecycle- und Browser-CORS-Konfiguration fuer jeden Origin im
+expliziten Inventar. Fehlt der exakte
+Acht-Tage-, TTL-gebundene Multipart- oder CORS-Vertrag, blockiert
 auch der bei jedem Release ausgefuehrte App-Principal-Preflight. Der
 App-Principal selbst erhaelt dafuer weder Lifecycle-Leserechte noch Listenrechte.
 
-Er prueft erforderlichen Incoming-Put/Head, exakten Asset-Head/Get und den
-begrenzten Privacy-Export-Lifecycle. Der Privacy-PUT muss dabei das
+Auch im STRATO-Modus prueft der Release-Vertrag nicht nur die statische
+POST-CORS-Regel, sondern sendet fuer jeden Inventar-Origin einen echten
+signierten Browser-POST und verlangt den jeweils exakten
+`Access-Control-Allow-Origin`-Response-Header.
+
+Er prueft erforderlichen Incoming-Put/Head, exakten Asset-Head/Get, den
+begrenzten Privacy-Export-Lifecycle und einen nativen Drei-Part-Upload. Create,
+UploadPart, ListParts, Complete und Composite-SHA-256 muessen funktionieren;
+ein separater Canary wird abgebrochen und muss danach als Upload und Objekt
+fehlen. Der Privacy-PUT muss dabei das
 verpflichtende Tag `q-academy-lifecycle=privacy-export-v1` setzen duerfen.
 List, ListVersions, Copy, Tenant-Asset-Put,
 unversioniertes Delete und Version-Deletes fuer Incoming-/Assetobjekte muessen

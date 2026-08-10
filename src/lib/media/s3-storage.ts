@@ -3,14 +3,19 @@ import "server-only";
 import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectVersionsCommand,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -34,6 +39,15 @@ import {
   withS3StreamingOperationDeadline,
 } from "@/lib/media/s3-operation-timeout";
 import { createStratoPresignedPost } from "@/lib/media/s3-presigned-post";
+import {
+  createS3MultipartUploadPlan,
+  expectedS3MultipartPartSize,
+  requireS3MultipartSha256,
+  requireS3MultipartUploadId,
+  S3_MULTIPART_MAX_PARTS,
+  S3MultipartPolicyError,
+  verifyS3MultipartParts,
+} from "@/lib/media/s3-multipart-policy";
 import { deleteS3ObjectVersionsPagewise } from "@/lib/media/s3-version-cleanup";
 import type { S3MediaStorageConfiguration } from "@/lib/media/storage-configuration";
 import {
@@ -73,6 +87,24 @@ type ObjectMetadata = Readonly<{
   versionId: string;
   lastModified: Date | null;
 }>;
+
+export type S3MultipartUploadSessionInput = MediaObjectIdentity &
+  Readonly<{
+    uploadId: string;
+    expectedSizeBytes: number;
+    partSizeBytes: number;
+  }>;
+
+export type S3MultipartPartAuthorizationInput =
+  S3MultipartUploadSessionInput &
+    Readonly<{
+      partNumber: number;
+      sizeBytes: number;
+      checksumSha256: string;
+    }>;
+
+export type S3MultipartCompletionInput = S3MultipartUploadSessionInput &
+  Readonly<{ mimeType: string }>;
 
 const clients = new Map<string, S3Client>();
 
@@ -120,6 +152,102 @@ function assertObjectIdentity(identity: MediaObjectIdentity) {
       "The media object identity is invalid.",
     );
   }
+}
+
+function assertVersionedMultipartConfiguration(
+  configuration: S3MediaStorageConfiguration,
+) {
+  if (configuration.compatibilityMode !== "versioned") {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "Native S3 multipart uploads require versioned compatibility mode.",
+    );
+  }
+}
+
+function multipartStorageFailure(error: unknown): never {
+  if (error instanceof MediaStorageError) throw error;
+  if (error instanceof S3MultipartPolicyError) {
+    throw new MediaStorageError("object_mismatch", error.message, {
+      cause: error,
+    });
+  }
+  safeStorageFailure(error);
+}
+
+function multipartPlan(input: {
+  expectedSizeBytes: number;
+  partSizeBytes?: number;
+}) {
+  try {
+    return createS3MultipartUploadPlan(
+      input.expectedSizeBytes,
+      input.partSizeBytes,
+    );
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+function multipartUploadId(value: unknown) {
+  try {
+    return requireS3MultipartUploadId(value);
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+function multipartChecksum(value: unknown) {
+  try {
+    return requireS3MultipartSha256(value);
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+function assertMultipartMimeType(value: string) {
+  if (
+    !value ||
+    value.length > 255 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "The S3 multipart MIME type is invalid.",
+    );
+  }
+}
+
+function assertMultipartResponseIdentity(
+  response: { Bucket?: string; Key?: string; UploadId?: string },
+  configuration: S3MediaStorageConfiguration,
+  key: string,
+  expectedUploadId?: string,
+) {
+  if (
+    response.Bucket !== configuration.bucket ||
+    response.Key !== key ||
+    (expectedUploadId !== undefined && response.UploadId !== expectedUploadId)
+  ) {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "The S3 multipart response identity does not match the upload.",
+    );
+  }
+}
+
+function providerStatus(error: unknown) {
+  return error && typeof error === "object" && "$metadata" in error
+    ? (error.$metadata as { httpStatusCode?: number }).httpStatusCode
+    : undefined;
+}
+
+function noSuchMultipartUpload(error: unknown) {
+  return (
+    providerStatus(error) === 404 ||
+    (error instanceof Error && error.name === "NoSuchUpload")
+  );
 }
 
 function safeStorageFailure(error: unknown): never {
@@ -355,6 +483,412 @@ export async function createS3UploadAuthorization(
     };
   } catch (error) {
     safeStorageFailure(error);
+  }
+}
+
+export async function createS3MultipartUpload(
+  configuration: S3MediaStorageConfiguration,
+  input: UploadAuthorizationInput,
+) {
+  assertVersionedMultipartConfiguration(configuration);
+  assertObjectIdentity(input);
+  assertMultipartMimeType(input.mimeType);
+  const plan = multipartPlan({ expectedSizeBytes: input.sizeBytes });
+  try {
+    const created = await withS3OperationDeadline(
+      S3_METADATA_DEADLINE_MS,
+      (abortSignal) =>
+        s3Client(configuration).send(
+          new CreateMultipartUploadCommand({
+            Bucket: configuration.bucket,
+            Key: input.key,
+            ContentType: input.mimeType,
+            CacheControl: "private, no-store",
+            Metadata: {
+              "asset-id": input.assetId,
+              "organization-id": input.organizationId,
+            },
+            ChecksumAlgorithm: "SHA256",
+            ChecksumType: "COMPOSITE",
+          }),
+          { abortSignal },
+        ),
+    );
+    try {
+      assertMultipartResponseIdentity(created, configuration, input.key);
+      if (
+        created.ChecksumAlgorithm !== "SHA256" ||
+        created.ChecksumType !== "COMPOSITE"
+      ) {
+        throw new MediaStorageError(
+          "object_mismatch",
+          "The S3 provider did not accept the multipart checksum contract.",
+        );
+      }
+      return {
+        uploadId: multipartUploadId(created.UploadId),
+        plan,
+        checksumAlgorithm: "SHA256" as const,
+        checksumType: "COMPOSITE" as const,
+      };
+    } catch (error) {
+      if (typeof created.UploadId === "string" && created.UploadId.length > 0) {
+        await withS3OperationDeadline(
+          S3_CLEANUP_COMMAND_DEADLINE_MS,
+          (abortSignal) =>
+            s3Client(configuration).send(
+              new AbortMultipartUploadCommand({
+                Bucket: configuration.bucket,
+                Key: input.key,
+                UploadId: created.UploadId,
+              }),
+              { abortSignal },
+            ),
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+export async function createS3MultipartPartUploadAuthorization(
+  configuration: S3MediaStorageConfiguration,
+  input: S3MultipartPartAuthorizationInput,
+) {
+  assertVersionedMultipartConfiguration(configuration);
+  assertObjectIdentity(input);
+  const uploadId = multipartUploadId(input.uploadId);
+  const plan = multipartPlan({
+    expectedSizeBytes: input.expectedSizeBytes,
+    partSizeBytes: input.partSizeBytes,
+  });
+  let expectedSizeBytes: number;
+  try {
+    expectedSizeBytes = expectedS3MultipartPartSize(plan, input.partNumber);
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+  if (input.sizeBytes !== expectedSizeBytes) {
+    throw new MediaStorageError(
+      "object_mismatch",
+      "The multipart part size does not match the upload plan.",
+    );
+  }
+  const checksumSha256 = multipartChecksum(input.checksumSha256);
+  try {
+    const url = await getSignedUrl(
+      s3Client(configuration),
+      new UploadPartCommand({
+        Bucket: configuration.bucket,
+        Key: input.key,
+        UploadId: uploadId,
+        PartNumber: input.partNumber,
+        ContentLength: expectedSizeBytes,
+        ChecksumSHA256: checksumSha256,
+      }),
+      {
+        expiresIn: configuration.limits.signedUploadTtlSeconds,
+        signableHeaders: new Set([
+          "content-length",
+          "x-amz-checksum-sha256",
+        ]),
+        unhoistableHeaders: new Set(["x-amz-checksum-sha256"]),
+      },
+    );
+    return {
+      method: "PUT" as const,
+      url,
+      headers: {
+        "Content-Length": String(expectedSizeBytes),
+        "X-Amz-Checksum-Sha256": checksumSha256,
+      },
+      partNumber: input.partNumber,
+      sizeBytes: expectedSizeBytes,
+      expiresInSeconds: configuration.limits.signedUploadTtlSeconds,
+    };
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+export async function listS3MultipartUploadParts(
+  configuration: S3MediaStorageConfiguration,
+  input: S3MultipartUploadSessionInput,
+) {
+  assertVersionedMultipartConfiguration(configuration);
+  assertObjectIdentity(input);
+  const uploadId = multipartUploadId(input.uploadId);
+  const plan = multipartPlan({
+    expectedSizeBytes: input.expectedSizeBytes,
+    partSizeBytes: input.partSizeBytes,
+  });
+  try {
+    const providerParts = await withS3OperationDeadline(
+      S3_CLEANUP_COMMAND_DEADLINE_MS,
+      async (abortSignal) => {
+        const parts = [];
+        const maxPageSize = 1_000;
+        const maxPages = Math.ceil(S3_MULTIPART_MAX_PARTS / maxPageSize);
+        let partNumberMarker: string | undefined;
+        for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
+          const page = await s3Client(configuration).send(
+            new ListPartsCommand({
+              Bucket: configuration.bucket,
+              Key: input.key,
+              UploadId: uploadId,
+              MaxParts: maxPageSize,
+              ...(partNumberMarker
+                ? { PartNumberMarker: partNumberMarker }
+                : {}),
+            }),
+            { abortSignal },
+          );
+          assertMultipartResponseIdentity(
+            page,
+            configuration,
+            input.key,
+            uploadId,
+          );
+          if (
+            page.ChecksumAlgorithm !== "SHA256" ||
+            page.ChecksumType !== "COMPOSITE" ||
+            (page.Parts?.length ?? 0) > maxPageSize
+          ) {
+            throw new MediaStorageError(
+              "object_mismatch",
+              "The S3 provider returned an invalid multipart parts page.",
+            );
+          }
+          parts.push(...(page.Parts ?? []));
+          if (parts.length > S3_MULTIPART_MAX_PARTS) {
+            throw new MediaStorageError(
+              "object_mismatch",
+              "The S3 provider returned too many multipart parts.",
+            );
+          }
+          if (page.IsTruncated !== true) {
+            if (page.NextPartNumberMarker !== undefined) {
+              throw new MediaStorageError(
+                "object_mismatch",
+                "The final S3 multipart parts page has an invalid cursor.",
+              );
+            }
+            break;
+          }
+          const nextMarker = page.NextPartNumberMarker ?? "";
+          const nextPartNumber = /^\d+$/.test(nextMarker)
+            ? Number(nextMarker)
+            : Number.NaN;
+          const lastPartNumber = page.Parts?.at(-1)?.PartNumber;
+          if (
+            !Number.isSafeInteger(nextPartNumber) ||
+            nextPartNumber < 1 ||
+            nextPartNumber > S3_MULTIPART_MAX_PARTS ||
+            nextPartNumber <= Number(partNumberMarker ?? 0) ||
+            nextPartNumber !== lastPartNumber ||
+            pageNumber === maxPages
+          ) {
+            throw new MediaStorageError(
+              "object_mismatch",
+              "The S3 provider returned an invalid multipart pagination cursor.",
+            );
+          }
+          partNumberMarker = nextMarker;
+        }
+        return parts;
+      },
+    );
+    const verified = verifyS3MultipartParts({ plan, parts: providerParts });
+    return {
+      uploadId,
+      ...verified,
+    };
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+function compositeMultipartSha256(
+  parts: readonly Readonly<{ checksumSha256: string }>[],
+) {
+  const hash = createHash("sha256");
+  for (const part of parts) {
+    hash.update(Buffer.from(part.checksumSha256, "base64"));
+  }
+  return `${hash.digest("base64")}-${parts.length}`;
+}
+
+export async function completeS3MultipartUpload(
+  configuration: S3MediaStorageConfiguration,
+  input: S3MultipartCompletionInput,
+) {
+  assertVersionedMultipartConfiguration(configuration);
+  assertObjectIdentity(input);
+  assertMultipartMimeType(input.mimeType);
+  const listed = await listS3MultipartUploadParts(configuration, input);
+  let completedParts: ReturnType<typeof verifyS3MultipartParts>;
+  try {
+    completedParts = verifyS3MultipartParts({
+      plan: listed.plan,
+      parts: listed.parts.map((part) => ({
+        PartNumber: part.partNumber,
+        Size: part.sizeBytes,
+        ETag: part.etag,
+        ChecksumSHA256: part.checksumSha256,
+      })),
+      requireComplete: true,
+    });
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+  const expectedCompositeChecksum = compositeMultipartSha256(
+    completedParts.parts,
+  );
+  try {
+    return await withS3OperationDeadline(
+      S3_COPY_DEADLINE_MS,
+      async (abortSignal) => {
+        const completed = await s3Client(configuration).send(
+          new CompleteMultipartUploadCommand({
+            Bucket: configuration.bucket,
+            Key: input.key,
+            UploadId: listed.uploadId,
+            MultipartUpload: {
+              Parts: completedParts.parts.map((part) => ({
+                PartNumber: part.partNumber,
+                ETag: part.etag,
+                ChecksumSHA256: part.checksumSha256,
+              })),
+            },
+            ChecksumType: "COMPOSITE",
+            MpuObjectSize: completedParts.plan.expectedSizeBytes,
+          }),
+          { abortSignal },
+        );
+        assertMultipartResponseIdentity(completed, configuration, input.key);
+        const etag = normalizeS3Etag(completed.ETag);
+        const versionId = requireS3VersionId(completed.VersionId);
+        if (
+          completed.ChecksumType !== "COMPOSITE" ||
+          completed.ChecksumSHA256 !== expectedCompositeChecksum
+        ) {
+          throw new MediaStorageError(
+            "object_mismatch",
+            "The completed S3 object has an invalid composite checksum.",
+          );
+        }
+        const head = await withS3OperationDeadline(
+          S3_METADATA_DEADLINE_MS,
+          (metadataAbortSignal) =>
+            s3Client(configuration).send(
+              new HeadObjectCommand({
+                Bucket: configuration.bucket,
+                Key: input.key,
+                VersionId: versionId,
+                ChecksumMode: "ENABLED",
+              }),
+              {
+                abortSignal: combinedAbortSignal(
+                  abortSignal,
+                  metadataAbortSignal,
+                ),
+              },
+            ),
+        );
+        const verified = verifyS3ObjectIntegrity(head, {
+          compatibilityMode: "versioned",
+          key: input.key,
+          versionId,
+          etag,
+          sizeBytes: completedParts.plan.expectedSizeBytes,
+          mimeType: input.mimeType,
+          metadata: {
+            "asset-id": input.assetId,
+            "organization-id": input.organizationId,
+          },
+        });
+        if (
+          head.ChecksumType !== "COMPOSITE" ||
+          head.ChecksumSHA256 !== expectedCompositeChecksum
+        ) {
+          throw new MediaStorageError(
+            "object_mismatch",
+            "The completed S3 object checksum changed after completion.",
+          );
+        }
+        return {
+          ...verified,
+          partCount: completedParts.plan.partCount,
+          checksumSha256: expectedCompositeChecksum,
+          checksumType: "COMPOSITE" as const,
+          lastModified: head.LastModified ?? null,
+        };
+      },
+    );
+  } catch (error) {
+    multipartStorageFailure(error);
+  }
+}
+
+export async function abortS3MultipartUpload(
+  configuration: S3MediaStorageConfiguration,
+  input: MediaObjectIdentity & Readonly<{ uploadId: string }>,
+  signal?: AbortSignal,
+) {
+  assertVersionedMultipartConfiguration(configuration);
+  assertObjectIdentity(input);
+  signal?.throwIfAborted();
+  const uploadId = multipartUploadId(input.uploadId);
+  try {
+    return await withS3OperationDeadline(
+      S3_CLEANUP_COMMAND_DEADLINE_MS,
+      async (abortSignal) => {
+        const operationSignal = signal
+          ? combinedAbortSignal(abortSignal, signal)
+          : abortSignal;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            await s3Client(configuration).send(
+              new AbortMultipartUploadCommand({
+                Bucket: configuration.bucket,
+                Key: input.key,
+                UploadId: uploadId,
+              }),
+              { abortSignal: operationSignal },
+            );
+          } catch (error) {
+            if (noSuchMultipartUpload(error)) {
+              return { uploadId, aborted: true as const, attempts: attempt };
+            }
+            throw error;
+          }
+          try {
+            await s3Client(configuration).send(
+              new ListPartsCommand({
+                Bucket: configuration.bucket,
+                Key: input.key,
+                UploadId: uploadId,
+                MaxParts: 1,
+              }),
+              { abortSignal: operationSignal },
+            );
+          } catch (error) {
+            if (noSuchMultipartUpload(error)) {
+              return { uploadId, aborted: true as const, attempts: attempt };
+            }
+            throw error;
+          }
+        }
+        throw new MediaStorageError(
+          "object_mismatch",
+          "The S3 multipart upload still exists after repeated aborts.",
+        );
+      },
+    );
+  } catch (error) {
+    multipartStorageFailure(error);
   }
 }
 

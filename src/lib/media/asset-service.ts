@@ -141,6 +141,7 @@ export async function reserveMediaAsset(input: {
   policy: MediaUploadPolicyDecision;
   originalFileName: string;
   configuration: MediaStorageConfiguration;
+  uploadTtlSeconds?: number;
 }) {
   await input.tx.execute(mediaTenantQuotaLockQuery(input.organizationId));
   const [tenant] = await input.tx
@@ -234,7 +235,10 @@ export async function reserveMediaAsset(input: {
   }
 
   const uploadExpiresAt = new Date(
-    Date.now() + input.configuration.limits.signedUploadTtlSeconds * 1000,
+    Date.now() +
+      (input.uploadTtlSeconds ??
+        input.configuration.limits.signedUploadTtlSeconds) *
+        1000,
   );
   const [asset] = await input.tx
     .insert(mediaAssets)

@@ -209,6 +209,7 @@ export type CourseSupportCopy = {
     uploading: (progress: string) => string;
     processing: string;
     ready: string;
+    retry: string;
     remove: (name: string) => string;
     source: (label: string) => string;
     upload: string;
@@ -417,6 +418,7 @@ const de: CourseSupportCopy = {
   },
   media: {
     selectFile: "Datei auswählen", microphoneRecording: "Mikrofonaufnahme", cameraRecording: "Kamera oder Bildschirm aufnehmen", recordingRejected: "Die Aufnahme konnte nicht übernommen werden.", genericMedium: "Kursmedium", preparing: "Wird vorbereitet", uploading: (progress) => `Upload ${progress} %`, processing: "Sicherheitsprüfung", ready: "Geprüft und bereit", remove: (name) => `${name} entfernen`, source: (label) => `${label}-Quelle`, upload: "Upload", uploadLabel: (label) => `${label} hochladen`, library: "Mediathek", useLibrary: "Geprüftes Medium wiederverwenden", searchLibrary: "Mediathek durchsuchen", emptyLibrary: "Keine passenden geprüften Medien.", selectLibraryAsset: (name) => `${name} auswählen`, stock: "Stock", useStock: "Stockbild verwenden", url: "URL", externalUrl: (label) => `Externe ${label}-URL verwenden`, urlLabel: (label) => `${label}-URL`, searchStock: "Stockbilder suchen", search: "Suchen",
+    retry: "Upload erneut versuchen",
     errors: { remove: "Das Medium konnte nicht entfernt werden.", invalidFile: "Dateityp oder Dateigröße ist ungültig.", wrongKind: "Die Datei passt nicht zum ausgewählten Blocktyp.", upload: "Upload fehlgeschlagen.", library: "Die Mediathek konnte nicht geladen werden.", stockSearch: "Stockbilder konnten nicht geladen werden.", stockUnavailable: "Stockbildsuche ist auf diesem System nicht konfiguriert.", stockSelect: "Stockbild konnte nicht ausgewählt werden." },
   },
   categories: {
@@ -475,6 +477,7 @@ const en: CourseSupportCopy = {
   },
   media: {
     selectFile: "Select file", microphoneRecording: "Microphone recording", cameraRecording: "Record camera or screen", recordingRejected: "The recording could not be accepted.", genericMedium: "Course media", preparing: "Preparing", uploading: (progress) => `Upload ${progress}%`, processing: "Security check", ready: "Checked and ready", remove: (name) => `Remove ${name}`, source: (label) => `${label} source`, upload: "Upload", uploadLabel: (label) => `Upload ${label}`, library: "Library", useLibrary: "Reuse checked media", searchLibrary: "Search media library", emptyLibrary: "No matching checked media.", selectLibraryAsset: (name) => `Select ${name}`, stock: "Stock", useStock: "Use stock image", url: "URL", externalUrl: (label) => `Use external ${label} URL`, urlLabel: (label) => `${label} URL`, searchStock: "Search stock images", search: "Search",
+    retry: "Retry upload",
     errors: { remove: "The media could not be removed.", invalidFile: "The file type or size is invalid.", wrongKind: "The file does not match the selected block type.", upload: "Upload failed.", library: "The media library could not be loaded.", stockSearch: "Stock images could not be loaded.", stockUnavailable: "Stock image search is not configured on this system.", stockSelect: "The stock image could not be selected." },
   },
   categories: {
@@ -533,6 +536,7 @@ const it: CourseSupportCopy = {
   },
   media: {
     selectFile: "Seleziona file", microphoneRecording: "Registrazione microfono", cameraRecording: "Registra fotocamera o schermo", recordingRejected: "Impossibile accettare la registrazione.", genericMedium: "Media del corso", preparing: "Preparazione", uploading: (progress) => `Caricamento ${progress}%`, processing: "Controllo di sicurezza", ready: "Controllato e pronto", remove: (name) => `Rimuovi ${name}`, source: (label) => `Origine ${label}`, upload: "Carica", uploadLabel: (label) => `Carica ${label}`, library: "Libreria", useLibrary: "Riutilizza media verificati", searchLibrary: "Cerca nella libreria media", emptyLibrary: "Nessun media verificato corrispondente.", selectLibraryAsset: (name) => `Seleziona ${name}`, stock: "Stock", useStock: "Usa immagine stock", url: "URL", externalUrl: (label) => `Usa URL esterno per ${label}`, urlLabel: (label) => `URL ${label}`, searchStock: "Cerca immagini stock", search: "Cerca",
+    retry: "Riprova il caricamento",
     errors: { remove: "Impossibile rimuovere il media.", invalidFile: "Il tipo o la dimensione del file non sono validi.", wrongKind: "Il file non corrisponde al tipo di blocco selezionato.", upload: "Caricamento non riuscito.", library: "Impossibile caricare la libreria media.", stockSearch: "Impossibile caricare le immagini stock.", stockUnavailable: "La ricerca di immagini stock non e configurata su questo sistema.", stockSelect: "Impossibile selezionare l'immagine stock." },
   },
   categories: {
@@ -591,6 +595,7 @@ const es: CourseSupportCopy = {
   },
   media: {
     selectFile: "Seleccionar archivo", microphoneRecording: "Grabacion de microfono", cameraRecording: "Grabar camara o pantalla", recordingRejected: "No se pudo aceptar la grabacion.", genericMedium: "Contenido multimedia del curso", preparing: "Preparando", uploading: (progress) => `Subida ${progress}%`, processing: "Comprobacion de seguridad", ready: "Comprobado y listo", remove: (name) => `Eliminar ${name}`, source: (label) => `Origen de ${label}`, upload: "Subir", uploadLabel: (label) => `Subir ${label}`, library: "Biblioteca", useLibrary: "Reutilizar contenido verificado", searchLibrary: "Buscar en la biblioteca multimedia", emptyLibrary: "No hay contenido verificado coincidente.", selectLibraryAsset: (name) => `Seleccionar ${name}`, stock: "Stock", useStock: "Usar imagen de stock", url: "URL", externalUrl: (label) => `Usar URL externa de ${label}`, urlLabel: (label) => `URL de ${label}`, searchStock: "Buscar imagenes de stock", search: "Buscar",
+    retry: "Reintentar subida",
     errors: { remove: "No se pudo eliminar el contenido multimedia.", invalidFile: "El tipo o el tamano del archivo no es valido.", wrongKind: "El archivo no coincide con el tipo de bloque seleccionado.", upload: "La subida ha fallado.", library: "No se pudo cargar la biblioteca multimedia.", stockSearch: "No se pudieron cargar las imagenes de stock.", stockUnavailable: "La busqueda de imagenes de stock no esta configurada en este sistema.", stockSelect: "No se pudo seleccionar la imagen de stock." },
   },
   categories: {
@@ -649,6 +654,7 @@ const fr: CourseSupportCopy = {
   },
   media: {
     selectFile: "Selectionner un fichier", microphoneRecording: "Enregistrement du microphone", cameraRecording: "Enregistrer la camera ou l'ecran", recordingRejected: "L'enregistrement n'a pas pu etre accepte.", genericMedium: "Media du cours", preparing: "Preparation", uploading: (progress) => `Televersement ${progress}%`, processing: "Controle de securite", ready: "Controle et pret", remove: (name) => `Supprimer ${name}`, source: (label) => `Source de ${label}`, upload: "Televerser", uploadLabel: (label) => `Televerser ${label}`, library: "Mediatheque", useLibrary: "Reutiliser un media verifie", searchLibrary: "Rechercher dans la mediatheque", emptyLibrary: "Aucun media verifie correspondant.", selectLibraryAsset: (name) => `Selectionner ${name}`, stock: "Stock", useStock: "Utiliser une image de stock", url: "URL", externalUrl: (label) => `Utiliser une URL externe pour ${label}`, urlLabel: (label) => `URL de ${label}`, searchStock: "Rechercher des images de stock", search: "Rechercher",
+    retry: "Reessayer le televersement",
     errors: { remove: "Le media n'a pas pu etre supprime.", invalidFile: "Le type ou la taille du fichier n'est pas valide.", wrongKind: "Le fichier ne correspond pas au type de bloc selectionne.", upload: "Echec du televersement.", library: "La mediatheque n'a pas pu etre chargee.", stockSearch: "Les images de stock n'ont pas pu etre chargees.", stockUnavailable: "La recherche d'images de stock n'est pas configuree sur ce systeme.", stockSelect: "L'image de stock n'a pas pu etre selectionnee." },
   },
   categories: {

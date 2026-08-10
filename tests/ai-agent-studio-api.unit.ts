@@ -17,7 +17,7 @@ function source(relativePath: string) {
 }
 
 test("Agent Studio publishes versioned draft, publish, rollback and history APIs", () => {
-  assert.equal(openApiDocument.info.version, "1.6.0");
+  assert.equal(openApiDocument.info.version, "1.7.0");
   for (const [path, method, operationId, schema] of [
     ["/agents/{id}/draft", "put", "replaceAgentDraft", "AgentDraftUpdate"],
     ["/agents/{id}/publish", "post", "publishAgentDraft", "AgentPublish"],

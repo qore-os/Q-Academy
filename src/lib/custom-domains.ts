@@ -34,6 +34,10 @@ import {
 } from "@/lib/custom-domain-model";
 import { assertOrganizationFeatureAvailable } from "@/lib/organization-contracts";
 import { getPublicAppUrl } from "@/lib/server-environment";
+import {
+  assertS3BrowserUploadOriginAllowed,
+  S3BrowserUploadOriginInventoryError,
+} from "@/lib/media/s3-browser-upload-origins";
 
 type DomainReader = Pick<typeof db, "select">;
 
@@ -442,6 +446,21 @@ export async function verifyCustomDomainClaim(input: {
         resolveTxt: input.resolveTxt,
         timeoutMs: input.timeoutMs,
       });
+  if (dnsResult.code === "verified" && process.env.NODE_ENV === "production") {
+    try {
+      assertS3BrowserUploadOriginAllowed(
+        process.env,
+        `https://${snapshot.hostname}`,
+      );
+    } catch (error) {
+      if (!(error instanceof S3BrowserUploadOriginInventoryError)) throw error;
+      throw new ApiError(
+        503,
+        "internal_error",
+        "Die Domain kann erst aktiviert werden, nachdem ihre Upload-Origin freigegeben und der S3-CORS-Preflight erfolgreich ausgefuehrt wurde.",
+      );
+    }
+  }
   const checkedAt = new Date();
   return db.transaction(async (tx) => {
     await requireActiveOwner(tx, input);

@@ -1,0 +1,1 @@
+ALTER TABLE "media_upload_sessions" ADD CONSTRAINT "media_upload_sessions_state_check" CHECK ("media_upload_sessions"."state" in ('initializing', 'recovering', 'uploading', 'completing', 'aborting'));

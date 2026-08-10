@@ -22,6 +22,10 @@ import {
   normalizeConfiguredHostname,
   resolveCanonicalAppHostname,
 } from "./branding-host-policy";
+import {
+  resolveS3BrowserUploadOriginInventory,
+  S3BrowserUploadOriginInventoryError,
+} from "./media/s3-browser-upload-origins";
 
 export type EnvironmentSource = Record<string, string | undefined>;
 
@@ -73,6 +77,7 @@ export type ProductionServerEnvironment = {
   supportEmail: string;
   webPush: WebPushConfiguration;
   mediaStorage: S3MediaStorageConfiguration;
+  browserUploadOrigins: readonly string[];
 };
 
 export type ProductionMediaWorkerEnvironment = {
@@ -497,6 +502,16 @@ export function validateProductionServerEnvironment(
       );
     }
   }
+  let browserUploadOrigins: readonly string[] | null = null;
+  try {
+    browserUploadOrigins = resolveS3BrowserUploadOriginInventory(environment);
+  } catch (error) {
+    if (error instanceof S3BrowserUploadOriginInventoryError) {
+      issues.push(...error.issues);
+    } else {
+      throw error;
+    }
+  }
   const apiAllowedOrigin = productionOrigin(
     environment,
     "API_ALLOWED_ORIGIN",
@@ -785,6 +800,7 @@ export function validateProductionServerEnvironment(
     supportEmail: supportEmail!,
     webPush: webPush!,
     mediaStorage: mediaStorage!,
+    browserUploadOrigins: browserUploadOrigins!,
   };
 }
 

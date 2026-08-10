@@ -155,6 +155,17 @@ test("0050 seals publication history while preserving optimistic draft updates",
 });
 
 test("Agent Studio migrations remain unique in the current history", () => {
+  assert.equal(
+    new Set(journal.entries.map((entry) => entry.idx)).size,
+    journal.entries.length,
+    "Migration indexes must remain unique.",
+  );
+  assert.equal(
+    new Set(journal.entries.map((entry) => entry.tag)).size,
+    journal.entries.length,
+    "Migration tags must remain unique.",
+  );
+
   const matching = journal.entries
     .filter((entry) => entry.idx >= 50)
     .map(({ idx, tag }) => ({ idx, tag }));
@@ -184,10 +195,16 @@ test("Agent Studio migrations remain unique in the current history", () => {
     { idx: 72, tag: "0072_orbit_billing_price_versions" },
     { idx: 73, tag: "0073_intercom_identity_fail_closed" },
     { idx: 74, tag: "0074_runtime_trigger_role_guards" },
+    { idx: 75, tag: "0075_same_chameleon" },
+    { idx: 76, tag: "0076_charming_frightful_four" },
+    { idx: 77, tag: "0077_overrated_robbie_robertson" },
+    { idx: 78, tag: "0078_peaceful_blue_shield" },
+    { idx: 79, tag: "0079_mushy_greymalkin" },
+    { idx: 80, tag: "0080_closed_catseye" },
   ]);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0074_runtime_trigger_role_guards",
+    "0080_closed_catseye",
   );
 });
 

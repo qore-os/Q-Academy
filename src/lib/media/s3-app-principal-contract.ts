@@ -8,7 +8,21 @@ import {
   verifyS3ObjectIntegrity,
 } from "./s3-object-integrity";
 import {
+  hasRequiredS3BrowserUploadCorsInventory,
+  type S3BrowserUploadCorsRuleContract,
+} from "./s3-browser-upload-cors";
+import {
+  normalizeS3BrowserUploadOrigins,
+  S3BrowserUploadOriginInventoryError,
+} from "./s3-browser-upload-origins";
+import {
+  compositeS3MultipartSha256,
+  createS3MultipartCanaryParts,
+  joinS3MultipartCanaryParts,
+} from "./s3-multipart-preflight";
+import {
   hasRequiredS3PrivacyExportLifecycle,
+  resolveS3IncompleteMultipartUploadLifecycleDays,
   S3_PRIVACY_EXPORT_LIFECYCLE_TAGGING,
   S3_PRIVACY_EXPORT_LIFECYCLE_TAG_KEY,
   S3_PRIVACY_EXPORT_LIFECYCLE_TAG_VALUE,
@@ -39,6 +53,7 @@ type PutInput = Readonly<{
 }>;
 
 type StableObject = Readonly<{ VersionId?: string; ETag?: string }>;
+type MultipartUploadTarget = Readonly<{ key: string; uploadId: string }>;
 
 export type S3AppPrincipalContractAdapter = Readonly<{
   bucket: string;
@@ -46,12 +61,21 @@ export type S3AppPrincipalContractAdapter = Readonly<{
   getBucketLifecycleConfiguration(): Promise<
     readonly S3LifecycleRuleContract[]
   >;
+  getBucketCorsConfiguration(): Promise<
+    readonly S3BrowserUploadCorsRuleContract[]
+  >;
   seedObject(input: PutInput): Promise<StableObject>;
   appPutObject(input: PutInput): Promise<StableObject>;
   appHeadObject(input: {
     key: string;
     versionId?: string;
-  }): Promise<S3ObjectIntegrityMetadata>;
+    checksumMode?: "ENABLED";
+  }): Promise<
+    S3ObjectIntegrityMetadata & {
+      ChecksumSHA256?: string;
+      ChecksumType?: string;
+    }
+  >;
   appGetObject(input: {
     key: string;
     versionId: string;
@@ -67,6 +91,65 @@ export type S3AppPrincipalContractAdapter = Readonly<{
     contentType: string;
     metadata: Readonly<Record<string, string>>;
   }): Promise<unknown>;
+  appCreateMultipartUpload(input: {
+    key: string;
+    contentType: string;
+    metadata: Readonly<Record<string, string>>;
+  }): Promise<{
+    Bucket?: string;
+    Key?: string;
+    UploadId?: string;
+    ChecksumAlgorithm?: string;
+    ChecksumType?: string;
+  }>;
+  appUploadPart(input: {
+    key: string;
+    uploadId: string;
+    partNumber: number;
+    body: Uint8Array;
+    checksumSha256: string;
+  }): Promise<{ ETag?: string; ChecksumSHA256?: string }>;
+  appBrowserUploadPart(input: {
+    key: string;
+    uploadId: string;
+    partNumber: number;
+    body: Uint8Array;
+    checksumSha256: string;
+    expectedOrigin: string;
+    contentType: string;
+  }): Promise<{ ETag?: string; ChecksumSHA256?: string }>;
+  appListMultipartParts(input: {
+    key: string;
+    uploadId: string;
+  }): Promise<{
+    isTruncated: boolean;
+    bucket?: string;
+    key?: string;
+    uploadId?: string;
+    checksumAlgorithm?: string;
+    checksumType?: string;
+    parts: ReadonlyArray<
+      Readonly<{
+        partNumber?: number;
+        sizeBytes?: number;
+        etag?: string;
+        checksumSha256?: string;
+      }>
+    >;
+  }>;
+  appCompleteMultipartUpload(input: {
+    key: string;
+    uploadId: string;
+    expectedSizeBytes: number;
+    parts: readonly Readonly<{
+      partNumber: number;
+      etag: string;
+      checksumSha256: string;
+    }>[];
+  }): Promise<
+    StableObject & { ChecksumSHA256?: string; ChecksumType?: string }
+  >;
+  appAbortMultipartUpload(input: MultipartUploadTarget): Promise<void>;
   appListObjects(input: { prefix: string }): Promise<unknown>;
   appListObjectVersions(input: { prefix: string }): Promise<unknown>;
   appDeleteObject(input: {
@@ -84,6 +167,18 @@ export type S3AppPrincipalContractAdapter = Readonly<{
     key: string;
     versionId: string;
   }): Promise<boolean>;
+  operatorGetObject(input: {
+    key: string;
+    versionId: string;
+    expectedEtag: string;
+  }): Promise<
+    S3ObjectIntegrityMetadata & { body: AsyncIterable<Uint8Array> }
+  >;
+  operatorMultipartUploadExists(input: MultipartUploadTarget): Promise<boolean>;
+  operatorObjectExists(input: { key: string }): Promise<boolean>;
+  cleanupMultipartUploads(
+    targets: readonly MultipartUploadTarget[],
+  ): Promise<void>;
   cleanupExactKeys(keys: readonly string[]): Promise<void>;
   isAuthorizationDenied(error: unknown): boolean;
 }>;
@@ -91,10 +186,16 @@ export type S3AppPrincipalContractAdapter = Readonly<{
 export type S3AppPrincipalContractResult = Readonly<{
   bucket: string;
   canaryId: string;
+  incompleteMultipartAbortDays: number;
+  browserUploadOriginCount: number;
   required: Readonly<{
     incomingWriteAndHead: true;
     assetVersionRead: true;
     privacyExportLifecycle: true;
+    incompleteMultipartLifecycle: true;
+    browserUploadCors: true;
+    multipartWriteListComplete: true;
+    multipartAbort: true;
   }>;
   denied: Readonly<{
     objectListing: true;
@@ -115,6 +216,8 @@ export class S3AppPrincipalContractError extends Error {
     | "invalid_canary"
     | "versioning_not_enabled"
     | "privacy_export_lifecycle_invalid"
+    | "multipart_lifecycle_invalid"
+    | "browser_upload_cors_invalid"
     | "required_operation_failed"
     | "integrity_verification_failed"
     | "forbidden_operation_allowed"
@@ -236,6 +339,68 @@ function stableObject(
   }
 }
 
+function multipartUploadId(
+  value: string | undefined,
+  operation: string,
+  canaryId: string,
+) {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 1_024) {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "A required S3 multipart upload has no valid identity.",
+      { operation, canaryId },
+    );
+  }
+  return normalized;
+}
+
+function verifyMultipartCreateResponse(
+  value: {
+    Bucket?: string;
+    Key?: string;
+    UploadId?: string;
+    ChecksumAlgorithm?: string;
+    ChecksumType?: string;
+  },
+  expected: { bucket: string; key: string },
+  operation: string,
+  canaryId: string,
+) {
+  if (
+    value.Bucket !== expected.bucket ||
+    value.Key !== expected.key ||
+    value.ChecksumAlgorithm !== "SHA256" ||
+    value.ChecksumType !== "COMPOSITE"
+  ) {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "The S3 provider did not accept the multipart checksum contract.",
+      { operation, canaryId },
+    );
+  }
+  return multipartUploadId(value.UploadId, operation, canaryId);
+}
+
+function multipartPartIdentity(
+  value: { ETag?: string; ChecksumSHA256?: string },
+  expectedChecksum: string,
+  operation: string,
+  canaryId: string,
+) {
+  try {
+    const etag = normalizeS3Etag(value.ETag);
+    if (value.ChecksumSHA256 !== expectedChecksum) throw new Error("checksum");
+    return { etag, checksumSha256: expectedChecksum };
+  } catch {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "A required S3 multipart part has invalid integrity evidence.",
+      { operation, canaryId },
+    );
+  }
+}
+
 function verifyObject(
   value: S3ObjectIntegrityMetadata,
   expected: {
@@ -325,6 +490,272 @@ async function forbiddenOperation(
   );
 }
 
+async function executeMultipartContract(
+  adapter: S3AppPrincipalContractAdapter,
+  canary: Canary,
+  completeKey: string,
+  abortKey: string,
+  expectedOrigins: readonly string[],
+  activeUploads: MultipartUploadTarget[],
+) {
+  const parts = createS3MultipartCanaryParts(canary.body);
+  const completeBody = joinS3MultipartCanaryParts(parts);
+  const metadata = {
+    "asset-id": canary.assetId,
+    "organization-id": canary.organizationId,
+  };
+
+  await requireEnabledVersioning(adapter, "multipart_create", canary.id);
+  const created = await requiredOperation("multipart_create", canary.id, () =>
+    adapter.appCreateMultipartUpload({
+      key: completeKey,
+      contentType: ASSET_MIME_TYPE,
+      metadata,
+    }),
+  );
+  const uploadId = verifyMultipartCreateResponse(
+    created,
+    { bucket: adapter.bucket, key: completeKey },
+    "multipart_create",
+    canary.id,
+  );
+  activeUploads.push({ key: completeKey, uploadId });
+  const completedParts = [] as Array<{
+    partNumber: number;
+    etag: string;
+    checksumSha256: string;
+  }>;
+  for (const part of parts) {
+    const partInput = { key: completeKey, uploadId, ...part };
+    let uploadedIdentity:
+      | { etag: string; checksumSha256: string }
+      | undefined;
+    if (part.partNumber === parts.length) {
+      for (const expectedOrigin of expectedOrigins) {
+        await requireEnabledVersioning(
+          adapter,
+          `multipart_browser_upload_part_${part.partNumber}`,
+          canary.id,
+        );
+        const uploaded = await requiredOperation(
+          `multipart_browser_upload_part_${part.partNumber}`,
+          canary.id,
+          () =>
+            adapter.appBrowserUploadPart({
+              ...partInput,
+              expectedOrigin,
+              contentType: "video/mp4",
+            }),
+        );
+        uploadedIdentity = multipartPartIdentity(
+          uploaded,
+          part.checksumSha256,
+          `multipart_browser_upload_part_${part.partNumber}`,
+          canary.id,
+        );
+      }
+    } else {
+      await requireEnabledVersioning(
+        adapter,
+        `multipart_upload_part_${part.partNumber}`,
+        canary.id,
+      );
+      const uploaded = await requiredOperation(
+        `multipart_upload_part_${part.partNumber}`,
+        canary.id,
+        () => adapter.appUploadPart(partInput),
+      );
+      uploadedIdentity = multipartPartIdentity(
+        uploaded,
+        part.checksumSha256,
+        `multipart_upload_part_${part.partNumber}`,
+        canary.id,
+      );
+    }
+    if (!uploadedIdentity) {
+      throw new S3AppPrincipalContractError(
+        "integrity_verification_failed",
+        "The S3 browser multipart upload returned no part evidence.",
+        { operation: "multipart_browser_upload", canaryId: canary.id },
+      );
+    }
+    completedParts.push({
+      partNumber: part.partNumber,
+      ...uploadedIdentity,
+    });
+  }
+  const listed = await requiredOperation("multipart_list_parts", canary.id, () =>
+    adapter.appListMultipartParts({ key: completeKey, uploadId }),
+  );
+  if (
+    listed.isTruncated ||
+    listed.bucket !== adapter.bucket ||
+    listed.key !== completeKey ||
+    listed.uploadId !== uploadId ||
+    listed.checksumAlgorithm !== "SHA256" ||
+    listed.checksumType !== "COMPOSITE" ||
+    listed.parts.length !== parts.length
+  ) {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "The S3 multipart part inventory is incomplete.",
+      { operation: "multipart_list_parts", canaryId: canary.id },
+    );
+  }
+  for (const [index, listedPart] of listed.parts.entries()) {
+    const expected = parts[index];
+    const completed = completedParts[index];
+    let etag: string;
+    try {
+      etag = normalizeS3Etag(listedPart.etag);
+    } catch {
+      throw new S3AppPrincipalContractError(
+        "integrity_verification_failed",
+        "The S3 multipart part inventory contains an invalid ETag.",
+        { operation: "multipart_list_parts", canaryId: canary.id },
+      );
+    }
+    if (
+      !expected ||
+      !completed ||
+      listedPart.partNumber !== expected.partNumber ||
+      listedPart.sizeBytes !== expected.body.byteLength ||
+      listedPart.checksumSha256 !== expected.checksumSha256 ||
+      etag !== completed.etag
+    ) {
+      throw new S3AppPrincipalContractError(
+        "integrity_verification_failed",
+        "The S3 multipart part inventory failed integrity verification.",
+        { operation: "multipart_list_parts", canaryId: canary.id },
+      );
+    }
+  }
+  await requireEnabledVersioning(adapter, "multipart_complete", canary.id);
+  const expectedCompositeChecksum = compositeS3MultipartSha256(completedParts);
+  const completed = await requiredOperation(
+    "multipart_complete",
+    canary.id,
+    () =>
+      adapter.appCompleteMultipartUpload({
+        key: completeKey,
+        uploadId,
+        expectedSizeBytes: completeBody.byteLength,
+        parts: completedParts,
+      }),
+  );
+  if (
+    completed.ChecksumType !== "COMPOSITE" ||
+    completed.ChecksumSHA256 !== expectedCompositeChecksum
+  ) {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "The completed S3 multipart object has invalid checksum evidence.",
+      { operation: "multipart_complete", canaryId: canary.id },
+    );
+  }
+  const completedObject = stableObject(
+    completed,
+    "multipart_complete",
+    canary.id,
+  );
+  const completeHead = await requiredOperation(
+    "multipart_complete_head",
+    canary.id,
+    () =>
+      adapter.appHeadObject({
+        key: completeKey,
+        versionId: completedObject.versionId,
+        checksumMode: "ENABLED",
+      }),
+  );
+  verifyObject(
+    completeHead,
+    {
+      ...completedObject,
+      sizeBytes: completeBody.byteLength,
+      mimeType: ASSET_MIME_TYPE,
+      metadata,
+    },
+    "multipart_complete_head",
+    canary.id,
+  );
+  if (
+    completeHead.ChecksumType !== "COMPOSITE" ||
+    completeHead.ChecksumSHA256 !== expectedCompositeChecksum
+  ) {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "The S3 multipart object checksum changed after completion.",
+      { operation: "multipart_complete_head", canaryId: canary.id },
+    );
+  }
+  const completeGet = await requiredOperation(
+    "operator_verify_multipart_sha256",
+    canary.id,
+    () =>
+      adapter.operatorGetObject({
+        key: completeKey,
+        versionId: completedObject.versionId,
+        expectedEtag: completedObject.etag,
+      }),
+  );
+  await verifyBody(
+    completeGet.body,
+    completeBody,
+    "operator_verify_multipart_sha256",
+    canary.id,
+  );
+
+  await requireEnabledVersioning(adapter, "multipart_abort_create", canary.id);
+  const abortCreated = await requiredOperation(
+    "multipart_abort_create",
+    canary.id,
+    () =>
+      adapter.appCreateMultipartUpload({
+        key: abortKey,
+        contentType: ASSET_MIME_TYPE,
+        metadata,
+      }),
+  );
+  const abortUploadId = verifyMultipartCreateResponse(
+    abortCreated,
+    { bucket: adapter.bucket, key: abortKey },
+    "multipart_abort_create",
+    canary.id,
+  );
+  activeUploads.push({ key: abortKey, uploadId: abortUploadId });
+  await requireEnabledVersioning(adapter, "multipart_abort_part", canary.id);
+  await requiredOperation("multipart_abort_part", canary.id, () =>
+    adapter.appUploadPart({
+      key: abortKey,
+      uploadId: abortUploadId,
+      ...parts[0],
+    }),
+  );
+  await requireEnabledVersioning(adapter, "multipart_abort", canary.id);
+  await requiredOperation("multipart_abort", canary.id, () =>
+    adapter.appAbortMultipartUpload({ key: abortKey, uploadId: abortUploadId }),
+  );
+  const [uploadExists, objectExists] = await Promise.all([
+    requiredOperation("operator_verify_multipart_abort", canary.id, () =>
+      adapter.operatorMultipartUploadExists({
+        key: abortKey,
+        uploadId: abortUploadId,
+      }),
+    ),
+    requiredOperation("operator_verify_multipart_abort_object", canary.id, () =>
+      adapter.operatorObjectExists({ key: abortKey }),
+    ),
+  ]);
+  if (uploadExists || objectExists) {
+    throw new S3AppPrincipalContractError(
+      "integrity_verification_failed",
+      "The aborted S3 multipart canary is still present.",
+      { operation: "operator_verify_multipart_abort", canaryId: canary.id },
+    );
+  }
+}
+
 async function executeContract(
   adapter: S3AppPrincipalContractAdapter,
   canary: Canary,
@@ -334,7 +765,12 @@ async function executeContract(
     copyTarget: string;
     tenantWriteTarget: string;
     privacy: string;
+    multipartComplete: string;
+    multipartAbort: string;
   },
+  expectedOrigins: readonly string[],
+  multipartUploadTtlSeconds: number,
+  activeUploads: MultipartUploadTarget[],
 ) {
   const lifecycleRules = await requiredOperation(
     "privacy_lifecycle_configuration",
@@ -348,6 +784,39 @@ async function executeContract(
       { operation: "privacy_lifecycle_configuration", canaryId: canary.id },
     );
   }
+  const incompleteMultipartAbortDays =
+    resolveS3IncompleteMultipartUploadLifecycleDays(
+      lifecycleRules,
+      multipartUploadTtlSeconds,
+    );
+  if (incompleteMultipartAbortDays === null) {
+    throw new S3AppPrincipalContractError(
+      "multipart_lifecycle_invalid",
+      "The incomplete-multipart-upload lifecycle contract is missing or invalid.",
+      { operation: "multipart_lifecycle_configuration", canaryId: canary.id },
+    );
+  }
+  const corsRules = await requiredOperation(
+    "browser_upload_cors_configuration",
+    canary.id,
+    () => adapter.getBucketCorsConfiguration(),
+  );
+  if (!hasRequiredS3BrowserUploadCorsInventory(corsRules, expectedOrigins)) {
+    throw new S3AppPrincipalContractError(
+      "browser_upload_cors_invalid",
+      "The S3 browser upload CORS contract is missing or invalid.",
+      { operation: "browser_upload_cors_configuration", canaryId: canary.id },
+    );
+  }
+
+  await executeMultipartContract(
+    adapter,
+    canary,
+    keys.multipartComplete,
+    keys.multipartAbort,
+    expectedOrigins,
+    activeUploads,
+  );
 
   const digest = sha256(canary.body);
   const assetMetadata = {
@@ -596,17 +1065,30 @@ async function executeContract(
   await forbiddenOperation(adapter, "privacy_unversioned_delete", canary.id, () =>
     adapter.appDeleteObject({ key: keys.privacy }),
   );
+  return incompleteMultipartAbortDays;
 }
 
 export async function runS3AppPrincipalContractPreflight(input: {
   adapter: S3AppPrincipalContractAdapter;
   confirmBucket: string;
+  expectedOrigins: readonly string[];
+  multipartUploadTtlSeconds: number;
   createCanary?: () => Canary;
 }): Promise<S3AppPrincipalContractResult> {
   if (!input.confirmBucket || input.confirmBucket !== input.adapter.bucket) {
     throw new S3AppPrincipalContractError(
       "bucket_confirmation_mismatch",
       "The explicit bucket confirmation does not match the configured bucket.",
+    );
+  }
+  let expectedOrigins: readonly string[];
+  try {
+    expectedOrigins = normalizeS3BrowserUploadOrigins(input.expectedOrigins);
+  } catch (error) {
+    if (!(error instanceof S3BrowserUploadOriginInventoryError)) throw error;
+    throw new S3AppPrincipalContractError(
+      "browser_upload_cors_invalid",
+      "The S3 browser upload origin inventory is invalid.",
     );
   }
   const canary = (input.createCanary ?? defaultCanary)();
@@ -621,17 +1103,29 @@ export async function runS3AppPrincipalContractPreflight(input: {
     privacy:
       `tenants/${canary.organizationId}/privacy-exports/` +
       `${canary.privacyRequestId}/${canary.privacyArtifactId}.enc`,
+    multipartComplete: `incoming/${assetRoot}/multipart-${fileName}`,
+    multipartAbort: `incoming/${assetRoot}/abort-${fileName}`,
   };
   const exactKeys = Object.values(keys);
+  const activeUploads: MultipartUploadTarget[] = [];
+  let incompleteMultipartAbortDays: number | null = null;
   let primaryError: S3AppPrincipalContractError | null = null;
   try {
-    await executeContract(input.adapter, canary, keys);
+    incompleteMultipartAbortDays = await executeContract(
+      input.adapter,
+      canary,
+      keys,
+      expectedOrigins,
+      input.multipartUploadTtlSeconds,
+      activeUploads,
+    );
   } catch (error) {
     primaryError = safePrimaryError(error, canary.id);
   }
 
   let cleanupFailed = false;
   try {
+    await input.adapter.cleanupMultipartUploads(activeUploads);
     await input.adapter.cleanupExactKeys(exactKeys);
   } catch {
     cleanupFailed = true;
@@ -651,13 +1145,26 @@ export async function runS3AppPrincipalContractPreflight(input: {
       { canaryId: canary.id },
     );
   }
+  if (incompleteMultipartAbortDays === null) {
+    throw new S3AppPrincipalContractError(
+      "multipart_lifecycle_invalid",
+      "The incomplete-multipart-upload lifecycle contract was not verified.",
+      { canaryId: canary.id },
+    );
+  }
   return {
     bucket: input.adapter.bucket,
     canaryId: canary.id,
+    incompleteMultipartAbortDays,
+    browserUploadOriginCount: expectedOrigins.length,
     required: {
       incomingWriteAndHead: true,
       assetVersionRead: true,
       privacyExportLifecycle: true,
+      incompleteMultipartLifecycle: true,
+      browserUploadCors: true,
+      multipartWriteListComplete: true,
+      multipartAbort: true,
     },
     denied: {
       objectListing: true,

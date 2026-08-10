@@ -6,6 +6,7 @@ import { runClamAvPreflight } from "../src/lib/media/clamav-preflight";
 import { createAwsS3ProviderContractAdapter } from "../src/lib/media/s3-provider-contract-aws";
 import { runS3ProviderContractPreflight } from "../src/lib/media/s3-provider-contract";
 import { runStratoS3CompatibilityPreflight } from "../src/lib/media/s3-strato-compatibility-preflight";
+import { resolveS3BrowserUploadOriginInventory } from "../src/lib/media/s3-browser-upload-origins";
 import { resolveMediaProcessingPreflightConfiguration } from "../src/lib/media/processing-preflight";
 import { runBoundedMediaCommand } from "../src/lib/media/processing-provider";
 import { resolveMediaStorageConfiguration } from "../src/lib/media/storage-configuration";
@@ -31,9 +32,8 @@ type MediaPreflightStage =
   | "s3_provider";
 let currentStage: MediaPreflightStage = "configuration";
 
-function browserOrigin() {
-  return process.env.NEXT_PUBLIC_APP_URL ??
-    (process.env.APP_DOMAIN ? `https://${process.env.APP_DOMAIN}` : "");
+function browserOrigins() {
+  return resolveS3BrowserUploadOriginInventory(process.env);
 }
 
 async function main() {
@@ -73,7 +73,7 @@ async function main() {
     const result = await runStratoS3CompatibilityPreflight({
       configuration: storage,
       confirmBucket: bucket,
-      expectedOrigin: browserOrigin(),
+      expectedOrigins: browserOrigins(),
     });
     console.log(JSON.stringify({
       ok: true,
@@ -93,7 +93,12 @@ async function main() {
   }
   const adapter = createAwsS3ProviderContractAdapter(storage);
   try {
-    const result = await runS3ProviderContractPreflight({ adapter, confirmBucket: bucket });
+    const result = await runS3ProviderContractPreflight({
+      adapter,
+      confirmBucket: bucket,
+      expectedOrigins: browserOrigins(),
+      multipartUploadTtlSeconds: storage.limits.multipartUploadTtlSeconds,
+    });
     console.log(JSON.stringify({ ok: true, bucket: result.bucket, cleanup: "verified", clamAv, ffmpeg: true, ffprobe: true, transcript: configuration.transcript.mode, workRoot: configuration.workRoot }));
   } finally {
     adapter.destroy();

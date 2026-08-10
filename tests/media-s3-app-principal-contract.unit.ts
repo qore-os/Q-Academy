@@ -7,7 +7,9 @@ import {
   type S3AppPrincipalContractAdapter,
 } from "../src/lib/media/s3-app-principal-contract";
 import { cleanupExactS3AppPrincipalKeys } from "../src/lib/media/s3-app-principal-contract-aws";
+import { compositeS3MultipartSha256 } from "../src/lib/media/s3-multipart-preflight";
 import {
+  S3_INCOMPLETE_MULTIPART_LIFECYCLE_PREFIX,
   S3_PRIVACY_EXPORT_LIFECYCLE_DAYS,
   S3_PRIVACY_EXPORT_LIFECYCLE_PREFIX,
   S3_PRIVACY_EXPORT_LIFECYCLE_TAGGING,
@@ -17,6 +19,10 @@ import {
 } from "../src/lib/media/s3-privacy-export-lifecycle";
 
 const BUCKET = "q-academy-contract-test";
+const BROWSER_ORIGIN = "https://academy.example.test";
+const TENANT_BROWSER_ORIGIN = "https://tenant.example.test";
+const BROWSER_ORIGINS = [BROWSER_ORIGIN, TENANT_BROWSER_ORIGIN] as const;
+const MULTIPART_UPLOAD_TTL_SECONDS = 24 * 60 * 60;
 const CANARY = {
   id: "10000000-0000-4000-8000-000000000001",
   organizationId: "20000000-0000-4000-8000-000000000002",
@@ -51,6 +57,11 @@ function requiredLifecycleRules(): S3LifecycleRuleContract[] {
       filter: { prefix: S3_PRIVACY_EXPORT_LIFECYCLE_PREFIX },
       expiration: { expiredObjectDeleteMarker: true },
     },
+    {
+      status: "Enabled",
+      filter: { prefix: S3_INCOMPLETE_MULTIPART_LIFECYCLE_PREFIX },
+      abortIncompleteMultipartUpload: { daysAfterInitiation: 7 },
+    },
   ];
 }
 
@@ -62,6 +73,20 @@ type Entry = Readonly<{
   metadata: Readonly<Record<string, string>>;
   tagging?: string;
 }>;
+
+type MultipartEntry = {
+  key: string;
+  contentType: string;
+  metadata: Readonly<Record<string, string>>;
+  parts: Map<
+    number,
+    Readonly<{
+      body: Uint8Array;
+      etag: string;
+      checksumSha256: string;
+    }>
+  >;
+};
 
 class AuthorizationDenied extends Error {
   readonly $metadata = { httpStatusCode: 403 };
@@ -79,7 +104,13 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
     Parameters<S3AppPrincipalContractAdapter["appPutObject"]>[0]
   > = [];
   readonly objects = new Map<string, Entry[]>();
+  readonly multipartUploads = new Map<string, MultipartEntry>();
+  readonly multipartObjectChecksums = new Map<string, string>();
+  readonly browserMultipartPartInputs: Array<
+    Parameters<S3AppPrincipalContractAdapter["appBrowserUploadPart"]>[0]
+  > = [];
   version = 0;
+  multipartVersion = 0;
   allowedForbidden: string | null = null;
   indeterminateForbidden: string | null = null;
   denyPrivacyDelete = false;
@@ -91,6 +122,18 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
   omitPrivacyVersion = false;
   omitPrivacyTag = false;
   lifecycleRules = requiredLifecycleRules();
+  corsRules = [
+    {
+      allowedOrigins: [...BROWSER_ORIGINS],
+      allowedMethods: ["PUT"],
+      allowedHeaders: [
+        "Content-Type",
+        "If-None-Match",
+        "X-Amz-Checksum-Sha256",
+      ],
+      exposeHeaders: ["ETag"],
+    },
+  ];
 
   private store(
     key: string,
@@ -150,6 +193,11 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
     return this.lifecycleRules;
   }
 
+  async getBucketCorsConfiguration() {
+    this.calls.push("cors");
+    return this.corsRules;
+  }
+
   async seedObject(input: Parameters<S3AppPrincipalContractAdapter["seedObject"]>[0]) {
     this.calls.push("operator_seed_ready");
     const stored = this.store(
@@ -189,7 +237,15 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
 
   async appHeadObject(input: Parameters<S3AppPrincipalContractAdapter["appHeadObject"]>[0]) {
     this.calls.push("head");
-    return this.metadata(this.entry(input.key, input.versionId));
+    const metadata = this.metadata(this.entry(input.key, input.versionId));
+    const checksumSha256 = this.multipartObjectChecksums.get(input.key);
+    return checksumSha256
+      ? {
+          ...metadata,
+          ChecksumSHA256: checksumSha256,
+          ChecksumType: "COMPOSITE",
+        }
+      : metadata;
   }
 
   async appGetObject(input: Parameters<S3AppPrincipalContractAdapter["appGetObject"]>[0]) {
@@ -214,6 +270,126 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
       input.contentType,
       input.metadata,
     );
+  }
+
+  async appCreateMultipartUpload(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["appCreateMultipartUpload"]
+    >[0],
+  ) {
+    const operation = input.key.includes("/abort-")
+      ? "multipart_abort_create"
+      : "multipart_create";
+    this.calls.push(operation);
+    this.multipartVersion += 1;
+    const uploadId = `upload-${this.multipartVersion}`;
+    this.multipartUploads.set(uploadId, {
+      key: input.key,
+      contentType: input.contentType,
+      metadata: { ...input.metadata },
+      parts: new Map(),
+    });
+    return {
+      Bucket: this.bucket,
+      Key: input.key,
+      UploadId: uploadId,
+      ChecksumAlgorithm: "SHA256",
+      ChecksumType: "COMPOSITE",
+    };
+  }
+
+  async appUploadPart(
+    input: Parameters<S3AppPrincipalContractAdapter["appUploadPart"]>[0],
+  ) {
+    const upload = this.multipartUploads.get(input.uploadId);
+    if (!upload || upload.key !== input.key) throw new MissingObject("missing");
+    const operation = input.key.includes("/abort-")
+      ? "multipart_abort_part"
+      : `multipart_upload_part_${input.partNumber}`;
+    this.calls.push(operation);
+    const etag = `part-${input.partNumber}-${input.uploadId}`;
+    upload.parts.set(input.partNumber, {
+      body: Uint8Array.from(input.body),
+      etag,
+      checksumSha256: input.checksumSha256,
+    });
+    return { ETag: `"${etag}"`, ChecksumSHA256: input.checksumSha256 };
+  }
+
+  async appBrowserUploadPart(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["appBrowserUploadPart"]
+    >[0],
+  ) {
+    this.browserMultipartPartInputs.push(input);
+    return this.appUploadPart(input);
+  }
+
+  async appListMultipartParts(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["appListMultipartParts"]
+    >[0],
+  ) {
+    this.calls.push("multipart_list_parts");
+    const upload = this.multipartUploads.get(input.uploadId);
+    if (!upload || upload.key !== input.key) throw new MissingObject("missing");
+    return {
+      isTruncated: false,
+      bucket: this.bucket,
+      key: input.key,
+      uploadId: input.uploadId,
+      checksumAlgorithm: "SHA256",
+      checksumType: "COMPOSITE",
+      parts: [...upload.parts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([partNumber, part]) => ({
+          partNumber,
+          sizeBytes: part.body.byteLength,
+          etag: `"${part.etag}"`,
+          checksumSha256: part.checksumSha256,
+        })),
+    };
+  }
+
+  async appCompleteMultipartUpload(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["appCompleteMultipartUpload"]
+    >[0],
+  ) {
+    this.calls.push("multipart_complete");
+    const upload = this.multipartUploads.get(input.uploadId);
+    if (!upload || upload.key !== input.key) throw new MissingObject("missing");
+    const body = Buffer.concat(
+      input.parts.map((part) => {
+        const stored = upload.parts.get(part.partNumber);
+        if (!stored) throw new MissingObject("missing");
+        return Buffer.from(stored.body);
+      }),
+    );
+    assert.equal(body.byteLength, input.expectedSizeBytes);
+    const checksum = compositeS3MultipartSha256(input.parts);
+    const stored = this.store(
+      input.key,
+      body,
+      upload.contentType,
+      upload.metadata,
+    );
+    this.multipartUploads.delete(input.uploadId);
+    this.multipartObjectChecksums.set(input.key, checksum);
+    return {
+      ...stored,
+      ChecksumSHA256: checksum,
+      ChecksumType: "COMPOSITE",
+    };
+  }
+
+  async appAbortMultipartUpload(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["appAbortMultipartUpload"]
+    >[0],
+  ) {
+    this.calls.push("multipart_abort");
+    this.multipartUploads.delete(input.uploadId);
   }
 
   async appListObjects() {
@@ -252,7 +428,10 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
     this.calls.push("cleanup");
     this.cleanedKeySets.push([...keys]);
     if (this.cleanupFails) throw new Error("cleanup failed");
-    for (const key of keys) this.objects.delete(key);
+    for (const key of keys) {
+      this.objects.delete(key);
+      this.multipartObjectChecksums.delete(key);
+    }
   }
 
   async exactVersionExists(input: { key: string; versionId: string }) {
@@ -273,6 +452,48 @@ class FakeAdapter implements S3AppPrincipalContractAdapter {
     });
   }
 
+  async operatorGetObject(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["operatorGetObject"]
+    >[0],
+  ) {
+    this.calls.push("operator_get");
+    const entry = this.entry(input.key, input.versionId);
+    const body = entry.body;
+    return {
+      ...this.metadata(entry),
+      body: (async function* () {
+        yield body.subarray(0, 31);
+        yield body.subarray(31);
+      })(),
+    };
+  }
+
+  async operatorMultipartUploadExists(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["operatorMultipartUploadExists"]
+    >[0],
+  ) {
+    return this.multipartUploads.has(input.uploadId);
+  }
+
+  async operatorObjectExists(
+    input: Parameters<
+      S3AppPrincipalContractAdapter["operatorObjectExists"]
+    >[0],
+  ) {
+    return (this.objects.get(input.key)?.length ?? 0) > 0;
+  }
+
+  async cleanupMultipartUploads(
+    targets: Parameters<
+      S3AppPrincipalContractAdapter["cleanupMultipartUploads"]
+    >[0],
+  ) {
+    this.calls.push("cleanup_multipart");
+    for (const target of targets) this.multipartUploads.delete(target.uploadId);
+  }
+
   isAuthorizationDenied(error: unknown) {
     return error instanceof AuthorizationDenied;
   }
@@ -283,6 +504,8 @@ function preflight(adapter: FakeAdapter, confirmBucket = BUCKET) {
   return runS3AppPrincipalContractPreflight({
     adapter,
     confirmBucket,
+    expectedOrigins: BROWSER_ORIGINS,
+    multipartUploadTtlSeconds: MULTIPART_UPLOAD_TTL_SECONDS,
     createCanary: () => CANARY,
   });
 }
@@ -309,10 +532,16 @@ test("app-principal contract proves required paths, denied powers, and exact cle
   const result = await preflight(adapter);
 
   assert.equal(result.cleanupVerified, true);
+  assert.equal(result.incompleteMultipartAbortDays, 7);
+  assert.equal(result.browserUploadOriginCount, BROWSER_ORIGINS.length);
   assert.deepEqual(result.required, {
     incomingWriteAndHead: true,
     assetVersionRead: true,
     privacyExportLifecycle: true,
+    incompleteMultipartLifecycle: true,
+    browserUploadCors: true,
+    multipartWriteListComplete: true,
+    multipartAbort: true,
   });
   assert.equal(Object.values(result.denied).every(Boolean), true);
   for (const operation of [
@@ -328,7 +557,7 @@ test("app-principal contract proves required paths, denied powers, and exact cle
     assert.ok(adapter.calls.includes(operation), operation);
   }
   const keys = adapter.cleanedKeySets[0] ?? [];
-  assert.equal(keys.length, 5);
+  assert.equal(keys.length, 7);
   assert.equal(new Set(keys).size, keys.length);
   assert.ok(keys.some((key) => key.startsWith("incoming/tenants/")));
   assert.ok(keys.some((key) => key.includes("/privacy-exports/")));
@@ -345,8 +574,30 @@ test("app-principal contract proves required paths, denied powers, and exact cle
     undefined,
   );
   assert.equal(adapter.objects.size, 0);
-  assert.equal(adapter.calls.filter((call) => call === "versioning").length, 10);
+  assert.equal(adapter.multipartUploads.size, 0);
+  assert.equal(
+    adapter.browserMultipartPartInputs.length,
+    BROWSER_ORIGINS.length,
+  );
+  assert.deepEqual(
+    adapter.browserMultipartPartInputs.map((input) => input.expectedOrigin),
+    BROWSER_ORIGINS,
+  );
+  assert.equal(adapter.browserMultipartPartInputs[0]?.partNumber, 3);
+  assert.equal(
+    adapter.browserMultipartPartInputs[0]?.contentType,
+    "video/mp4",
+  );
+  assert.equal(adapter.calls.filter((call) => call === "versioning").length, 19);
   for (const mutation of [
+    "multipart_create",
+    "multipart_upload_part_1",
+    "multipart_upload_part_2",
+    "multipart_upload_part_3",
+    "multipart_complete",
+    "multipart_abort_create",
+    "multipart_abort_part",
+    "multipart_abort",
     "operator_seed_ready",
     "incoming_put",
     "privacy_put",
@@ -385,6 +636,55 @@ test("release app-principal preflight fails before mutation without the bucket l
   assert.equal(adapter.cleanedKeySets.length, 1);
 });
 
+test("multipart lifecycle is TTL-aware and rejects an earlier competing rule", async () => {
+  const missing = new FakeAdapter();
+  missing.lifecycleRules = requiredLifecycleRules().slice(0, 2);
+  await rejectsWithCode(
+    preflight(missing),
+    "multipart_lifecycle_invalid",
+    "multipart_lifecycle_configuration",
+  );
+
+  const competing = new FakeAdapter();
+  competing.lifecycleRules = [
+    ...requiredLifecycleRules(),
+    {
+      status: "Enabled",
+      filter: { prefix: "incoming/" },
+      abortIncompleteMultipartUpload: { daysAfterInitiation: 1 },
+    },
+  ];
+  await rejectsWithCode(
+    runS3AppPrincipalContractPreflight({
+      adapter: competing,
+      confirmBucket: BUCKET,
+      expectedOrigins: BROWSER_ORIGINS,
+      multipartUploadTtlSeconds: 2 * 86_400,
+      createCanary: () => CANARY,
+    }),
+    "multipart_lifecycle_invalid",
+    "multipart_lifecycle_configuration",
+  );
+});
+
+test("browser upload CORS requires checksum headers and an exposed ETag", async () => {
+  const adapter = new FakeAdapter();
+  adapter.corsRules = [
+    {
+      allowedOrigins: [BROWSER_ORIGIN],
+      allowedMethods: ["PUT"],
+      allowedHeaders: ["Content-Type", "If-None-Match"],
+      exposeHeaders: [],
+    },
+  ];
+  await rejectsWithCode(
+    preflight(adapter),
+    "browser_upload_cors_invalid",
+    "browser_upload_cors_configuration",
+  );
+  assert.equal(adapter.calls.includes("multipart_create"), false);
+});
+
 test("disabled or suspended versioning prevents the first product mutation and still cleans exact keys", async () => {
   for (const status of [undefined, "Suspended"] as const) {
     const adapter = new FakeAdapter();
@@ -392,10 +692,16 @@ test("disabled or suspended versioning prevents the first product mutation and s
     await rejectsWithCode(
       preflight(adapter),
       "versioning_not_enabled",
-      "operator_seed_ready_versioning",
+      "multipart_create_versioning",
     );
-    assert.deepEqual(adapter.calls, ["lifecycle", "versioning", "cleanup"]);
-    assert.equal(adapter.cleanedKeySets[0]?.length, 5);
+    assert.deepEqual(adapter.calls, [
+      "lifecycle",
+      "cors",
+      "versioning",
+      "cleanup_multipart",
+      "cleanup",
+    ]);
+    assert.equal(adapter.cleanedKeySets[0]?.length, 7);
     assert.equal(adapter.objects.size, 0);
   }
 });
@@ -489,8 +795,8 @@ test("cleanup failure is authoritative and combines with a principal violation",
   );
 });
 
-test("AWS cleanup deletes only five exact keys, accepts null versions, and paginates without HEAD", async () => {
-  const keys = Array.from({ length: 5 }, (_, index) => `exact/key-${index}`);
+test("AWS cleanup deletes only seven exact keys, accepts null versions, and paginates without HEAD", async () => {
+  const keys = Array.from({ length: 7 }, (_, index) => `exact/key-${index}`);
   const versions = new Map(
     keys.map((key, index) => [
       key,
@@ -551,7 +857,7 @@ test("AWS cleanup deletes only five exact keys, accepts null versions, and pagin
 });
 
 test("AWS cleanup fails closed on incomplete pagination and retained exact versions", async () => {
-  const keys = Array.from({ length: 5 }, (_, index) => `exact/failure-${index}`);
+  const keys = Array.from({ length: 7 }, (_, index) => `exact/failure-${index}`);
   await assert.rejects(
     cleanupExactS3AppPrincipalKeys({
       keys,

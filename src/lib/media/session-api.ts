@@ -59,20 +59,24 @@ function problemResponse(request: Request, id: string, error: ApiError) {
     "X-Content-Type-Options": "nosniff",
     "X-Request-Id": id,
   });
-  if (
-    error.status === 429 &&
-    error.details &&
-    typeof error.details === "object" &&
-    "resetAt" in error.details
-  ) {
-    const resetAt = Date.parse(
-      String((error.details as { resetAt: unknown }).resetAt),
-    );
-    if (Number.isFinite(resetAt)) {
-      headers.set(
-        "Retry-After",
-        String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))),
+  if (error.details && typeof error.details === "object") {
+    if ("retryAfterSeconds" in error.details) {
+      const retryAfterSeconds = Number(
+        (error.details as { retryAfterSeconds: unknown }).retryAfterSeconds,
       );
+      if (Number.isInteger(retryAfterSeconds) && retryAfterSeconds > 0) {
+        headers.set("Retry-After", String(Math.min(retryAfterSeconds, 900)));
+      }
+    } else if (error.status === 429 && "resetAt" in error.details) {
+      const resetAt = Date.parse(
+        String((error.details as { resetAt: unknown }).resetAt),
+      );
+      if (Number.isFinite(resetAt)) {
+        headers.set(
+          "Retry-After",
+          String(Math.max(1, Math.ceil((resetAt - Date.now()) / 1000))),
+        );
+      }
     }
   }
   return Response.json(

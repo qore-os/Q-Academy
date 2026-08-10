@@ -37,6 +37,7 @@ import { mediaTenantQuotaLockQuery } from "@/lib/media/quota-lock";
 import { resolveFilesystemMediaObjectPath } from "@/lib/media/filesystem-storage";
 import { getMediaStorageConfiguration } from "@/lib/server-environment";
 import { buildMediaScanBacklogMetrics } from "@/lib/media/scan-backlog";
+import type { MediaMaintenanceBudget } from "@/lib/media/maintenance-budget";
 import {
   buildVideoEditFfmpegFilters,
   sanitizeVideoEditPlan,
@@ -53,6 +54,9 @@ const PROCESSING_LEASE_MS = 30 * 60_000;
 const PROCESSING_LEASE_HEARTBEAT_MS = 5 * 60_000;
 const MAX_OUTPUT_BYTES = 2_000_000_000;
 const MAX_FAILURE_DETAIL = 2_000;
+const MAX_MAINTENANCE_JOB_CANCELLATIONS = 100;
+let mediaProcessingArtifactTenantCursor: string | null = null;
+let mediaProcessingCancellationTenantCursor: string | null = null;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -1028,7 +1032,9 @@ async function completeDerivative(
       try {
         await deleteStoredMediaObjectRevision(identity, stored.versionId);
       } catch {
-        throw new Error("Versioned S3 derivative cleanup could not be verified.");
+        throw new Error(
+          "Versioned S3 derivative cleanup could not be verified.",
+        );
       }
     } else if (
       storageConfiguration.driver === "s3" &&
@@ -1341,43 +1347,53 @@ export async function readMediaProcessingBacklogMetrics(now = new Date()) {
   });
 }
 
-export async function cleanupMediaProcessingArtifacts(limit = 5) {
-  const boundedLimit = Number.isInteger(limit)
-    ? Math.min(Math.max(limit, 1), 25)
-    : 5;
-  const rows = await db
-    .select({ derivative: mediaAssetDerivatives })
-    .from(mediaAssetDerivatives)
-    .innerJoin(
-      mediaAssets,
+export async function cancelUnavailableMediaProcessingJobs(now = new Date()) {
+  const rankedUnavailable = db
+    .select({
+      id: mediaProcessingJobs.id,
+      organizationId: mediaProcessingJobs.organizationId,
+      updatedAt: mediaProcessingJobs.updatedAt,
+      tenantRank:
+        sql<number>`row_number() over (partition by ${mediaProcessingJobs.organizationId} order by ${mediaProcessingJobs.updatedAt}, ${mediaProcessingJobs.id})`.as(
+          "tenant_rank",
+        ),
+    })
+    .from(mediaProcessingJobs)
+    .where(
       and(
-        eq(mediaAssets.id, mediaAssetDerivatives.sourceAssetId),
-        eq(mediaAssets.organizationId, mediaAssetDerivatives.organizationId),
-        inArray(mediaAssets.status, ["deleted", "quarantined", "failed"]),
+        inArray(mediaProcessingJobs.status, ["queued", "processing"]),
+        sql`exists (
+          select 1 from ${mediaAssets}
+          where ${mediaAssets.id} = ${mediaProcessingJobs.sourceAssetId}
+            and ${mediaAssets.organizationId} = ${mediaProcessingJobs.organizationId}
+            and ${mediaAssets.status} in ('deleted', 'quarantined', 'failed')
+        )`,
       ),
     )
-    .orderBy(asc(mediaAssetDerivatives.createdAt))
-    .limit(boundedLimit);
-  let removed = 0;
-  for (const { derivative } of rows) {
-    await deleteStoredMediaObject({
-      organizationId: derivative.organizationId,
-      assetId: derivative.sourceAssetId,
-      key: derivative.storageKey,
-    });
-    const [deleted] = await db
-      .delete(mediaAssetDerivatives)
-      .where(
-        and(
-          eq(mediaAssetDerivatives.id, derivative.id),
-          eq(mediaAssetDerivatives.contentSha256, derivative.contentSha256),
-        ),
-      )
-      .returning({ id: mediaAssetDerivatives.id });
-    if (deleted) removed += 1;
-  }
-  const now = new Date();
-  await db
+    .as("ranked_unavailable_media_processing_jobs");
+  const tenantCursor = mediaProcessingCancellationTenantCursor;
+  const candidates = await db
+    .select({
+      id: rankedUnavailable.id,
+      organizationId: rankedUnavailable.organizationId,
+    })
+    .from(rankedUnavailable)
+    .orderBy(
+      asc(rankedUnavailable.tenantRank),
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${rankedUnavailable.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(rankedUnavailable.organizationId),
+      asc(rankedUnavailable.updatedAt),
+      asc(rankedUnavailable.id),
+    )
+    .limit(MAX_MAINTENANCE_JOB_CANCELLATIONS);
+  if (!candidates.length) return 0;
+  mediaProcessingCancellationTenantCursor =
+    candidates[candidates.length - 1]!.organizationId;
+  const cancelled = await db
     .update(mediaProcessingJobs)
     .set({
       status: "cancelled",
@@ -1392,6 +1408,10 @@ export async function cleanupMediaProcessingArtifacts(limit = 5) {
     })
     .where(
       and(
+        inArray(
+          mediaProcessingJobs.id,
+          candidates.map(({ id }) => id),
+        ),
         inArray(mediaProcessingJobs.status, ["queued", "processing"]),
         sql`exists (
           select 1 from ${mediaAssets}
@@ -1400,6 +1420,70 @@ export async function cleanupMediaProcessingArtifacts(limit = 5) {
             and ${mediaAssets.status} in ('deleted', 'quarantined', 'failed')
         )`,
       ),
+    )
+    .returning({ id: mediaProcessingJobs.id });
+  return cancelled.length;
+}
+
+export async function cleanupMediaProcessingArtifacts(
+  budget: MediaMaintenanceBudget,
+  limit = 1,
+) {
+  if (!budget.canStartIoAsset() || !Number.isInteger(limit) || limit < 1) {
+    return 0;
+  }
+  const boundedLimit = Math.min(limit, 1, budget.remainingIoAssets);
+
+  const tenantCursor = mediaProcessingArtifactTenantCursor;
+  const rows = await db
+    .select({ derivative: mediaAssetDerivatives })
+    .from(mediaAssetDerivatives)
+    .innerJoin(
+      mediaAssets,
+      and(
+        eq(mediaAssets.id, mediaAssetDerivatives.sourceAssetId),
+        eq(mediaAssets.organizationId, mediaAssetDerivatives.organizationId),
+        inArray(mediaAssets.status, ["deleted", "quarantined", "failed"]),
+      ),
+    )
+    .orderBy(
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${mediaAssetDerivatives.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(mediaAssetDerivatives.organizationId),
+      asc(mediaAssetDerivatives.createdAt),
+      asc(mediaAssetDerivatives.id),
+    )
+    .limit(Math.min(boundedLimit, budget.remainingIoAssets));
+  if (rows.length) {
+    mediaProcessingArtifactTenantCursor =
+      rows[rows.length - 1]!.derivative.organizationId;
+  }
+  let removed = 0;
+  for (const { derivative } of rows) {
+    if (!budget.tryClaimIoAsset()) break;
+    await budget.runAbortable((signal) =>
+      deleteStoredMediaObject(
+        {
+          organizationId: derivative.organizationId,
+          assetId: derivative.sourceAssetId,
+          key: derivative.storageKey,
+        },
+        signal,
+      ),
     );
+    const [deleted] = await db
+      .delete(mediaAssetDerivatives)
+      .where(
+        and(
+          eq(mediaAssetDerivatives.id, derivative.id),
+          eq(mediaAssetDerivatives.contentSha256, derivative.contentSha256),
+        ),
+      )
+      .returning({ id: mediaAssetDerivatives.id });
+    if (deleted) removed += 1;
+  }
   return removed;
 }

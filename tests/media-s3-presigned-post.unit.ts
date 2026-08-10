@@ -18,6 +18,7 @@ const configuration: S3MediaStorageConfiguration = {
     maxUploadBytes: 2_000_000_000,
     tenantQuotaBytes: 10_000_000_000,
     signedUploadTtlSeconds: 300,
+    multipartUploadTtlSeconds: 24 * 60 * 60,
     signedDownloadTtlSeconds: 300,
   },
   clamAv: { host: "clamav", port: 3310, required: true },

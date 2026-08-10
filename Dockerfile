@@ -184,7 +184,7 @@ COPY --from=production-dependencies --chown=nextjs:nodejs /app/node_modules ./no
 COPY --chown=nextjs:nodejs package.json ./package.json
 COPY --chown=nextjs:nodejs scripts/migrate.ts scripts/load-environment.ts ./scripts/
 COPY --chown=nextjs:nodejs src/lib/branding-host-policy.ts src/lib/database-encoding.ts src/lib/encryption-keyring.ts src/lib/migration-history-validation.ts src/lib/server-environment-validation.ts src/lib/operational-cleanup-policy.ts ./src/lib/
-COPY --chown=nextjs:nodejs src/lib/media/storage-configuration.ts ./src/lib/media/
+COPY --chown=nextjs:nodejs src/lib/media/s3-browser-upload-origins.ts src/lib/media/storage-configuration.ts ./src/lib/media/
 COPY --chown=nextjs:nodejs src/lib/push/configuration.ts ./src/lib/push/
 COPY --chown=nextjs:nodejs drizzle ./drizzle
 USER nextjs
@@ -216,7 +216,7 @@ FROM runtime-base AS s3-preflight
 ENV NODE_ENV=production
 COPY --from=production-dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/s3-provider-preflight.ts scripts/strato-privacy-export-sweeper.ts ./scripts/
-COPY --chown=nextjs:nodejs src/lib/media/s3-object-integrity.ts src/lib/media/s3-operation-timeout.ts src/lib/media/s3-presigned-post.ts src/lib/media/s3-privacy-export-lifecycle.ts src/lib/media/s3-provider-contract.ts src/lib/media/s3-provider-contract-aws.ts src/lib/media/s3-strato-compatibility-preflight.ts src/lib/media/storage-configuration.ts ./src/lib/media/
+COPY --chown=nextjs:nodejs src/lib/media/s3-browser-upload-cors.ts src/lib/media/s3-browser-upload-origins.ts src/lib/media/s3-browser-upload-part-preflight.ts src/lib/media/s3-multipart-policy.ts src/lib/media/s3-multipart-preflight.ts src/lib/media/s3-object-integrity.ts src/lib/media/s3-operation-timeout.ts src/lib/media/s3-presigned-post.ts src/lib/media/s3-privacy-export-lifecycle.ts src/lib/media/s3-provider-contract.ts src/lib/media/s3-provider-contract-aws.ts src/lib/media/s3-strato-compatibility-preflight.ts src/lib/media/storage-configuration.ts ./src/lib/media/
 COPY --chown=nextjs:nodejs src/lib/privacy/strato-retention-sweeper.ts ./src/lib/privacy/
 USER nextjs
 ENTRYPOINT ["./node_modules/.bin/tsx", "scripts/s3-provider-preflight.ts"]
@@ -226,7 +226,7 @@ ENV NODE_ENV=production
 RUN install -d -o nextjs -g nodejs -m 0700 /var/lib/q-academy-strato-sweeper
 COPY --from=production-dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/s3-app-principal-preflight.ts scripts/strato-privacy-export-sweeper.ts ./scripts/
-COPY --chown=nextjs:nodejs src/lib/media/s3-object-integrity.ts src/lib/media/s3-operation-timeout.ts src/lib/media/s3-presigned-post.ts src/lib/media/s3-privacy-export-lifecycle.ts src/lib/media/s3-app-principal-contract.ts src/lib/media/s3-app-principal-contract-aws.ts src/lib/media/s3-strato-compatibility-preflight.ts src/lib/media/storage-configuration.ts ./src/lib/media/
+COPY --chown=nextjs:nodejs src/lib/media/s3-browser-upload-cors.ts src/lib/media/s3-browser-upload-origins.ts src/lib/media/s3-browser-upload-part-preflight.ts src/lib/media/s3-multipart-policy.ts src/lib/media/s3-multipart-preflight.ts src/lib/media/s3-object-integrity.ts src/lib/media/s3-operation-timeout.ts src/lib/media/s3-presigned-post.ts src/lib/media/s3-privacy-export-lifecycle.ts src/lib/media/s3-app-principal-contract.ts src/lib/media/s3-app-principal-contract-aws.ts src/lib/media/s3-strato-compatibility-preflight.ts src/lib/media/storage-configuration.ts ./src/lib/media/
 COPY --chown=nextjs:nodejs src/lib/privacy/strato-retention-sweeper.ts ./src/lib/privacy/
 USER nextjs
 ENTRYPOINT ["./node_modules/.bin/tsx", "scripts/s3-app-principal-preflight.ts"]

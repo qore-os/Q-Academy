@@ -84,11 +84,11 @@ test("processing preflight dispatches STRATO without weakening the strict provid
   assert.match(source, /runStratoS3CompatibilityPreflight/);
   assert.match(
     source,
-    /if \(storage\.compatibilityMode === "strato-hidrive"\) \{[\s\S]*runStratoS3CompatibilityPreflight\(\{[\s\S]*configuration: storage,[\s\S]*confirmBucket: bucket,[\s\S]*expectedOrigin: browserOrigin\(\),[\s\S]*return;/,
+    /if \(storage\.compatibilityMode === "strato-hidrive"\) \{[\s\S]*runStratoS3CompatibilityPreflight\(\{[\s\S]*configuration: storage,[\s\S]*confirmBucket: bucket,[\s\S]*expectedOrigins: browserOrigins\(\),[\s\S]*return;/,
   );
   assert.match(
     source,
-    /const adapter = createAwsS3ProviderContractAdapter\(storage\);[\s\S]*runS3ProviderContractPreflight\(\{ adapter, confirmBucket: bucket \}\)[\s\S]*adapter\.destroy\(\)/,
+    /const adapter = createAwsS3ProviderContractAdapter\(storage\);[\s\S]*runS3ProviderContractPreflight\(\{[\s\S]*adapter,[\s\S]*confirmBucket: bucket,[\s\S]*expectedOrigins: browserOrigins\(\),[\s\S]*multipartUploadTtlSeconds: storage\.limits\.multipartUploadTtlSeconds,[\s\S]*adapter\.destroy\(\)/,
   );
 });
 

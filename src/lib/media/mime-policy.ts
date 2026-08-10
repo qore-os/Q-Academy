@@ -114,7 +114,7 @@ export const MEDIA_SIZE_LIMITS_BY_PURPOSE: Readonly<
   community: Object.freeze({
     image: 25 * MEBIBYTE,
     audio: 128 * MEBIBYTE,
-    video: 512 * MEBIBYTE,
+    video: MAX_SCANNABLE_MEDIA_BYTES,
     document: 50 * MEBIBYTE,
   }),
   avatar: Object.freeze({
@@ -132,7 +132,7 @@ export const MEDIA_SIZE_LIMITS_BY_PURPOSE: Readonly<
   profile: Object.freeze({
     image: 25 * MEBIBYTE,
     audio: 256 * MEBIBYTE,
-    video: 512 * MEBIBYTE,
+    video: MAX_SCANNABLE_MEDIA_BYTES,
     document: 100 * MEBIBYTE,
   }),
 });
@@ -146,11 +146,17 @@ export type MediaPolicyErrorCode =
 
 export class MediaPolicyError extends Error {
   readonly code: MediaPolicyErrorCode;
+  readonly details?: Readonly<{ maxBytes: number }>;
 
-  constructor(code: MediaPolicyErrorCode, message: string) {
+  constructor(
+    code: MediaPolicyErrorCode,
+    message: string,
+    details?: Readonly<{ maxBytes: number }>,
+  ) {
     super(message);
     this.name = "MediaPolicyError";
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -331,9 +337,14 @@ export function validateMediaUploadPolicy(
     input.globalMaxUploadBytes ?? purposeLimit,
   );
   if (input.sizeBytes > maxBytes) {
+    const formattedLimit =
+      maxBytes >= 1024 * MEBIBYTE
+        ? `${(maxBytes / (1024 * MEBIBYTE)).toFixed(2).replace(".", ",")} GiB`
+        : `${Math.round(maxBytes / MEBIBYTE)} MiB`;
     throw new MediaPolicyError(
       "file_too_large",
-      `The media file exceeds the ${maxBytes} byte limit for ${input.purpose}.`,
+      `Die Datei ueberschreitet das Upload-Limit von ${formattedLimit}.`,
+      { maxBytes },
     );
   }
 

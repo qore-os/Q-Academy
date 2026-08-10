@@ -5,8 +5,10 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import {
   deleteBrowserSessionMediaAsset,
+  discardBrowserSessionMediaAsset,
   uploadBrowserSessionMedia,
 } from "@/lib/media/browser-session-upload";
+import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { getMemberExperienceCopy } from "@/lib/i18n/member-experience";
 import type { AppLocale } from "@/lib/i18n/model";
 import { cn } from "@/lib/utils";
@@ -50,6 +52,7 @@ export function ImageAssetUploadField({
   const inputRef = useRef<HTMLInputElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const newAssetIdRef = useRef("");
   const [assetId, setAssetId] = useState(initialAssetId ?? "");
   const [newAssetId, setNewAssetId] = useState("");
   const [source, setSource] = useState(initialSource ?? null);
@@ -66,9 +69,16 @@ export function ImageAssetUploadField({
     objectUrlRef.current = next;
   };
 
+  useEffect(() => {
+    newAssetIdRef.current = newAssetId;
+  }, [newAssetId]);
+
   useEffect(
     () => () => {
       controllerRef.current?.abort();
+      if (newAssetIdRef.current) {
+        discardBrowserSessionMediaAsset(newAssetIdRef.current);
+      }
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
     },
     [],
@@ -81,10 +91,10 @@ export function ImageAssetUploadField({
       setError(copy.invalidFile);
       return;
     }
+    controllerRef.current?.abort();
     if (newAssetId) {
       await deleteBrowserSessionMediaAsset(newAssetId).catch(() => undefined);
     }
-    controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
     const objectUrl = URL.createObjectURL(file);
@@ -120,11 +130,7 @@ export function ImageAssetUploadField({
         return;
       }
       setState("error");
-      setError(
-        uploadError instanceof Error && uploadError.message === copy.imageRequired
-          ? uploadError.message
-          : copy.uploadFailed,
-      );
+      setError(browserUploadErrorMessage(uploadError, copy.uploadFailed));
     }
   };
 

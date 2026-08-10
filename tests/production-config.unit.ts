@@ -59,10 +59,7 @@ const databaseRoleEntrypoint = readFileSync(
   "utf8",
 );
 const databasePermissionsEntrypoint = readFileSync(
-  new URL(
-    "../scripts/ops/database-permissions-entrypoint.sh",
-    import.meta.url,
-  ),
+  new URL("../scripts/ops/database-permissions-entrypoint.sh", import.meta.url),
   "utf8",
 );
 const productionVapidKeys = webPush.generateVAPIDKeys();
@@ -99,8 +96,7 @@ function validMediaWorkerEnvironment(): EnvironmentSource {
     MEDIA_S3_REGION: "eu-central-1",
     MEDIA_S3_BUCKET: "q-academy-prod-media",
     MEDIA_S3_ACCESS_KEY_ID: "QACADEMYPRODMEDIAWORKER",
-    MEDIA_S3_SECRET_ACCESS_KEY:
-      "M3diaKey-9QwE5rT1yU7iO3pA8sD4fG6hJ0kLzXcV",
+    MEDIA_S3_SECRET_ACCESS_KEY: "M3diaKey-9QwE5rT1yU7iO3pA8sD4fG6hJ0kLzXcV",
     MEDIA_S3_FORCE_PATH_STYLE: "false",
     MEDIA_S3_COMPATIBILITY_MODE: "versioned",
     MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "false",
@@ -118,22 +114,22 @@ function validProductionEnvironment(): EnvironmentSource {
     NEXT_PUBLIC_APP_URL: "https://academy.q-academy.de",
     DEFAULT_ORGANIZATION_SLUG: "q-academy",
     TENANT_BASE_DOMAIN: "tenants.q-academy.de",
+    MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON: JSON.stringify([
+      "https://academy.q-academy.de",
+      "https://q-academy.tenants.q-academy.de",
+    ]),
     API_ALLOWED_ORIGIN: "https://academy.q-academy.de",
     SESSION_SECRET: "S3ssion-9A5fX1qP7vK2mN8rT4yU6iO0aBcDeFgH",
     AUTH_RATE_LIMIT_SECRET: "R4teLim-2Q8wE6rT1yU9iO3pA7sD5fG0hJkLzXcV",
-    CADDY_TLS_ASK_SECRET:
-      "C4ddyAsk-3TyU9iO5pA1sD7fG2hJ8kL4zX0cVbNmQ",
+    CADDY_TLS_ASK_SECRET: "C4ddyAsk-3TyU9iO5pA1sD7fG2hJ8kL4zX0cVbNmQ",
     WEBHOOK_ENCRYPTION_KEY: "W3bhook-7ZxC5vB1nM9aS2dF8gH4jK6lQ0wErTyU",
     WEBHOOK_ENCRYPTION_KEY_ID: "webhook-prod-v1",
     DATA_ENCRYPTION_KEY: "D4taKey-8MnB2vC6xZ0aS5dF9gH1jK3lQ7wErTyU",
     DATA_ENCRYPTION_KEY_ID: "data-prod-v1",
-    MFA_RECOVERY_PEPPER:
-      "MfaCodes-5QwE1rT7yU3iO9pA6sD2fG8hJ4kLzXcV",
+    MFA_RECOVERY_PEPPER: "MfaCodes-5QwE1rT7yU3iO9pA6sD2fG8hJ4kLzXcV",
     MFA_RECOVERY_PEPPER_ID: "mfa-recovery-prod-v1",
-    PRIVACY_SUBJECT_HMAC_SECRET:
-      "Pr1vacy-3QwE9rT5yU1iO7pA4sD8fG2hJ6kLzXcV",
-    EXAM_SELECTION_SECRET:
-      "ExamPick-4WqE0rT6yU2iO8pA5sD9fG3hJ7kLzXcV",
+    PRIVACY_SUBJECT_HMAC_SECRET: "Pr1vacy-3QwE9rT5yU1iO7pA4sD8fG2hJ6kLzXcV",
+    EXAM_SELECTION_SECRET: "ExamPick-4WqE0rT6yU2iO8pA5sD9fG3hJ7kLzXcV",
     CRON_SECRET: "Cr0nKey-6QwE2rT8yU4iO9pA1sD5fG7hJ3kLzXcV",
     METRICS_SECRET: "M3trics-8QwE4rT0yU6iO2pA9sD5fG1hJ7kLzXcV",
     TRUST_PROXY_HEADERS: "true",
@@ -141,8 +137,7 @@ function validProductionEnvironment(): EnvironmentSource {
     EMAIL_DELIVERY_REQUIRED: "true",
     EMAIL_DELIVERY_WEBHOOK_URL:
       "https://mailer.q-academy.de/hooks/transactional-email",
-    EMAIL_DELIVERY_WEBHOOK_SECRET:
-      "M4ilKey-1QwE7rT3yU9iO5pA2sD8fG6hJ0kLzXcV",
+    EMAIL_DELIVERY_WEBHOOK_SECRET: "M4ilKey-1QwE7rT3yU9iO5pA2sD8fG6hJ0kLzXcV",
     EMAIL_DELIVERY_INBOUND_SECRET:
       "M4ilInbound-8RwT4yU0iO6pA3sD9fG5hJ1kL7zXcVb",
     LEGAL_IMPRINT_URL: "https://legal.q-academy.de/impressum",
@@ -156,8 +151,7 @@ function validProductionEnvironment(): EnvironmentSource {
     MEDIA_S3_REGION: "eu-central-1",
     MEDIA_S3_BUCKET: "q-academy-prod-media",
     MEDIA_S3_ACCESS_KEY_ID: "QACADEMYPRODMEDIA",
-    MEDIA_S3_SECRET_ACCESS_KEY:
-      "M3diaKey-9QwE5rT1yU7iO3pA8sD4fG6hJ0kLzXcV",
+    MEDIA_S3_SECRET_ACCESS_KEY: "M3diaKey-9QwE5rT1yU7iO3pA8sD4fG6hJ0kLzXcV",
     MEDIA_S3_FORCE_PATH_STYLE: "false",
     MEDIA_S3_COMPATIBILITY_MODE: "versioned",
     MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "false",
@@ -179,6 +173,10 @@ test("production environment accepts explicit secure and distinct values", () =>
   assert.equal(result.mediaStorage.driver, "s3");
   assert.equal(result.mediaStorage.bucket, "q-academy-prod-media");
   assert.equal(result.mediaStorage.compatibilityMode, "versioned");
+  assert.deepEqual(result.browserUploadOrigins, [
+    "https://academy.q-academy.de",
+    "https://q-academy.tenants.q-academy.de",
+  ]);
   assert.equal(
     result.emailDeliveryWebhookUrl,
     "https://mailer.q-academy.de/hooks/transactional-email",
@@ -201,17 +199,36 @@ test("canonical production tenant configuration is explicit and fail-closed", ()
     /APP_DOMAIN: \$\{APP_DOMAIN:\?Set APP_DOMAIN in the production env file\}/,
   );
   assert.match(localEnvironmentExample, /^APP_DOMAIN=localhost$/m);
-  assert.match(productionEnvironmentExample, /^APP_DOMAIN=academy\.example\.com$/m);
+  assert.match(
+    productionEnvironmentExample,
+    /^APP_DOMAIN=academy\.example\.com$/m,
+  );
   assert.match(
     productionEnvironmentExample,
     /^DEFAULT_ORGANIZATION_SLUG=q-academy$/m,
   );
+  assert.match(app, /MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON/);
+
+  const singleOrigin = validProductionEnvironment();
+  singleOrigin.MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON = JSON.stringify([
+    "https://academy.q-academy.de",
+  ]);
+  singleOrigin.TENANT_BASE_DOMAIN = "";
+  assert.doesNotThrow(() => validateProductionServerEnvironment(singleOrigin));
 
   for (const [name, value, expected] of [
     ["APP_DOMAIN", undefined, /APP_DOMAIN is required/],
-    ["APP_DOMAIN", "https://academy.q-academy.de", /APP_DOMAIN must be a publicly qualified/],
+    [
+      "APP_DOMAIN",
+      "https://academy.q-academy.de",
+      /APP_DOMAIN must be a publicly qualified/,
+    ],
     ["DEFAULT_ORGANIZATION_SLUG", "Q Academy", /DEFAULT_ORGANIZATION_SLUG/],
-    ["TENANT_BASE_DOMAIN", "https://tenants.q-academy.de", /TENANT_BASE_DOMAIN/],
+    [
+      "TENANT_BASE_DOMAIN",
+      "https://tenants.q-academy.de",
+      /TENANT_BASE_DOMAIN/,
+    ],
     ["TENANT_BASE_DOMAIN", "tenants.internal", /TENANT_BASE_DOMAIN/],
   ] as const) {
     const environment = validProductionEnvironment();
@@ -277,10 +294,7 @@ test("production media worker accepts only its database, job and storage secrets
       "C4ddyWorkerLeak-8TyU4iO0pA6sD2fG9hJ5kL1zX7cVbNmQ",
     ],
     ["OPENAI_API_KEY", "forbidden-general-openai-key"],
-    [
-      "OPENAI_TRANSCRIPTION_API_KEY",
-      "forbidden-inline-transcription-key",
-    ],
+    ["OPENAI_TRANSCRIPTION_API_KEY", "forbidden-inline-transcription-key"],
   ] as const) {
     const leaked = { ...validMediaWorkerEnvironment(), [name]: value };
     assert.throws(
@@ -289,8 +303,7 @@ test("production media worker accepts only its database, job and storage secrets
     );
   }
 
-  environment.SESSION_SECRET =
-    "S3ssion-9A5fX1qP7vK2mN8rT4yU6iO0aBcDeFgH";
+  environment.SESSION_SECRET = "S3ssion-9A5fX1qP7vK2mN8rT4yU6iO0aBcDeFgH";
   assert.throws(
     () => validateProductionMediaWorkerEnvironment(environment),
     /SESSION_SECRET must be unset/,
@@ -360,6 +373,26 @@ test("production forwards the S3 compatibility contract to every storage runtime
   assert.match(
     composeServiceBlock("media-preflight"),
     /NEXT_PUBLIC_APP_URL: https:\/\/\$\{APP_DOMAIN:\?Set APP_DOMAIN in the production env file\}/,
+  );
+  for (const serviceName of [
+    "tenant-admin-ops",
+    "app",
+    "s3-app-principal-preflight",
+    "media-preflight",
+  ]) {
+    assert.match(
+      composeServiceBlock(serviceName),
+      /MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON:/,
+      serviceName,
+    );
+  }
+  assert.match(
+    productionEnvironmentExample,
+    /^MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON=\["https:\/\//m,
+  );
+  assert.match(
+    dockerfile,
+    /FROM runtime-base AS migrator[\s\S]*s3-browser-upload-origins\.ts[\s\S]*FROM runtime-base AS key-rotation/,
   );
 });
 
@@ -449,6 +482,14 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
   assert.doesNotMatch(caddy, /cap_add:/);
   assert.match(
     caddy,
+    /\$\{CADDY_SITES_DIRECTORY:-[.]\/deploy\/caddy-sites\}:\/etc\/caddy\/sites:ro/,
+  );
+  assert.match(
+    productionEnvironmentExample,
+    /^CADDY_SITES_DIRECTORY=\/etc\/q-academy\/caddy-sites$/m,
+  );
+  assert.match(
+    caddy,
     /caddy-volume-init:\s+condition: service_completed_successfully/,
   );
   assert.doesNotMatch(productionCompose, /\$\{CADDY_IMAGE:/);
@@ -457,6 +498,33 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
 
   assert.match(caddyfile, /^\thttp_port 8080$/m);
   assert.match(caddyfile, /^\thttps_port 8443$/m);
+  assert.match(
+    caddyfile,
+    /@multipart_status_recovery \{[\s\S]*method GET POST[\s\S]*path_regexp multipart_status_recovery \^\/api\/v1\/media-assets\/[\s\S]*\/multipart\$/,
+  );
+  assert.match(
+    caddyfile,
+    /reverse_proxy @multipart_status_recovery app:3000[\s\S]*response_header_timeout 5m/,
+  );
+  assert.match(caddyfile, /@multipart_complete path_regexp multipart_complete/);
+  assert.match(
+    caddyfile,
+    /path_regexp multipart_complete \^\/api\/\(v1\/\)\?media-assets\//,
+  );
+  assert.match(
+    caddyfile,
+    /reverse_proxy @multipart_complete app:3000[\s\S]*response_header_timeout 15m/,
+  );
+  assert.match(caddyfile, /@multipart_delete \{[\s\S]*method DELETE/);
+  assert.match(
+    caddyfile,
+    /path_regexp multipart_delete \^\/api\/\(media-assets\/[\s\S]*\|v1\/media-assets\/[\s\S]*\/multipart\)\$[\s\S]*reverse_proxy @multipart_delete app:3000[\s\S]*response_header_timeout 15m/,
+  );
+  assert.match(
+    caddyfile,
+    /reverse_proxy app:3000[\s\S]*response_header_timeout 60s/,
+  );
+  assert.match(caddyfile, /^import \/etc\/caddy\/sites\/\*[.]caddy$/m);
   assert.match(
     dockerfile,
     /ARG CADDY_BUILDER_IMAGE=golang:1[.]26[.]5-bookworm@sha256:[a-f0-9]{64}/,
@@ -476,7 +544,10 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     dockerfile,
     /\/build\/caddy\/LICENSE \\\n+      \/out\/rootfs\/usr\/share\/licenses\/caddy\/LICENSE/,
   );
-  assert.match(dockerfile, /cmp \/out\/rootfs\/usr\/bin\/caddy \/tmp\/caddy-reproducibility-check/);
+  assert.match(
+    dockerfile,
+    /cmp \/out\/rootfs\/usr\/bin\/caddy \/tmp\/caddy-reproducibility-check/,
+  );
   assert.match(dockerfile, /q-academy-caddy-volume-v1/);
 
   assert.match(caddyRuntimeEntrypoint, /runtimeUID\s+= 10001/);
@@ -486,7 +557,10 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     /uid == runtimeUID && gid == runtimeGID && info[.]Mode\(\)[.]Perm\(\) == 0o700 \{\s+return verifySentinel\(directory\)/,
   );
   assert.match(caddyRuntimeEntrypoint, /len\(entries\) != 1/);
-  assert.match(caddyRuntimeEntrypoint, /os[.]Chown\(directory, runtimeUID, runtimeGID\)/);
+  assert.match(
+    caddyRuntimeEntrypoint,
+    /os[.]Chown\(directory, runtimeUID, runtimeGID\)/,
+  );
   assert.match(caddyRuntimeEntrypoint, /os[.]Lstat\(directory\)/);
   assert.match(caddyRuntimeEntrypoint, /info[.]Mode\(\)[.]Perm\(\) != 0o700/);
   assert.match(caddyRuntimeEntrypoint, /os[.]O_EXCL/);
@@ -600,7 +674,10 @@ test("production isolates media scans from the public app runtime", () => {
   );
   assert.match(mediaWorker, /^      - jobs$/m);
   assert.doesNotMatch(mediaWorker, /^      - proxy$/m);
-  assert.doesNotMatch(mediaWorker, /http:\/\/app:3000\/api\/internal\/jobs\/media/);
+  assert.doesNotMatch(
+    mediaWorker,
+    /http:\/\/app:3000\/api\/internal\/jobs\/media/,
+  );
   assert.doesNotMatch(mediaWorker, /\/media\/maintenance/);
   assert.match(mediaWorker, /--timeout-seconds 14400/);
   assert.match(mediaWorker, /MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-15000/);
@@ -617,10 +694,7 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(mediaMaintenance, /^      - jobs$/m);
   assert.doesNotMatch(mediaMaintenance, /^      - proxy$/m);
   assert.doesNotMatch(mediaMaintenance, /http:\/\/app:3000/);
-  assert.match(
-    mediaMaintenance,
-    /MEDIA_MAINTENANCE_INTERVAL_SECONDS.*-lt 30/,
-  );
+  assert.match(mediaMaintenance, /MEDIA_MAINTENANCE_INTERVAL_SECONDS.*-lt 30/);
   assert.match(mediaMaintenance, /--timeout-seconds 550/);
   assert.equal(
     productionCompose.match(/\/api\/internal\/jobs\/media\/maintenance/g)
@@ -651,29 +725,53 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(clamav, /entrypoint: \["\/init-unprivileged"\]/);
   assert.match(clamav, /read_only: true/);
   assert.match(clamav, /cap_drop:\s+- ALL/);
-  assert.match(productionCompose, /^  jobs:\s+driver: bridge\s+internal: true$/m);
-  assert.match(productionCompose, /^  media-database:\s+driver: bridge\s+internal: true$/m);
+  assert.match(
+    productionCompose,
+    /^  jobs:\s+driver: bridge\s+internal: true$/m,
+  );
+  assert.match(
+    productionCompose,
+    /^  media-database:\s+driver: bridge\s+internal: true$/m,
+  );
   assert.match(postgres, /^      - database$/m);
   assert.match(postgres, /^      - media-database$/m);
 
   assert.match(databaseRole, /MEDIA_DATABASE_USER/);
   assert.match(databaseRole, /MEDIA_DATABASE_PASSWORD/);
   assert.match(databaseRole, /OWNER_DATABASE_USER: \$\{OWNER_POSTGRES_USER:/);
-  assert.match(databaseRole, /OWNER_DATABASE_PASSWORD: \$\{OWNER_POSTGRES_PASSWORD:/);
+  assert.match(
+    databaseRole,
+    /OWNER_DATABASE_PASSWORD: \$\{OWNER_POSTGRES_PASSWORD:/,
+  );
   assert.match(databaseRole, /database-role-entrypoint\.sh/);
-  assert.match(databaseRoleEntrypoint, /alter role :"owner_user" with login password/);
+  assert.match(
+    databaseRoleEntrypoint,
+    /alter role :"owner_user" with login password/,
+  );
   assert.match(
     databaseRoleEntrypoint,
     /nosuperuser nocreatedb nocreaterole noreplication nobypassrls noinherit/,
   );
-  assert.match(databaseRoleEntrypoint, /alter database :"db_name" owner to :"owner_user"/);
-  assert.match(databaseRoleEntrypoint, /alter schema public owner to :"owner_user"/);
+  assert.match(
+    databaseRoleEntrypoint,
+    /alter database :"db_name" owner to :"owner_user"/,
+  );
+  assert.match(
+    databaseRoleEntrypoint,
+    /alter schema public owner to :"owner_user"/,
+  );
   assert.match(databaseRoleEntrypoint, /q_academy\.bootstrap_role/);
   assert.match(databaseRoleEntrypoint, /role names are immutable/);
   assert.match(databaseRoleEntrypoint, /pg_auth_members/);
   assert.match(databaseConfigPreflight, /exactly 64 hexadecimal characters/);
-  assert.match(databaseConfigPreflight, /All PostgreSQL role names must be distinct/);
-  assert.match(databaseConfigPreflight, /All PostgreSQL passwords must be distinct/);
+  assert.match(
+    databaseConfigPreflight,
+    /All PostgreSQL role names must be distinct/,
+  );
+  assert.match(
+    databaseConfigPreflight,
+    /All PostgreSQL passwords must be distinct/,
+  );
   assert.match(migrate, /OWNER_POSTGRES_USER/);
   assert.match(migrate, /OWNER_POSTGRES_PASSWORD/);
   assert.doesNotMatch(migrate, /POSTGRES_BOOTSTRAP_/);
@@ -681,26 +779,94 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(databasePermissions, /PGPASSWORD: \$\{OWNER_POSTGRES_PASSWORD:/);
   assert.match(databasePermissions, /database-permissions-entrypoint\.sh/);
   assert.match(databasePermissionsEntrypoint, /begin;[\s\S]*commit;/);
-  assert.match(databasePermissionsEntrypoint, /grant select, update, delete on table public\.media_assets/);
-  assert.match(databasePermissionsEntrypoint, /grant select \(id, organization_id, avatar_url\) on table public\.users/);
-  assert.doesNotMatch(databasePermissionsEntrypoint, /grant select on table public\.users/);
-  assert.match(databasePermissionsEntrypoint, /has_column_privilege\(:'media_user', 'public\.users', 'email'/);
-  assert.match(databasePermissionsEntrypoint, /on table public\.submission_attachments to :"media_user"/);
-  assert.match(databasePermissionsEntrypoint, /on table public\.course_media_assets to :"media_user"/);
-  assert.match(databasePermissionsEntrypoint, /on table public\.community_asset_bindings to :"media_user"/);
-  assert.doesNotMatch(databasePermissionsEntrypoint, /public\.community_post_attachments/);
-  assert.doesNotMatch(databasePermissionsEntrypoint, /public\.community_comment_attachments/);
-  assert.match(databasePermissionsEntrypoint, /custom_field_values enable row level security/);
-  assert.match(databasePermissionsEntrypoint, /data_profile_values enable row level security/);
-  assert.match(databasePermissionsEntrypoint, /platform_settings enable row level security/);
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant select, update, delete on table public\.media_assets/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant select, delete on table public\.media_upload_sessions/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant update \(state, updated_at\) on table public\.media_upload_sessions/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /has_table_privilege\(:'media_user', 'public\.media_upload_sessions', 'SELECT'/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /not has_table_privilege\(:'media_user', 'public\.media_upload_sessions', 'UPDATE'/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /has_column_privilege\(:'media_user', 'public\.media_upload_sessions', 'state', 'UPDATE'/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant select \(id, organization_id, avatar_url\) on table public\.users/,
+  );
+  assert.doesNotMatch(
+    databasePermissionsEntrypoint,
+    /grant select on table public\.users/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /has_column_privilege\(:'media_user', 'public\.users', 'email'/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /on table public\.submission_attachments to :"media_user"/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /on table public\.course_media_assets to :"media_user"/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /on table public\.community_asset_bindings to :"media_user"/,
+  );
+  assert.doesNotMatch(
+    databasePermissionsEntrypoint,
+    /public\.community_post_attachments/,
+  );
+  assert.doesNotMatch(
+    databasePermissionsEntrypoint,
+    /public\.community_comment_attachments/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /custom_field_values enable row level security/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /data_profile_values enable row level security/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /platform_settings enable row level security/,
+  );
   assert.match(databasePermissionsEntrypoint, /definition\.type = 'media'/);
   assert.match(databasePermissionsEntrypoint, /using \(key = 'design'\)/);
   assert.match(databasePermissionsEntrypoint, /public\.media_processing_jobs/);
-  assert.match(databasePermissionsEntrypoint, /public\.media_asset_derivatives/);
-  assert.match(databasePermissionsEntrypoint, /public\.media_asset_transcripts/);
+  assert.match(
+    databasePermissionsEntrypoint,
+    /public\.media_asset_derivatives/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /public\.media_asset_transcripts/,
+  );
   assert.match(databasePermissionsEntrypoint, /security definer/);
-  assert.match(databasePermissionsEntrypoint, /set search_path to pg_catalog, public/);
-  assert.match(databasePermissionsEntrypoint, /revoke all on function[\s\S]*from public/);
+  assert.match(
+    databasePermissionsEntrypoint,
+    /set search_path to pg_catalog, public/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /revoke all on function[\s\S]*from public/,
+  );
   assert.match(keyRotation, /profiles: \["operations"\]/);
   assert.match(keyRotation, /target: key-rotation/);
   assert.match(keyRotation, /APP_POSTGRES_USER/);
@@ -718,9 +884,15 @@ test("production isolates media scans from the public app runtime", () => {
   );
   assert.match(continuousIntegration, /^          MEDIA_POSTGRES_PASSWORD:/m);
   assert.match(continuousIntegration, /^          POSTGRES_BOOTSTRAP_USER:/m);
-  assert.match(continuousIntegration, /^          POSTGRES_BOOTSTRAP_PASSWORD: [a-f0-9]{64}$/m);
+  assert.match(
+    continuousIntegration,
+    /^          POSTGRES_BOOTSTRAP_PASSWORD: [a-f0-9]{64}$/m,
+  );
   assert.match(continuousIntegration, /^          OWNER_POSTGRES_USER:/m);
-  assert.match(continuousIntegration, /^          OWNER_POSTGRES_PASSWORD: [a-f0-9]{64}$/m);
+  assert.match(
+    continuousIntegration,
+    /^          OWNER_POSTGRES_PASSWORD: [a-f0-9]{64}$/m,
+  );
   assert.match(continuousIntegration, /^      CRON_SECRET: [a-f0-9]{64}$/m);
   assert.match(continuousIntegration, /^      METRICS_SECRET: [a-f0-9]{64}$/m);
   assert.match(continuousIntegration, /^      MFA_RECOVERY_PEPPER: \S{32,}$/m);
@@ -732,10 +904,22 @@ test("production isolates media scans from the public app runtime", () => {
     continuousIntegration,
     /^      MFA_RECOVERY_PREVIOUS_PEPPERS: '\{"mfa-recovery-ci-v0":/m,
   );
-  assert.match(continuousIntegration, /^          MEDIA_CRON_SECRET: [a-f0-9]{64}$/m);
-  assert.match(continuousIntegration, /^          MEDIA_METRICS_SECRET: [a-f0-9]{64}$/m);
-  assert.match(continuousIntegration, /^          MEDIA_S3_APP_ACCESS_KEY_ID:/m);
-  assert.match(continuousIntegration, /^          MEDIA_S3_APP_SECRET_ACCESS_KEY:/m);
+  assert.match(
+    continuousIntegration,
+    /^          MEDIA_CRON_SECRET: [a-f0-9]{64}$/m,
+  );
+  assert.match(
+    continuousIntegration,
+    /^          MEDIA_METRICS_SECRET: [a-f0-9]{64}$/m,
+  );
+  assert.match(
+    continuousIntegration,
+    /^          MEDIA_S3_APP_ACCESS_KEY_ID:/m,
+  );
+  assert.match(
+    continuousIntegration,
+    /^          MEDIA_S3_APP_SECRET_ACCESS_KEY:/m,
+  );
   assert.match(
     continuousIntegration,
     /Q_ACADEMY_RUNTIME_ROLE=media-worker[^]*-e DATABASE_URL="\$RUNTIME_MEDIA_DATABASE_URL"/,
@@ -762,6 +946,14 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(
     continuousIntegration,
     /grant select, update, delete on table public\.media_assets to q_academy_ci_media/,
+  );
+  assert.match(
+    continuousIntegration,
+    /grant select, delete on table public\.media_upload_sessions to q_academy_ci_media/,
+  );
+  assert.match(
+    continuousIntegration,
+    /grant update \(state, updated_at\) on table public\.media_upload_sessions to q_academy_ci_media/,
   );
   for (const table of [
     "media_processing_jobs",
@@ -906,7 +1098,10 @@ test("CI grants the cleanup-only replication parameter only around Playwright", 
     /revoke set on parameter session_replication_role from public, q_academy_ci, q_academy_ci_app, q_academy_ci_media/,
   );
   for (const role of ["ci", "app", "media"]) {
-    assert.match(revokeStep, new RegExp(`revoked\\.${role}_is_superuser !== false`));
+    assert.match(
+      revokeStep,
+      new RegExp(`revoked\\.${role}_is_superuser !== false`),
+    );
     assert.match(revokeStep, new RegExp(`revoked\\.${role}_can_set !== false`));
   }
   assert.match(
@@ -933,10 +1128,7 @@ test("MFA rotation secrets are documented and packaged for the correct runtimes"
     assert.match(localEnvironmentExample, new RegExp(`^${name}=`, "m"));
     assert.match(productionEnvironmentExample, new RegExp(`^${name}=`, "m"));
   }
-  assert.match(
-    productionEnvironmentExample,
-    /mfaTotpSecrets: 0/,
-  );
+  assert.match(productionEnvironmentExample, /mfaTotpSecrets: 0/);
   assert.match(
     productionEnvironmentExample,
     /Recovery hashes cannot be rewritten without the original code/,
@@ -1159,8 +1351,7 @@ test("production encryption keyrings require keyed distinct strong read keys", (
     "data-prod-legacy": "L3gacyData-7QwE2rT8yU4iO9pA1sD5fG6hJ0kLzXcV",
   });
   valid.MFA_RECOVERY_PREVIOUS_PEPPERS = JSON.stringify({
-    "mfa-recovery-prod-legacy":
-      "L3gacyMfa-6QwE2rT8yU4iO0pA1sD5fG7hJ3kLzXcV",
+    "mfa-recovery-prod-legacy": "L3gacyMfa-6QwE2rT8yU4iO0pA1sD5fG7hJ3kLzXcV",
   });
   const parsed = validateProductionServerEnvironment(valid);
   assert.equal(parsed?.dataEncryptionKeyId, "data-prod-v1");
@@ -1244,8 +1435,7 @@ test("destructive seed requires local target and exact explicit confirmation", (
     NODE_ENV: "development",
     ALLOW_DESTRUCTIVE_SEED: "true",
     SEED_EXPECTED_DATABASE: "q_academy",
-    DATABASE_URL:
-      "postgresql://postgres:postgres@127.0.0.1:54329/q_academy",
+    DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:54329/q_academy",
   });
   assert.equal(allowed.databaseName, "q_academy");
 
@@ -1275,8 +1465,7 @@ test("destructive seed requires local target and exact explicit confirmation", (
         NODE_ENV: "development",
         ALLOW_DESTRUCTIVE_SEED: "true",
         SEED_EXPECTED_DATABASE: "q_academy",
-        DATABASE_URL:
-          "postgresql://academy:password@db.example.com/q_academy",
+        DATABASE_URL: "postgresql://academy:password@db.example.com/q_academy",
       }),
     /loopback/,
   );

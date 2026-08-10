@@ -99,10 +99,10 @@ test("0069 remains immutable while later migrations append to the journal", () =
     breakpoints: true,
   });
   assert.deepEqual(journal.entries.at(-1), {
-    idx: 74,
+    idx: 80,
     version: "7",
-    when: 1784215083483,
-    tag: "0074_runtime_trigger_role_guards",
+    when: 1786370494004,
+    tag: "0080_closed_catseye",
     breakpoints: true,
   });
 });

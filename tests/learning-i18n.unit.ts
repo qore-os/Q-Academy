@@ -24,7 +24,7 @@ test("learning dictionaries are complete, nonempty, and placeholder-compatible",
     learningUiDictionaries.de,
   ) as LearningUiKey[];
 
-  assert.equal(referenceKeys.length, 239);
+  assert.equal(referenceKeys.length, 241);
   for (const locale of SUPPORTED_LOCALES) {
     const dictionary = learningUiDictionaries[locale];
     assert.deepEqual(Object.keys(dictionary).sort(), [...referenceKeys].sort());
@@ -38,6 +38,33 @@ test("learning dictionaries are complete, nonempty, and placeholder-compatible",
       );
     }
   }
+});
+
+test("attachment retry actions are localized in every supported language", () => {
+  assert.deepEqual(
+    Object.fromEntries(
+      SUPPORTED_LOCALES.map((locale) => [
+        locale,
+        [
+          learningUiDictionaries[locale]["attachments.retryNamed"],
+          learningUiDictionaries[locale]["attachments.retry"],
+        ],
+      ]),
+    ),
+    {
+      de: ["Upload für {name} fortsetzen", "Upload fortsetzen"],
+      en: ["Resume upload for {name}", "Resume upload"],
+      it: [
+        "Riprendi il caricamento di {name}",
+        "Riprendi il caricamento",
+      ],
+      es: ["Reanudar la carga de {name}", "Reanudar la carga"],
+      fr: [
+        "Reprendre le téléversement de {name}",
+        "Reprendre le téléversement",
+      ],
+    },
+  );
 });
 
 test("learning dictionaries do not silently fall back to German or English", () => {

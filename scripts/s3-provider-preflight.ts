@@ -11,6 +11,7 @@ import {
   runStratoS3CompatibilityPreflight,
   StratoS3CompatibilityError,
 } from "../src/lib/media/s3-strato-compatibility-preflight";
+import { resolveS3BrowserUploadOriginInventory } from "../src/lib/media/s3-browser-upload-origins";
 import { loadProjectEnvironment } from "./load-environment";
 
 const HELP = `Q-Academy S3-Provider-Contract-Preflight
@@ -25,8 +26,10 @@ Optional:
 Der Test schreibt ausschliesslich unter einem zufaelligen
 q-academy-provider-contract-canary/v1/... Praefix und entfernt im Anschluss
 alle dort erzeugten Versionen und Delete-Marker. Zusaetzlich liest er die
-Bucket-Lifecycle-Konfiguration und verlangt den acht-taegigen
-Privacy-Export-Vertrag.`;
+Bucket-Lifecycle- und CORS-Konfiguration. Im versionierten Modus prueft er
+zusaetzlich den acht-taegigen Privacy-Export-Vertrag, den bucketweiten
+Multipart-Abbruch nach maximal sieben Tagen sowie einen nativen
+Create/UploadPart/ListParts/Complete/Abort-Vertrag mit drei SHA-256-Teilen.`;
 
 type Arguments = Readonly<{
   confirmBucket: string;
@@ -75,11 +78,8 @@ function productionS3Configuration() {
   return configuration;
 }
 
-function browserOrigin() {
-  return (
-    process.env.NEXT_PUBLIC_APP_URL ??
-    (process.env.APP_DOMAIN ? `https://${process.env.APP_DOMAIN}` : "")
-  );
+function browserOrigins() {
+  return resolveS3BrowserUploadOriginInventory(process.env);
 }
 
 function printFailure(error: unknown, json: boolean) {
@@ -125,7 +125,7 @@ async function main() {
       const result = await runStratoS3CompatibilityPreflight({
         configuration,
         confirmBucket: parsed.confirmBucket,
-        expectedOrigin: browserOrigin(),
+        expectedOrigins: browserOrigins(),
       });
       if (parsed.json) {
         console.log(JSON.stringify({ ok: true, ...result }));
@@ -133,6 +133,7 @@ async function main() {
         console.log(
           `STRATO compatibility contract passed for bucket=${result.bucket}; ` +
             `canaryPrefix=${result.canaryPrefix}; browserPostCors=verified; ` +
+            `browserOrigins=${result.browserUploadOriginCount}; ` +
             `browserPostPolicy=verified; anonymousAccess=blocked; ` +
             `etagAndDigest=verified; copySourceIfMatch=enforced; ` +
             `cleanup=verified; nativeVersioning=false; nativeLifecycle=false; ` +
@@ -145,6 +146,9 @@ async function main() {
     const result = await runS3ProviderContractPreflight({
       adapter,
       confirmBucket: parsed.confirmBucket,
+      expectedOrigins: browserOrigins(),
+      multipartUploadTtlSeconds:
+        configuration.limits.multipartUploadTtlSeconds,
     }).finally(() => adapter.destroy());
     if (parsed.json) {
       console.log(JSON.stringify({ ok: true, ...result }));
@@ -153,6 +157,8 @@ async function main() {
         `S3 provider contract passed for bucket=${result.bucket}; ` +
           `canaryPrefix=${result.canaryPrefix}; ` +
           `privacyExportLifecycle=${result.privacyExportExpirationDays}d; ` +
+          `incompleteMultipartLifecycle<=${result.incompleteMultipartAbortDays}d; ` +
+          `browserPutCors=verified(${result.browserUploadOriginCount}); multipart=verified; abort=verified; ` +
           `cleanup=verified`,
       );
     }

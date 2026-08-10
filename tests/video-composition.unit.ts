@@ -7,11 +7,13 @@ import {
   buildVideoCompositionFfmpegGraph,
   canDownloadVideoCompositionDerivative,
   canUseVideoCompositionSource,
+  MAX_VIDEO_COMPOSITION_SOURCE_BYTES,
   publishedSnapshotReferencesVideoComposition,
   sanitizeBoundVideoComposition,
   sanitizeVideoComposition,
   videoProcessingOptionsConflict,
 } from "../src/lib/media/video-composition";
+import { MAX_SCANNABLE_MEDIA_BYTES } from "../src/lib/media/storage-configuration";
 
 const TRACK_ID = "10000000-0000-4000-8000-000000000001";
 const AUDIO_ID = "20000000-0000-4000-8000-000000000001";
@@ -96,6 +98,24 @@ test("binding freezes every secondary source identity and supplies the source en
   assert.equal(
     bindVideoCompositionSources(document, [
       { ...source, storageDriver: "s3", storageVersionId: null, etag: null },
+    ]),
+    null,
+  );
+});
+
+test("video composition accepts the complete scannable source boundary", () => {
+  assert.equal(
+    MAX_VIDEO_COMPOSITION_SOURCE_BYTES,
+    MAX_SCANNABLE_MEDIA_BYTES,
+  );
+  assert.ok(
+    bindVideoCompositionSources(document, [
+      { ...source, sizeBytes: MAX_SCANNABLE_MEDIA_BYTES },
+    ]),
+  );
+  assert.equal(
+    bindVideoCompositionSources(document, [
+      { ...source, sizeBytes: MAX_SCANNABLE_MEDIA_BYTES + 1 },
     ]),
     null,
   );

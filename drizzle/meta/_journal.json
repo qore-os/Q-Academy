@@ -526,6 +526,48 @@
       "when": 1784215083483,
       "tag": "0074_runtime_trigger_role_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1786364908454,
+      "tag": "0075_same_chameleon",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1786367738458,
+      "tag": "0076_charming_frightful_four",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1786369364566,
+      "tag": "0077_overrated_robbie_robertson",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1786369860338,
+      "tag": "0078_peaceful_blue_shield",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1786370446427,
+      "tag": "0079_mushy_greymalkin",
+      "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1786370494004,
+      "tag": "0080_closed_catseye",
+      "breakpoints": true
     }
   ]
 }

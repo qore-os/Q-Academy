@@ -1,6 +1,7 @@
 import "server-only";
 
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, desc, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/db";
@@ -14,6 +15,7 @@ import {
   customFieldValues,
   dataProfileValues,
   mediaAssets,
+  mediaUploadSessions,
   organizations,
   platformSettings,
   submissionAttachments,
@@ -33,10 +35,24 @@ import {
   MediaPolicyError,
   validateMediaUploadPolicy,
 } from "@/lib/media/mime-policy";
-import { MediaStorageError } from "@/lib/media/s3-storage";
+import {
+  abortS3MultipartUpload,
+  completeS3MultipartUpload,
+  createS3MultipartPartUploadAuthorization,
+  createS3MultipartUpload,
+  listS3MultipartUploadParts,
+  MediaStorageError,
+} from "@/lib/media/s3-storage";
+import {
+  createS3MultipartUploadPlan,
+  expectedS3MultipartPartSize,
+  S3_MULTIPART_COMPLETION_RECOVERY_MS,
+  S3_MULTIPART_DEFAULT_PART_BYTES,
+} from "@/lib/media/s3-multipart-policy";
 import { accessibleLessonsReferenceMediaAsset } from "@/lib/media/course-media-access-policy";
 import {
   createMediaUploadAuthorization,
+  deleteStoredMediaObject,
   inspectStoredMediaObject,
   writeDevelopmentMediaObject,
 } from "@/lib/media/storage";
@@ -49,6 +65,7 @@ import {
 import { courseCoverMediaAssetId } from "@/lib/course-cover";
 import { courseSnapshotWidgetsReferenceMediaAsset } from "@/lib/media/course-assets";
 import { getMediaStorageConfiguration } from "@/lib/server-environment";
+import { logServerError } from "@/lib/server-error-logging";
 import {
   escapeCourseMediaLibrarySearch,
   type SessionCourseMediaListInput,
@@ -57,6 +74,13 @@ import {
 export { sessionCourseMediaListSchema } from "@/lib/media/course-media-library";
 
 const STAFF_ROLES = new Set<User["role"]>(["owner", "admin", "trainer"]);
+const SESSION_MULTIPART_THRESHOLD_BYTES = 2 * S3_MULTIPART_DEFAULT_PART_BYTES;
+const SESSION_MULTIPART_CONCURRENCY = 3;
+// ListParts plus Complete/HEAD can consume just over eleven minutes at their
+// hard S3 deadlines. Keep takeover outside that entire operation window.
+const SESSION_MULTIPART_STALE_CLAIM_MS = 15 * 60_000;
+const SESSION_MULTIPART_INITIALIZATION_LEASE_MS = 2 * 60_000;
+const SESSION_MULTIPART_COMPLETION_OPERATION_RESERVE_MS = 12 * 60_000;
 const globalForSessionMedia = globalThis as unknown as {
   sessionMediaUploads?: Set<string>;
 };
@@ -88,6 +112,10 @@ export const sessionMediaCreateSchema = z
 
 type SessionMediaCreateInput = z.infer<typeof sessionMediaCreateSchema>;
 
+const OWNER_BOUND_SESSION_PURPOSES = new Set<
+  SessionMediaCreateInput["purpose"]
+>(["submission", "community", "avatar", "profile"]);
+
 function assertSessionPurposeAccess(
   user: User,
   purpose: SessionMediaCreateInput["purpose"],
@@ -99,7 +127,11 @@ function assertSessionPurposeAccess(
       "Nur Academy-Mitarbeitende duerfen Kursmedien hochladen.",
     );
   }
-  if (purpose === "branding" && user.role !== "owner" && user.role !== "admin") {
+  if (
+    purpose === "branding" &&
+    user.role !== "owner" &&
+    user.role !== "admin"
+  ) {
     throw new ApiError(
       403,
       "forbidden",
@@ -109,6 +141,44 @@ function assertSessionPurposeAccess(
   if (purpose === "profile") {
     return;
   }
+}
+
+async function resolveSessionMediaOwner(
+  user: User,
+  input: SessionMediaCreateInput,
+) {
+  if (!OWNER_BOUND_SESSION_PURPOSES.has(input.purpose)) return null;
+  const ownerUserId = input.ownerUserId ?? user.id;
+  if (
+    ownerUserId !== user.id &&
+    user.role !== "owner" &&
+    user.role !== "admin"
+  ) {
+    throw new ApiError(
+      403,
+      "forbidden",
+      "Nur Administratoren duerfen Media-Assets fuer andere Mitglieder anlegen.",
+    );
+  }
+  const [owner] = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(
+      and(
+        eq(users.id, ownerUserId),
+        eq(users.organizationId, user.organizationId),
+        eq(users.status, "active"),
+      ),
+    )
+    .limit(1);
+  if (!owner) {
+    throw new ApiError(
+      404,
+      "not_found",
+      "Media-Eigentuemer nicht gefunden oder nicht aktiv.",
+    );
+  }
+  return owner.id;
 }
 
 function canManageAsset(user: User, asset: MediaAsset) {
@@ -190,29 +260,432 @@ async function consumeSessionUploadIntentRateLimit(user: User) {
   }
 }
 
+async function consumeSessionMultipartPartRateLimit(
+  user: User,
+  assetId: string,
+) {
+  const result = await consumeGuardedPersistentRateLimit({
+    guards: [
+      {
+        action: "media_upload_part_tenant",
+        identifier: user.organizationId,
+      },
+    ],
+    primary: {
+      action: "media_upload_part",
+      identifier: `${user.id}:${assetId}`,
+    },
+  });
+  if (result.limited) {
+    throw new ApiError(
+      429,
+      "rate_limit_exceeded",
+      "Das Ratenlimit fuer Multipart-Upload-Teile wurde erreicht.",
+      { limit: result.limit, resetAt: result.resetAt.toISOString() },
+    );
+  }
+}
+
+async function consumeSessionMultipartCompleteRateLimit(
+  user: User,
+  assetId: string,
+) {
+  const result = await consumeGuardedPersistentRateLimit({
+    guards: [
+      {
+        action: "media_upload_complete_tenant",
+        identifier: user.organizationId,
+      },
+    ],
+    primary: {
+      action: "media_upload_complete",
+      identifier: `${user.id}:${assetId}`,
+    },
+  });
+  if (result.limited) {
+    throw new ApiError(
+      429,
+      "rate_limit_exceeded",
+      "Das Ratenlimit fuer Upload-Abschluesse wurde erreicht.",
+      { limit: result.limit, resetAt: result.resetAt.toISOString() },
+    );
+  }
+}
+
 function sameSessionUploadIntent(
   user: User,
   asset: MediaAsset,
   input: SessionMediaCreateInput,
   policy: ReturnType<typeof validateMediaUploadPolicy>,
   storageDriver: MediaAsset["storageDriver"],
+  ownerUserId: string | null,
 ) {
   return (
     asset.organizationId === user.organizationId &&
     asset.uploadedById === user.id &&
-    asset.ownerUserId ===
-      (input.purpose === "submission" ||
-      input.purpose === "community" ||
-      input.purpose === "avatar" ||
-      input.purpose === "profile"
-        ? (input.ownerUserId ?? user.id)
-        : null) &&
+    asset.ownerUserId === ownerUserId &&
     asset.purpose === input.purpose &&
     asset.storageDriver === storageDriver &&
     asset.originalFileName === input.originalFileName &&
     asset.declaredMimeType === policy.mimeType &&
     asset.declaredSizeBytes === policy.sizeBytes &&
     asset.status !== "deleted"
+  );
+}
+
+function usesSessionMultipartUpload(
+  asset: Pick<MediaAsset, "declaredSizeBytes" | "storageDriver">,
+) {
+  const configuration = getMediaStorageConfiguration();
+  return (
+    asset.storageDriver === "s3" &&
+    configuration.driver === "s3" &&
+    configuration.compatibilityMode === "versioned" &&
+    asset.declaredSizeBytes >= SESSION_MULTIPART_THRESHOLD_BYTES
+  );
+}
+
+function sessionMultipartUploadUrls(assetId: string) {
+  const statusUrl = `/api/media-assets/${assetId}/multipart`;
+  return {
+    statusUrl,
+    partsUrl: `${statusUrl}/parts`,
+  };
+}
+
+async function sessionMultipartUploadRecord(
+  asset: MediaAsset,
+  recoveryDeadline?: Date,
+  ownedInitializationToken?: string,
+) {
+  const staleInitializationBefore = new Date(
+    Date.now() - SESSION_MULTIPART_INITIALIZATION_LEASE_MS,
+  );
+  const [existing] = await db
+    .select()
+    .from(mediaUploadSessions)
+    .where(
+      and(
+        eq(mediaUploadSessions.assetId, asset.id),
+        eq(mediaUploadSessions.organizationId, asset.organizationId),
+      ),
+    )
+    .limit(1);
+  const ownsExistingClaim =
+    (existing?.state === "initializing" || existing?.state === "recovering") &&
+    !existing.providerUploadId &&
+    existing.initializationToken === ownedInitializationToken;
+  if (
+    existing &&
+    !ownsExistingClaim &&
+    !(
+      (existing.state === "initializing" || existing.state === "recovering") &&
+      existing.updatedAt <= staleInitializationBefore
+    )
+  ) {
+    return existing;
+  }
+  const effectiveRecoveryDeadline =
+    recoveryDeadline ??
+    (existing?.state === "recovering" ? existing.uploadDeadlineAt : undefined);
+
+  const configuration = getMediaStorageConfiguration();
+  if (
+    configuration.driver !== "s3" ||
+    configuration.compatibilityMode !== "versioned"
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Multipart-Uploads sind fuer diesen Speicher nicht verfuegbar.",
+    );
+  }
+  if (
+    effectiveRecoveryDeadline &&
+    effectiveRecoveryDeadline.getTime() - Date.now() <
+      SESSION_MULTIPART_STALE_CLAIM_MS
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Die verbleibende Upload-Zeit reicht nicht fuer eine sichere Wiederherstellung.",
+      { reason: "upload_session_expiring" },
+    );
+  }
+  const plan = createS3MultipartUploadPlan(asset.declaredSizeBytes);
+  const initializationToken = ownedInitializationToken ?? randomUUID();
+  const claim = ownsExistingClaim
+    ? { ownsClaim: true as const, session: existing! }
+    : await db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(mediaAssets)
+          .where(
+            and(
+              eq(mediaAssets.id, asset.id),
+              eq(mediaAssets.organizationId, asset.organizationId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (
+          !current ||
+          current.status !== "pending" ||
+          current.uploadExpiresAt.getTime() <= Date.now()
+        ) {
+          throw new ApiError(
+            409,
+            "conflict",
+            "Der Multipart-Upload ist nicht mehr aktiv.",
+          );
+        }
+        const [winner] = await tx
+          .select()
+          .from(mediaUploadSessions)
+          .where(
+            and(
+              eq(mediaUploadSessions.assetId, current.id),
+              eq(mediaUploadSessions.organizationId, current.organizationId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (winner) {
+          if (
+            !["initializing", "recovering"].includes(winner.state) ||
+            winner.updatedAt > staleInitializationBefore
+          ) {
+            return { ownsClaim: false as const, session: winner };
+          }
+          await tx
+            .delete(mediaUploadSessions)
+            .where(
+              and(
+                eq(mediaUploadSessions.assetId, winner.assetId),
+                eq(
+                  mediaUploadSessions.initializationToken,
+                  winner.initializationToken,
+                ),
+                eq(mediaUploadSessions.state, winner.state),
+              ),
+            );
+        }
+        const [session] = await tx
+          .insert(mediaUploadSessions)
+          .values({
+            assetId: current.id,
+            organizationId: current.organizationId,
+            initializationToken,
+            providerUploadId: null,
+            partSizeBytes: plan.partSizeBytes,
+            expectedPartCount: plan.partCount,
+            expiresAt: current.uploadExpiresAt,
+            uploadDeadlineAt:
+              effectiveRecoveryDeadline ?? current.uploadExpiresAt,
+            state: effectiveRecoveryDeadline ? "recovering" : "initializing",
+          })
+          .returning();
+        if (!session) {
+          throw new ApiError(
+            503,
+            "internal_error",
+            "Die Multipart-Upload-Sitzung konnte nicht reserviert werden.",
+          );
+        }
+        return { ownsClaim: true as const, session };
+      });
+  if (!claim.ownsClaim) return claim.session;
+
+  let created: Awaited<ReturnType<typeof createS3MultipartUpload>> | undefined;
+  try {
+    created = await createS3MultipartUpload(configuration, {
+      ...mediaAssetIdentity(asset, "staging"),
+      mimeType: asset.declaredMimeType,
+      sizeBytes: asset.declaredSizeBytes,
+    });
+    if (
+      created.uploadId.length > 1024 ||
+      created.plan.partSizeBytes !== plan.partSizeBytes ||
+      created.plan.partCount !== plan.partCount
+    ) {
+      throw new ApiError(
+        503,
+        "internal_error",
+        "Der Objektspeicher hat eine ungueltige Upload-Sitzung geliefert.",
+      );
+    }
+  } catch (error) {
+    if (created) {
+      await abortS3MultipartUpload(configuration, {
+        ...mediaAssetIdentity(asset, "staging"),
+        uploadId: created.uploadId,
+      }).catch((abortError) => {
+        logServerError(abortError, {
+          action: "media.multipart.invalid_create_rollback",
+        });
+      });
+    }
+    await db
+      .transaction(async (tx) => {
+        const [current] = await tx
+          .select({ id: mediaAssets.id })
+          .from(mediaAssets)
+          .where(
+            and(
+              eq(mediaAssets.id, asset.id),
+              eq(mediaAssets.organizationId, asset.organizationId),
+              eq(mediaAssets.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!current) return;
+        const [removedClaim] = await tx
+          .delete(mediaUploadSessions)
+          .where(
+            and(
+              eq(mediaUploadSessions.assetId, asset.id),
+              eq(mediaUploadSessions.initializationToken, initializationToken),
+              isNull(mediaUploadSessions.providerUploadId),
+              or(
+                eq(mediaUploadSessions.state, "initializing"),
+                eq(mediaUploadSessions.state, "recovering"),
+                eq(mediaUploadSessions.state, "aborting"),
+              ),
+            ),
+          )
+          .returning({ assetId: mediaUploadSessions.assetId });
+        if (!removedClaim) return;
+        await tx
+          .delete(mediaAssets)
+          .where(
+            and(
+              eq(mediaAssets.id, asset.id),
+              eq(mediaAssets.organizationId, asset.organizationId),
+              eq(mediaAssets.status, "pending"),
+            ),
+          );
+      })
+      .catch((cleanupError) => {
+        logServerError(cleanupError, {
+          action: "media.multipart.initialization_cleanup",
+        });
+      });
+    throw error;
+  }
+
+  let activationError: unknown;
+  let activated: typeof mediaUploadSessions.$inferSelect | undefined;
+  try {
+    activated = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.id, asset.id),
+            eq(mediaAssets.organizationId, asset.organizationId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (
+        !current ||
+        current.status !== "pending" ||
+        current.uploadExpiresAt.getTime() <= Date.now()
+      ) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "Der Multipart-Upload ist nicht mehr aktiv.",
+        );
+      }
+      const multipartExpiresAt = new Date(
+        Math.min(
+          Date.now() + configuration.limits.multipartUploadTtlSeconds * 1000,
+          effectiveRecoveryDeadline?.getTime() ?? Number.MAX_SAFE_INTEGER,
+        ),
+      );
+      const [record] = await tx
+        .update(mediaUploadSessions)
+        .set({
+          providerUploadId: created.uploadId,
+          expiresAt: multipartExpiresAt,
+          uploadDeadlineAt: effectiveRecoveryDeadline ?? multipartExpiresAt,
+          state: "uploading",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(mediaUploadSessions.assetId, current.id),
+            eq(mediaUploadSessions.organizationId, current.organizationId),
+            eq(mediaUploadSessions.initializationToken, initializationToken),
+            eq(mediaUploadSessions.state, claim.session.state),
+            isNull(mediaUploadSessions.providerUploadId),
+          ),
+        )
+        .returning();
+      if (!record) return undefined;
+      await tx
+        .update(mediaAssets)
+        .set({ uploadExpiresAt: multipartExpiresAt, updatedAt: new Date() })
+        .where(eq(mediaAssets.id, current.id));
+      return record;
+    });
+  } catch (error) {
+    activationError = error;
+  }
+  if (activated) return activated;
+
+  let persisted: typeof mediaUploadSessions.$inferSelect | undefined;
+  let reconciliationSucceeded = false;
+  try {
+    [persisted] = await db
+      .select()
+      .from(mediaUploadSessions)
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, asset.id),
+          eq(mediaUploadSessions.organizationId, asset.organizationId),
+        ),
+      )
+      .limit(1);
+    reconciliationSucceeded = true;
+  } catch (reconciliationError) {
+    logServerError(reconciliationError, {
+      action: "media.multipart.create_reconcile",
+    });
+  }
+  if (
+    persisted?.providerUploadId === created.uploadId &&
+    persisted.state === "uploading"
+  ) {
+    return persisted;
+  }
+  if (reconciliationSucceeded) {
+    await abortS3MultipartUpload(configuration, {
+      ...mediaAssetIdentity(asset, "staging"),
+      uploadId: created.uploadId,
+    }).catch((abortError) => {
+      logServerError(abortError, {
+        action: "media.multipart.create_rollback",
+      });
+    });
+    await db
+      .delete(mediaUploadSessions)
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, asset.id),
+          eq(mediaUploadSessions.initializationToken, initializationToken),
+          isNull(mediaUploadSessions.providerUploadId),
+        ),
+      );
+  }
+  if (activationError) throw activationError;
+  throw new ApiError(
+    409,
+    "conflict",
+    "Die Multipart-Upload-Sitzung wurde waehrend der Initialisierung beendet.",
   );
 }
 
@@ -231,6 +704,61 @@ async function sessionUploadIntentResponse(asset: MediaAsset) {
       "Der idempotente Upload-Intent ist abgelaufen.",
       { reason: "upload_expired" },
     );
+  }
+  if (usesSessionMultipartUpload(asset)) {
+    const session = await sessionMultipartUploadRecord(asset);
+    if (session.state === "initializing" || session.state === "recovering") {
+      throw new ApiError(
+        503,
+        "internal_error",
+        "Die Multipart-Upload-Sitzung wird gerade initialisiert.",
+        { reason: "upload_session_initializing", retryAfterSeconds: 2 },
+      );
+    }
+    if (
+      session.state === "completing" &&
+      session.expiresAt.getTime() > Date.now()
+    ) {
+      return {
+        ...sessionAssetDto(asset),
+        upload: null,
+        completeUrl: `/api/media-assets/${asset.id}/complete`,
+        completionPending: true,
+      };
+    }
+    if (
+      session.state === "uploading" &&
+      session.uploadDeadlineAt.getTime() <= Date.now() &&
+      session.expiresAt.getTime() > Date.now()
+    ) {
+      return {
+        ...sessionAssetDto(asset),
+        upload: null,
+        completeUrl: `/api/media-assets/${asset.id}/complete`,
+        completionPending: true,
+      };
+    }
+    if (
+      session.expiresAt.getTime() <= Date.now() ||
+      session.state !== "uploading"
+    ) {
+      throw new ApiError(
+        409,
+        "conflict",
+        "Die Multipart-Upload-Sitzung ist nicht mehr aktiv.",
+      );
+    }
+    return {
+      ...sessionAssetDto(asset),
+      upload: {
+        transport: "s3-multipart" as const,
+        ...sessionMultipartUploadUrls(asset.id),
+        partSizeBytes: session.partSizeBytes,
+        partCount: session.expectedPartCount,
+        concurrency: SESSION_MULTIPART_CONCURRENCY,
+      },
+      completeUrl: `/api/media-assets/${asset.id}/complete`,
+    };
   }
   const authorization = await createMediaUploadAuthorization({
     ...mediaAssetIdentity(asset, "staging"),
@@ -258,19 +786,7 @@ export async function createSessionMediaAsset(
   input: SessionMediaCreateInput,
 ) {
   assertSessionPurposeAccess(user, input.purpose);
-  if (
-    input.purpose === "profile" &&
-    input.ownerUserId &&
-    input.ownerUserId !== user.id &&
-    user.role !== "owner" &&
-    user.role !== "admin"
-  ) {
-    throw new ApiError(
-      403,
-      "forbidden",
-      "Nur Administratoren duerfen Profilmedien fuer andere Mitglieder hochladen.",
-    );
-  }
+  const ownerUserId = await resolveSessionMediaOwner(user, input);
   const configuration = getMediaStorageConfiguration();
   let policy;
   try {
@@ -285,10 +801,13 @@ export async function createSessionMediaAsset(
     if (error instanceof MediaPolicyError) {
       throw new ApiError(422, "validation_error", error.message, {
         code: error.code,
+        ...error.details,
       });
     }
     throw error;
   }
+
+  await consumeSessionUploadIntentRateLimit(user);
 
   const [existing] = await db
     .select()
@@ -303,6 +822,7 @@ export async function createSessionMediaAsset(
         input,
         policy,
         configuration.driver,
+        ownerUserId,
       )
     ) {
       throw new ApiError(
@@ -314,9 +834,7 @@ export async function createSessionMediaAsset(
     return sessionUploadIntentResponse(existing);
   }
 
-  await consumeSessionUploadIntentRateLimit(user);
-
-  return db.transaction(async (tx) => {
+  const asset = await db.transaction(async (tx) => {
     const [tenant] = await tx
       .select({ id: organizations.id })
       .from(organizations)
@@ -325,24 +843,6 @@ export async function createSessionMediaAsset(
       .for("update");
     if (!tenant) {
       throw new ApiError(404, "not_found", "Organisation nicht gefunden.");
-    }
-    const profileOwnerId =
-      input.purpose === "profile" ? input.ownerUserId ?? user.id : null;
-    if (profileOwnerId) {
-      const [owner] = await tx
-        .select({ id: users.id })
-        .from(users)
-        .where(
-          and(
-            eq(users.id, profileOwnerId),
-            eq(users.organizationId, user.organizationId),
-            eq(users.status, "active"),
-          ),
-        )
-        .limit(1);
-      if (!owner) {
-        throw new ApiError(404, "not_found", "Profilmitglied nicht gefunden.");
-      }
     }
     const [raced] = await tx
       .select()
@@ -358,6 +858,7 @@ export async function createSessionMediaAsset(
           input,
           policy,
           configuration.driver,
+          ownerUserId,
         )
       ) {
         throw new ApiError(
@@ -366,7 +867,7 @@ export async function createSessionMediaAsset(
           "clientUploadId wurde bereits fuer einen anderen Upload verwendet.",
         );
       }
-      return sessionUploadIntentResponse(raced);
+      return raced;
     }
     const asset = await reserveMediaAsset({
       tx,
@@ -377,13 +878,7 @@ export async function createSessionMediaAsset(
         organizationId: user.organizationId,
         role: user.role,
       },
-      ownerUserId:
-        input.purpose === "submission" ||
-        input.purpose === "community" ||
-        input.purpose === "avatar" ||
-        input.purpose === "profile"
-          ? (input.ownerUserId ?? user.id)
-          : null,
+      ownerUserId,
       policy,
       originalFileName: input.originalFileName,
       configuration,
@@ -401,8 +896,9 @@ export async function createSessionMediaAsset(
         source: "browser_session",
       },
     });
-    return sessionUploadIntentResponse(asset);
+    return asset;
   });
+  return sessionUploadIntentResponse(asset);
 }
 
 export async function getSessionMediaAsset(user: User, id: string) {
@@ -456,12 +952,345 @@ export async function listSessionCourseMediaAssets(
         isNull(mediaAssets.deletedAt),
         sessionMediaAssetReadVisibility(user),
         ...(search
-          ? [sql`${mediaAssets.originalFileName} ilike ${`%${search}%`} escape '\\'`]
+          ? [
+              sql`${mediaAssets.originalFileName} ilike ${`%${search}%`} escape '\\'`,
+            ]
           : []),
       ),
     )
     .orderBy(desc(mediaAssets.createdAt), desc(mediaAssets.id))
     .limit(input.limit);
+}
+
+function multipartApiFailure(error: unknown): never {
+  if (error instanceof MediaStorageError) {
+    throw new ApiError(
+      error.code === "object_missing"
+        ? 409
+        : error.code === "storage_unavailable"
+          ? 503
+          : 422,
+      error.code === "object_missing"
+        ? "conflict"
+        : error.code === "storage_unavailable"
+          ? "internal_error"
+          : "validation_error",
+      error.message,
+    );
+  }
+  throw error;
+}
+
+async function activeSessionMultipartUpload(
+  user: User,
+  id: string,
+  options: Readonly<{ allowCompletionRecovery?: boolean }> = {},
+) {
+  const now = Date.now();
+  const asset = await getSessionMediaAsset(user, id);
+  assertUploadedBy(user, asset);
+  await assertSessionMutationVisibility(user, asset);
+  if (
+    asset.storageDriver !== "s3" ||
+    asset.status !== "pending" ||
+    asset.uploadExpiresAt.getTime() <= now
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Die Multipart-Upload-Sitzung ist nicht mehr aktiv.",
+    );
+  }
+  const [session] = await db
+    .select()
+    .from(mediaUploadSessions)
+    .where(
+      and(
+        eq(mediaUploadSessions.assetId, asset.id),
+        eq(mediaUploadSessions.organizationId, user.organizationId),
+      ),
+    )
+    .limit(1);
+  if (
+    !session ||
+    session.state !== "uploading" ||
+    !session.providerUploadId ||
+    session.expiresAt.getTime() <= now ||
+    (!options.allowCompletionRecovery &&
+      session.uploadDeadlineAt.getTime() <= now)
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Die Multipart-Upload-Sitzung ist nicht mehr aktiv.",
+    );
+  }
+  const plan = createS3MultipartUploadPlan(
+    asset.declaredSizeBytes,
+    session.partSizeBytes,
+  );
+  if (plan.partCount !== session.expectedPartCount) {
+    throw new Error("The persisted multipart upload plan is inconsistent.");
+  }
+  const configuration = getMediaStorageConfiguration();
+  if (
+    configuration.driver !== "s3" ||
+    configuration.compatibilityMode !== "versioned"
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Multipart-Uploads sind fuer diesen Speicher nicht verfuegbar.",
+    );
+  }
+  return {
+    asset,
+    configuration,
+    plan,
+    session,
+    uploadId: session.providerUploadId,
+  };
+}
+
+export async function getSessionMultipartUploadStatus(user: User, id: string) {
+  const context = await activeSessionMultipartUpload(user, id);
+  await consumeSessionMultipartPartRateLimit(user, context.asset.id);
+  try {
+    const listed = await listS3MultipartUploadParts(context.configuration, {
+      ...mediaAssetIdentity(context.asset, "staging"),
+      uploadId: context.uploadId,
+      expectedSizeBytes: context.asset.declaredSizeBytes,
+      partSizeBytes: context.session.partSizeBytes,
+    });
+    return {
+      partSizeBytes: listed.plan.partSizeBytes,
+      partCount: listed.plan.partCount,
+      uploadedBytes: listed.uploadedBytes,
+      uploadedParts: listed.parts.map((part) => ({
+        partNumber: part.partNumber,
+        sizeBytes: part.sizeBytes,
+      })),
+      expiresAt: context.session.expiresAt,
+    };
+  } catch (error) {
+    if (error instanceof MediaStorageError && error.code === "object_missing") {
+      throw new ApiError(
+        409,
+        "conflict",
+        "Die Multipart-Upload-Sitzung existiert beim Objektspeicher nicht mehr.",
+        { reason: "upload_session_missing" },
+      );
+    }
+    multipartApiFailure(error);
+  }
+}
+
+export async function recoverSessionMultipartUploadStatus(
+  user: User,
+  id: string,
+) {
+  const context = await activeSessionMultipartUpload(user, id, {
+    allowCompletionRecovery: true,
+  });
+  await consumeSessionMultipartPartRateLimit(user, context.asset.id);
+  try {
+    const listed = await listS3MultipartUploadParts(context.configuration, {
+      ...mediaAssetIdentity(context.asset, "staging"),
+      uploadId: context.uploadId,
+      expectedSizeBytes: context.asset.declaredSizeBytes,
+      partSizeBytes: context.session.partSizeBytes,
+    });
+    return {
+      partSizeBytes: listed.plan.partSizeBytes,
+      partCount: listed.plan.partCount,
+      uploadedBytes: listed.uploadedBytes,
+      uploadedParts: listed.parts.map((part) => ({
+        partNumber: part.partNumber,
+        sizeBytes: part.sizeBytes,
+      })),
+      expiresAt: context.session.expiresAt,
+    };
+  } catch (error) {
+    if (
+      !(error instanceof MediaStorageError) ||
+      error.code !== "object_missing"
+    ) {
+      multipartApiFailure(error);
+    }
+  }
+
+  try {
+    const completed = await inspectStoredMediaObject(
+      mediaAssetIdentity(context.asset, "staging"),
+    );
+    if (
+      completed.sizeBytes !== context.asset.declaredSizeBytes ||
+      !("mimeType" in completed) ||
+      completed.mimeType !== context.asset.declaredMimeType ||
+      !("etag" in completed) ||
+      !completed.etag ||
+      !("versionId" in completed) ||
+      !completed.versionId
+    ) {
+      throw new ApiError(
+        422,
+        "validation_error",
+        "Das abgeschlossene Multipart-Objekt stimmt nicht mit dem Upload-Intent ueberein.",
+      );
+    }
+    return {
+      partSizeBytes: context.plan.partSizeBytes,
+      partCount: context.plan.partCount,
+      uploadedBytes: context.asset.declaredSizeBytes,
+      uploadedParts: Array.from(
+        { length: context.plan.partCount },
+        (_, index) => ({
+          partNumber: index + 1,
+          sizeBytes: expectedS3MultipartPartSize(context.plan, index + 1),
+        }),
+      ),
+      expiresAt: context.session.expiresAt,
+    };
+  } catch (error) {
+    if (
+      !(error instanceof MediaStorageError) ||
+      error.code !== "object_missing"
+    ) {
+      multipartApiFailure(error);
+    }
+  }
+
+  if (context.session.uploadDeadlineAt.getTime() <= Date.now()) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Die Upload-Frist ist abgelaufen und beim Objektspeicher liegt kein abgeschlossenes Objekt vor.",
+      { reason: "upload_expired" },
+    );
+  }
+
+  const recoveryToken = randomUUID();
+  const recoveryClaim = await db.transaction(async (tx) => {
+    const [current] = await tx
+      .select({
+        id: mediaAssets.id,
+        status: mediaAssets.status,
+        uploadExpiresAt: mediaAssets.uploadExpiresAt,
+      })
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, context.asset.id),
+          eq(mediaAssets.organizationId, context.asset.organizationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (
+      !current ||
+      current.status !== "pending" ||
+      current.uploadExpiresAt.getTime() <= Date.now()
+    ) {
+      return undefined;
+    }
+    const [claimed] = await tx
+      .update(mediaUploadSessions)
+      .set({
+        initializationToken: recoveryToken,
+        providerUploadId: null,
+        state: "recovering",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, context.asset.id),
+          eq(mediaUploadSessions.organizationId, context.asset.organizationId),
+          eq(
+            mediaUploadSessions.initializationToken,
+            context.session.initializationToken,
+          ),
+          eq(mediaUploadSessions.providerUploadId, context.uploadId),
+          eq(
+            mediaUploadSessions.uploadDeadlineAt,
+            context.session.uploadDeadlineAt,
+          ),
+          eq(mediaUploadSessions.state, "uploading"),
+        ),
+      )
+      .returning();
+    return claimed;
+  });
+  if (!recoveryClaim) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Die Multipart-Upload-Sitzung wurde bereits von einem neueren Versuch uebernommen.",
+      { reason: "upload_session_recovery_in_progress", retryAfterSeconds: 2 },
+    );
+  }
+  const recovered = await sessionMultipartUploadRecord(
+    context.asset,
+    context.session.uploadDeadlineAt,
+    recoveryToken,
+  );
+  if (
+    recovered.state !== "uploading" ||
+    !recovered.providerUploadId ||
+    recovered.expiresAt.getTime() <= Date.now()
+  ) {
+    throw new ApiError(
+      ["initializing", "recovering"].includes(recovered.state) ? 503 : 409,
+      ["initializing", "recovering"].includes(recovered.state)
+        ? "internal_error"
+        : "conflict",
+      ["initializing", "recovering"].includes(recovered.state)
+        ? "Die Multipart-Upload-Sitzung wird gerade wiederhergestellt."
+        : "Die Multipart-Upload-Sitzung ist nicht mehr aktiv.",
+      ["initializing", "recovering"].includes(recovered.state)
+        ? { reason: "upload_session_initializing" }
+        : undefined,
+    );
+  }
+  return {
+    partSizeBytes: recovered.partSizeBytes,
+    partCount: recovered.expectedPartCount,
+    uploadedBytes: 0,
+    uploadedParts: [],
+    expiresAt: recovered.expiresAt,
+  };
+}
+
+export async function authorizeSessionMultipartUploadPart(
+  user: User,
+  id: string,
+  input: Readonly<{ partNumber: number; checksumSha256: string }>,
+) {
+  const context = await activeSessionMultipartUpload(user, id);
+  await consumeSessionMultipartPartRateLimit(user, context.asset.id);
+  if (input.partNumber < 1 || input.partNumber > context.plan.partCount) {
+    throw new ApiError(
+      422,
+      "validation_error",
+      "Die Multipart-Teilnummer ist ungueltig.",
+    );
+  }
+  const sizeBytes = expectedS3MultipartPartSize(context.plan, input.partNumber);
+  try {
+    return await createS3MultipartPartUploadAuthorization(
+      context.configuration,
+      {
+        ...mediaAssetIdentity(context.asset, "staging"),
+        uploadId: context.uploadId,
+        expectedSizeBytes: context.asset.declaredSizeBytes,
+        partSizeBytes: context.session.partSizeBytes,
+        partNumber: input.partNumber,
+        sizeBytes,
+        checksumSha256: input.checksumSha256,
+      },
+    );
+  } catch (error) {
+    multipartApiFailure(error);
+  }
 }
 
 async function* requestChunks(request: Request) {
@@ -478,7 +1307,11 @@ async function* requestChunks(request: Request) {
       }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
-        throw new ApiError(409, "conflict", "Der Upload hat zu lange gedauert.");
+        throw new ApiError(
+          409,
+          "conflict",
+          "Der Upload hat zu lange gedauert.",
+        );
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
@@ -528,7 +1361,11 @@ export async function uploadSessionMediaAsset(
   ) {
     throw new ApiError(409, "conflict", "Der Upload ist nicht mehr aktiv.");
   }
-  const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  const contentType = request.headers
+    .get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
   if (contentType !== asset.declaredMimeType) {
     throw new ApiError(
       422,
@@ -539,7 +1376,8 @@ export async function uploadSessionMediaAsset(
   const contentLength = request.headers.get("content-length");
   if (
     contentLength &&
-    (!/^\d+$/.test(contentLength) || Number(contentLength) !== asset.declaredSizeBytes)
+    (!/^\d+$/.test(contentLength) ||
+      Number(contentLength) !== asset.declaredSizeBytes)
   ) {
     throw new ApiError(
       422,
@@ -568,14 +1406,12 @@ export async function uploadSessionMediaAsset(
         expectedSizeBytes: asset.declaredSizeBytes,
       });
     } catch (error) {
-      if (
-        !(
-          error &&
-          typeof error === "object" &&
-          "code" in error &&
-          error.code === "object_exists"
-        )
-      ) {
+      if (!(
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "object_exists"
+      )) {
         throw error;
       }
     }
@@ -661,10 +1497,7 @@ export async function uploadSessionMediaAsset(
   }
 }
 
-export async function completeSessionMediaAsset(
-  user: User,
-  id: string,
-) {
+export async function completeSessionMediaAsset(user: User, id: string) {
   const asset = await getSessionMediaAsset(user, id);
   assertUploadedBy(user, asset);
   await assertSessionMutationVisibility(user, asset);
@@ -674,8 +1507,17 @@ export async function completeSessionMediaAsset(
       asset.status,
     )
   ) {
+    await db
+      .delete(mediaUploadSessions)
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, asset.id),
+          eq(mediaUploadSessions.organizationId, user.organizationId),
+        ),
+      );
     return sessionAssetDto(asset);
   }
+  await consumeSessionMultipartCompleteRateLimit(user, asset.id);
   if (
     asset.storageDriver !== "s3" ||
     asset.status !== "pending" ||
@@ -687,20 +1529,181 @@ export async function completeSessionMediaAsset(
       "Der direkte Upload kann nicht abgeschlossen werden.",
     );
   }
+  const [multipartSession] = await db
+    .select()
+    .from(mediaUploadSessions)
+    .where(
+      and(
+        eq(mediaUploadSessions.assetId, asset.id),
+        eq(mediaUploadSessions.organizationId, user.organizationId),
+      ),
+    )
+    .limit(1);
   let stored;
-  try {
-    stored = await inspectStoredMediaObject(
-      mediaAssetIdentity(asset, "staging"),
-    );
-  } catch (error) {
-    if (error instanceof MediaStorageError) {
+  let uploadTransport: "s3" | "s3_multipart" = "s3";
+  let completionClaim:
+    Readonly<{ providerUploadId: string; updatedAt: Date }> | undefined;
+  let releaseMultipartCompletionClaim: (() => Promise<void>) | undefined;
+  if (multipartSession) {
+    const configuration = getMediaStorageConfiguration();
+    if (
+      configuration.driver !== "s3" ||
+      configuration.compatibilityMode !== "versioned"
+    ) {
       throw new ApiError(
-        error.code === "object_missing" ? 409 : 422,
-        error.code === "object_missing" ? "conflict" : "validation_error",
-        error.message,
+        409,
+        "conflict",
+        "Multipart-Uploads sind fuer diesen Speicher nicht verfuegbar.",
       );
     }
-    throw error;
+    const now = new Date();
+    const staleBefore = new Date(
+      now.getTime() - SESSION_MULTIPART_STALE_CLAIM_MS,
+    );
+    const absoluteUploadDeadline = multipartSession.uploadDeadlineAt;
+    const completionLeaseExpiresAt = new Date(
+      absoluteUploadDeadline.getTime() + S3_MULTIPART_COMPLETION_RECOVERY_MS,
+    );
+    const claimed = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.id, asset.id),
+            eq(mediaAssets.organizationId, user.organizationId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (
+        !current ||
+        current.status !== "pending" ||
+        current.uploadExpiresAt.getTime() <= now.getTime()
+      ) {
+        return undefined;
+      }
+      const claimableState = or(
+        eq(mediaUploadSessions.state, "uploading"),
+        and(
+          eq(mediaUploadSessions.state, "completing"),
+          lt(mediaUploadSessions.updatedAt, staleBefore),
+        ),
+      );
+      if (
+        completionLeaseExpiresAt.getTime() - now.getTime() <
+        SESSION_MULTIPART_COMPLETION_OPERATION_RESERVE_MS
+      ) {
+        return undefined;
+      }
+      const [session] = await tx
+        .update(mediaUploadSessions)
+        .set({
+          state: "completing",
+          expiresAt: completionLeaseExpiresAt,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(mediaUploadSessions.assetId, current.id),
+            eq(mediaUploadSessions.organizationId, current.organizationId),
+            gt(mediaUploadSessions.expiresAt, now),
+            claimableState,
+          ),
+        )
+        .returning();
+      if (!session) return undefined;
+      await tx
+        .update(mediaAssets)
+        .set({
+          uploadExpiresAt: completionLeaseExpiresAt,
+          updatedAt: now,
+        })
+        .where(eq(mediaAssets.id, current.id));
+      return session;
+    });
+    if (!claimed) {
+      throw new ApiError(
+        409,
+        "conflict",
+        "Der Multipart-Upload wird bereits abgeschlossen.",
+        { reason: "completion_in_progress", retryAfterSeconds: 5 },
+      );
+    }
+    if (!claimed.providerUploadId) {
+      throw new Error("The claimed multipart upload has no provider identity.");
+    }
+    const claimedProviderUploadId = claimed.providerUploadId;
+    completionClaim = {
+      providerUploadId: claimedProviderUploadId,
+      updatedAt: claimed.updatedAt,
+    };
+    releaseMultipartCompletionClaim = async () => {
+      const releaseNow = new Date();
+      const uploadDeadlinePassed =
+        releaseNow.getTime() >= absoluteUploadDeadline.getTime();
+      await db
+        .update(mediaUploadSessions)
+        .set({
+          state: uploadDeadlinePassed ? "completing" : "uploading",
+          updatedAt: uploadDeadlinePassed
+            ? new Date(
+                releaseNow.getTime() - SESSION_MULTIPART_STALE_CLAIM_MS - 1,
+              )
+            : releaseNow,
+        })
+        .where(
+          and(
+            eq(mediaUploadSessions.assetId, asset.id),
+            eq(mediaUploadSessions.organizationId, user.organizationId),
+            eq(mediaUploadSessions.providerUploadId, claimedProviderUploadId),
+            eq(mediaUploadSessions.state, "completing"),
+            eq(mediaUploadSessions.updatedAt, claimed.updatedAt),
+          ),
+        );
+    };
+    try {
+      stored = await completeS3MultipartUpload(configuration, {
+        ...mediaAssetIdentity(asset, "staging"),
+        uploadId: claimedProviderUploadId,
+        expectedSizeBytes: asset.declaredSizeBytes,
+        partSizeBytes: claimed.partSizeBytes,
+        mimeType: asset.declaredMimeType,
+      });
+    } catch (error) {
+      if (
+        error instanceof MediaStorageError &&
+        error.code === "object_missing"
+      ) {
+        try {
+          stored = await inspectStoredMediaObject(
+            mediaAssetIdentity(asset, "staging"),
+          );
+        } catch (recoveryError) {
+          await releaseMultipartCompletionClaim();
+          multipartApiFailure(recoveryError);
+        }
+      } else {
+        await releaseMultipartCompletionClaim();
+        multipartApiFailure(error);
+      }
+    }
+    uploadTransport = "s3_multipart";
+  } else {
+    try {
+      stored = await inspectStoredMediaObject(
+        mediaAssetIdentity(asset, "staging"),
+      );
+    } catch (error) {
+      if (error instanceof MediaStorageError) {
+        throw new ApiError(
+          error.code === "object_missing" ? 409 : 422,
+          error.code === "object_missing" ? "conflict" : "validation_error",
+          error.message,
+        );
+      }
+      throw error;
+    }
   }
   if (
     stored.sizeBytes !== asset.declaredSizeBytes ||
@@ -718,68 +1721,123 @@ export async function completeSessionMediaAsset(
     );
   }
   const now = new Date();
-  return db.transaction(async (tx) => {
-    const [current] = await tx
-      .select()
-      .from(mediaAssets)
-      .where(
-        and(
-          eq(mediaAssets.id, asset.id),
-          eq(mediaAssets.organizationId, user.organizationId),
-          sessionMediaAssetManageVisibility(user),
-        ),
-      )
-      .limit(1)
-      .for("update");
-    if (!current) {
-      throw new ApiError(404, "not_found", "Media-Asset nicht gefunden.");
-    }
-    if (
-      current.storageDriver !== "s3" ||
-      current.status !== "pending" ||
-      current.uploadExpiresAt.getTime() <= now.getTime()
-    ) {
-      throw new ApiError(
-        409,
-        "conflict",
-        "Der direkte Upload kann nicht abgeschlossen werden.",
-      );
-    }
-    assertUploadedBy(user, current);
-    const [updated] = await tx
-      .update(mediaAssets)
-      .set({
-        status: "uploaded",
-        actualSizeBytes: stored.sizeBytes,
-        etag: stored.etag,
-        stagingStorageVersionId: stored.versionId,
-        uploadedAt: now,
-        scanNextRetryAt: now,
-        updatedAt: now,
-      })
-      .where(eq(mediaAssets.id, current.id))
-      .returning();
-    await tx.insert(activityEvents).values({
-      organizationId: user.organizationId,
-      userId: user.id,
-      type: "media_asset.uploaded",
-      entityType: "media_asset",
-      entityId: current.id,
-      metadata: {
-        transport: "s3",
-        sizeBytes: stored.sizeBytes,
-        source: "browser_session",
-      },
+  try {
+    return await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.id, asset.id),
+            eq(mediaAssets.organizationId, user.organizationId),
+            sessionMediaAssetManageVisibility(user),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!current) {
+        throw new ApiError(404, "not_found", "Media-Asset nicht gefunden.");
+      }
+      if (
+        current.storageDriver !== "s3" ||
+        current.status !== "pending" ||
+        current.uploadExpiresAt.getTime() <= now.getTime()
+      ) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "Der direkte Upload kann nicht abgeschlossen werden.",
+        );
+      }
+      assertUploadedBy(user, current);
+      if (completionClaim) {
+        const [currentClaim] = await tx
+          .select({
+            providerUploadId: mediaUploadSessions.providerUploadId,
+            state: mediaUploadSessions.state,
+            updatedAt: mediaUploadSessions.updatedAt,
+          })
+          .from(mediaUploadSessions)
+          .where(
+            and(
+              eq(mediaUploadSessions.assetId, current.id),
+              eq(mediaUploadSessions.organizationId, user.organizationId),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (
+          !currentClaim ||
+          currentClaim.state !== "completing" ||
+          currentClaim.providerUploadId !== completionClaim.providerUploadId ||
+          currentClaim.updatedAt.getTime() !==
+            completionClaim.updatedAt.getTime()
+        ) {
+          throw new ApiError(
+            409,
+            "conflict",
+            "Der Abschluss-Claim wurde von einem neueren Versuch uebernommen.",
+            { reason: "completion_claim_lost", retryAfterSeconds: 2 },
+          );
+        }
+      }
+      const [updated] = await tx
+        .update(mediaAssets)
+        .set({
+          status: "uploaded",
+          actualSizeBytes: stored.sizeBytes,
+          etag: stored.etag,
+          stagingStorageVersionId: stored.versionId,
+          uploadedAt: now,
+          scanNextRetryAt: now,
+          updatedAt: now,
+        })
+        .where(eq(mediaAssets.id, current.id))
+        .returning();
+      await tx.insert(activityEvents).values({
+        organizationId: user.organizationId,
+        userId: user.id,
+        type: "media_asset.uploaded",
+        entityType: "media_asset",
+        entityId: current.id,
+        metadata: {
+          transport: uploadTransport,
+          sizeBytes: stored.sizeBytes,
+          source: "browser_session",
+        },
+      });
+      if (multipartSession) {
+        await tx
+          .delete(mediaUploadSessions)
+          .where(
+            and(
+              eq(mediaUploadSessions.assetId, current.id),
+              eq(mediaUploadSessions.organizationId, user.organizationId),
+              eq(mediaUploadSessions.state, "completing"),
+              eq(
+                mediaUploadSessions.providerUploadId,
+                completionClaim?.providerUploadId ?? "",
+              ),
+              eq(
+                mediaUploadSessions.updatedAt,
+                completionClaim?.updatedAt ?? new Date(0),
+              ),
+            ),
+          );
+      }
+      return sessionAssetDto(updated);
     });
-    return sessionAssetDto(updated);
-  });
+  } catch (error) {
+    await releaseMultipartCompletionClaim?.();
+    throw error;
+  }
 }
 
-export async function deleteSessionMediaAsset(
-  user: User,
-  id: string,
-) {
-  return db.transaction(async (tx) => {
+export async function deleteSessionMediaAsset(user: User, id: string) {
+  const uploadAsset = await getSessionMediaAsset(user, id);
+  assertCanManageAsset(user, uploadAsset);
+  await assertSessionMutationVisibility(user, uploadAsset);
+  const result = await db.transaction(async (tx) => {
     const [asset] = await tx
       .select()
       .from(mediaAssets)
@@ -909,6 +1967,53 @@ export async function deleteSessionMediaAsset(
       );
     }
     const now = new Date();
+    const staleBefore = new Date(
+      now.getTime() - SESSION_MULTIPART_STALE_CLAIM_MS,
+    );
+    const [session] = await tx
+      .select()
+      .from(mediaUploadSessions)
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, asset.id),
+          eq(mediaUploadSessions.organizationId, user.organizationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    let multipartSession: typeof mediaUploadSessions.$inferSelect | null = null;
+    if (session) {
+      const [claimed] = await tx
+        .update(mediaUploadSessions)
+        .set({ state: "aborting", updatedAt: now })
+        .where(
+          and(
+            eq(mediaUploadSessions.assetId, asset.id),
+            eq(mediaUploadSessions.organizationId, user.organizationId),
+            or(
+              eq(mediaUploadSessions.state, "initializing"),
+              eq(mediaUploadSessions.state, "recovering"),
+              eq(mediaUploadSessions.state, "uploading"),
+              and(
+                or(
+                  eq(mediaUploadSessions.state, "completing"),
+                  eq(mediaUploadSessions.state, "aborting"),
+                ),
+                lt(mediaUploadSessions.updatedAt, staleBefore),
+              ),
+            ),
+          ),
+        )
+        .returning();
+      if (!claimed) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "Der Multipart-Upload wird gerade verarbeitet.",
+        );
+      }
+      multipartSession = claimed;
+    }
     const [deleted] = await tx
       .update(mediaAssets)
       .set({
@@ -930,8 +2035,86 @@ export async function deleteSessionMediaAsset(
       entityId: asset.id,
       metadata: { source: "browser_session" },
     });
-    return sessionAssetDto(deleted);
+    return { asset: sessionAssetDto(deleted), multipartSession, source: asset };
   });
+  if (result.multipartSession) {
+    const configuration = getMediaStorageConfiguration();
+    let aborted = false;
+    if (
+      configuration.driver === "s3" &&
+      configuration.compatibilityMode === "versioned"
+    ) {
+      if (!result.multipartSession.providerUploadId) {
+        aborted = true;
+      } else
+        try {
+          await abortS3MultipartUpload(configuration, {
+            ...mediaAssetIdentity(result.source, "staging"),
+            uploadId: result.multipartSession.providerUploadId,
+          });
+          aborted = true;
+        } catch (error) {
+          if (
+            error instanceof MediaStorageError &&
+            error.code === "object_missing"
+          ) {
+            aborted = true;
+          } else {
+            logServerError(error, { action: "media.multipart.delete_cleanup" });
+          }
+        }
+    } else {
+      logServerError(
+        new Error(
+          "A deleted multipart upload has no versioned S3 configuration.",
+        ),
+        { action: "media.multipart.delete_cleanup" },
+      );
+    }
+    if (aborted) {
+      try {
+        await deleteStoredMediaObject(
+          mediaAssetIdentity(result.source, "staging"),
+        );
+        const cleanedAt = new Date();
+        await db.transaction(async (tx) => {
+          await tx
+            .delete(mediaUploadSessions)
+            .where(
+              and(
+                eq(mediaUploadSessions.assetId, result.source.id),
+                eq(
+                  mediaUploadSessions.organizationId,
+                  result.source.organizationId,
+                ),
+                eq(mediaUploadSessions.state, "aborting"),
+              ),
+            );
+          await tx
+            .update(mediaAssets)
+            .set({
+              quotaBytes: 0,
+              stagingDeletedAt: cleanedAt,
+              storageDeletedAt: cleanedAt,
+              multipartAbortVerifiedAt: cleanedAt,
+              updatedAt: cleanedAt,
+            })
+            .where(
+              and(
+                eq(mediaAssets.id, result.source.id),
+                eq(mediaAssets.organizationId, result.source.organizationId),
+                eq(mediaAssets.status, "deleted"),
+              ),
+            );
+        });
+      } catch (error) {
+        logServerError(error, {
+          action: "media.multipart.delete_object_cleanup",
+        });
+      }
+    }
+  }
+  return result.asset;
 }
 
 export async function getSessionMediaDownload(
@@ -992,8 +2175,7 @@ export async function getSessionMediaDownload(
           eq(customFieldValues.organizationId, user.organizationId),
           eq(
             customFieldValues.userId,
-            profileAsset.ownerUserId ??
-              "00000000-0000-0000-0000-000000000000",
+            profileAsset.ownerUserId ?? "00000000-0000-0000-0000-000000000000",
           ),
           sql`${customFieldValues.value} = to_jsonb(${profileAsset.id}::text)`,
         ),
@@ -1079,16 +2261,16 @@ export async function getSessionMediaDownload(
       .innerJoin(
         communityPublicProfileFields,
         and(
-          eq(
-            communityPublicProfileFields.organizationId,
-            users.organizationId,
-          ),
+          eq(communityPublicProfileFields.organizationId, users.organizationId),
           eq(communityPublicProfileFields.standardField, "avatar"),
         ),
       )
       .where(
         and(
-          eq(users.id, avatarAsset.ownerUserId ?? "00000000-0000-0000-0000-000000000000"),
+          eq(
+            users.id,
+            avatarAsset.ownerUserId ?? "00000000-0000-0000-0000-000000000000",
+          ),
           eq(users.organizationId, user.organizationId),
           eq(users.status, "active"),
           eq(users.avatarUrl, `/api/media-assets/${avatarAsset.id}/download`),
@@ -1174,7 +2356,10 @@ export async function getSessionMediaDownload(
       .leftJoin(
         courseCollaborators,
         and(
-          eq(courseCollaborators.organizationId, courseMediaAssets.organizationId),
+          eq(
+            courseCollaborators.organizationId,
+            courseMediaAssets.organizationId,
+          ),
           eq(courseCollaborators.courseId, courseMediaAssets.courseId),
           eq(courseCollaborators.userId, user.id),
         ),
@@ -1191,8 +2376,8 @@ export async function getSessionMediaDownload(
       const binding = bindings.find((candidate) => candidate.permission);
       courseId =
         user.role === "owner" || user.role === "admin"
-          ? bindings[0]?.courseId ?? null
-          : binding?.courseId ?? null;
+          ? (bindings[0]?.courseId ?? null)
+          : (binding?.courseId ?? null);
       authorized = canReadCourseMedia({
         role: user.role,
         uploadedByActor: courseAsset.uploadedById === user.id,

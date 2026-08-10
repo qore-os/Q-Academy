@@ -11,6 +11,7 @@ import {
   isNotNull,
   isNull,
   lte,
+  ne,
   notExists,
   or,
   sql,
@@ -24,6 +25,7 @@ import {
   customFieldDefinitions,
   dataProfileValues,
   mediaAssets,
+  mediaUploadSessions,
   platformSettings,
   submissionAttachments,
   users,
@@ -49,8 +51,16 @@ import {
   promoteStoredMediaObject,
 } from "@/lib/media/storage";
 import { getMediaStorageConfiguration } from "@/lib/server-environment";
+import {
+  abortS3MultipartUpload,
+  MediaStorageError,
+} from "@/lib/media/s3-storage";
 import { logServerError } from "@/lib/server-error-logging";
-import { enqueueDefaultMediaProcessingJobs } from "@/lib/media/processing-worker";
+import {
+  cancelUnavailableMediaProcessingJobs,
+  cleanupMediaProcessingArtifacts,
+  enqueueDefaultMediaProcessingJobs,
+} from "@/lib/media/processing-worker";
 import {
   isWebmDurationProbeMimeType,
   probeWebmDurationStream,
@@ -70,9 +80,27 @@ const UNATTACHED_PROFILE_READY_RETENTION_MS = 24 * 60 * 60_000;
 const UNATTACHED_PROFILE_FIELD_READY_RETENTION_MS = 24 * 60 * 60_000;
 const UNATTACHED_BRANDING_READY_RETENTION_MS = 24 * 60 * 60_000;
 const MAX_MAINTENANCE_BATCH_SIZE = 5;
+const MAX_QUOTA_RELEASE_BATCH_SIZE = 100;
+const FAIR_IO_PHASE_ASSET_LIMIT = 1;
+const MULTIPART_STALE_CLAIM_MS = 15 * 60_000;
 export const MEDIA_MAINTENANCE_ADVISORY_LOCK_KEY =
   "q-academy:media-maintenance:v1";
 const VERIFIED_DELETED_STATUSES = ["deleted", "quarantined", "failed"] as const;
+let mediaMaintenanceIoPhaseCursor = 0;
+const mediaMaintenanceTenantCursors = {
+  expiredUploadWithoutSession: null as string | null,
+  expiredUpload: null as string | null,
+  detachedMultipart: null as string | null,
+  storedObject: null as string | null,
+  quotaRelease: null as string | null,
+  tombstone: null as string | null,
+  unattachedSubmission: null as string | null,
+  unattachedCourse: null as string | null,
+  unattachedCommunity: null as string | null,
+  unattachedProfile: null as string | null,
+  unattachedProfileField: null as string | null,
+  unattachedBranding: null as string | null,
+};
 
 function batchSize(value: number) {
   if (!Number.isInteger(value) || value < 1) return 25;
@@ -487,22 +515,55 @@ async function processClaimedAsset(asset: MediaAsset) {
   }
 }
 
-async function expirePendingUploads(limit: number, now: Date) {
-  const expired = await db.transaction(async (tx) => {
-    const candidates = await tx
-      .select()
-      .from(mediaAssets)
-      .where(
-        and(
-          eq(mediaAssets.status, "pending"),
-          lte(mediaAssets.uploadExpiresAt, now),
+function expiredPendingUploadWithoutSessionCondition(now: Date) {
+  return and(
+    eq(mediaAssets.status, "pending"),
+    lte(mediaAssets.uploadExpiresAt, now),
+    notExists(
+      db
+        .select({ assetId: mediaUploadSessions.assetId })
+        .from(mediaUploadSessions)
+        .where(
+          and(
+            eq(mediaUploadSessions.assetId, mediaAssets.id),
+            eq(
+              mediaUploadSessions.organizationId,
+              mediaAssets.organizationId,
+            ),
+          ),
         ),
+    ),
+  );
+}
+
+async function expirePendingUploadsWithoutSessions(limit: number, now: Date) {
+  const tenantCursor =
+    mediaMaintenanceTenantCursors.expiredUploadWithoutSession;
+  return db.transaction(async (tx) => {
+    const candidates = await tx
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
+      .from(mediaAssets)
+      .where(expiredPendingUploadWithoutSessionCondition(now))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.uploadExpiresAt),
+        asc(mediaAssets.id),
       )
-      .orderBy(asc(mediaAssets.uploadExpiresAt))
       .limit(batchSize(limit))
-      .for("update", { skipLocked: true });
-    if (!candidates.length) return [];
-    await tx
+      .for("update", { of: mediaAssets, skipLocked: true });
+    if (!candidates.length) return 0;
+    mediaMaintenanceTenantCursors.expiredUploadWithoutSession =
+      candidates[candidates.length - 1]!.organizationId;
+
+    const expired = await tx
       .update(mediaAssets)
       .set({
         status: "deleted",
@@ -511,14 +572,407 @@ async function expirePendingUploads(limit: number, now: Date) {
         updatedAt: now,
       })
       .where(
-        inArray(
-          mediaAssets.id,
-          candidates.map(({ id }) => id),
+        and(
+          inArray(
+            mediaAssets.id,
+            candidates.map(({ id }) => id),
+          ),
+          expiredPendingUploadWithoutSessionCondition(now),
         ),
-      );
-    return candidates;
+      )
+      .returning({ id: mediaAssets.id });
+    return expired.length;
   });
-  return expired.length;
+}
+
+async function expirePendingUploads(
+  budget: MediaMaintenanceBudget,
+  limit: number,
+  now: Date,
+) {
+  const tenantCursor = mediaMaintenanceTenantCursors.expiredUpload;
+  const candidates = await db
+    .select({ asset: mediaAssets, session: mediaUploadSessions })
+    .from(mediaAssets)
+    .innerJoin(
+      mediaUploadSessions,
+      and(
+        eq(mediaUploadSessions.assetId, mediaAssets.id),
+        eq(mediaUploadSessions.organizationId, mediaAssets.organizationId),
+      ),
+    )
+    .where(
+      and(
+        eq(mediaAssets.status, "pending"),
+        lte(mediaAssets.uploadExpiresAt, now),
+      ),
+    )
+    .orderBy(
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(mediaAssets.organizationId),
+      asc(mediaAssets.uploadExpiresAt),
+      asc(mediaAssets.id),
+    )
+    .limit(Math.min(batchSize(limit), FAIR_IO_PHASE_ASSET_LIMIT));
+  if (!candidates.length) return 0;
+  mediaMaintenanceTenantCursors.expiredUpload =
+    candidates[candidates.length - 1]!.asset.organizationId;
+
+  let expired = 0;
+  for (const candidate of candidates) {
+    const result = await cleanupMultipartSession(
+      candidate,
+      now,
+      "media.multipart.expire",
+      budget,
+      "expired",
+    );
+    if (result.assetExpired) expired += 1;
+  }
+  return expired;
+}
+
+type MultipartCleanupCandidate = Readonly<{
+  asset: MediaAsset;
+  session: typeof mediaUploadSessions.$inferSelect;
+}>;
+
+type MultipartCleanupReason = "detached" | "expired";
+
+type MultipartCleanupClaim = Readonly<{
+  asset: MediaAsset;
+  session: typeof mediaUploadSessions.$inferSelect;
+  previousState: typeof mediaUploadSessions.$inferSelect.state;
+  previousUpdatedAt: Date;
+}>;
+
+function sameNullableValue(left: string | null, right: string | null) {
+  return left === right;
+}
+
+function sameInstant(left: Date, right: Date) {
+  return left.getTime() === right.getTime();
+}
+
+function multipartSessionMatchesSnapshot(
+  current: typeof mediaUploadSessions.$inferSelect,
+  snapshot: typeof mediaUploadSessions.$inferSelect,
+) {
+  return (
+    current.initializationToken === snapshot.initializationToken &&
+    sameNullableValue(current.providerUploadId, snapshot.providerUploadId) &&
+    current.state === snapshot.state &&
+    current.partSizeBytes === snapshot.partSizeBytes &&
+    current.expectedPartCount === snapshot.expectedPartCount &&
+    sameInstant(current.expiresAt, snapshot.expiresAt) &&
+    sameInstant(current.uploadDeadlineAt, snapshot.uploadDeadlineAt) &&
+    sameInstant(current.updatedAt, snapshot.updatedAt)
+  );
+}
+
+function multipartSessionCanBeClaimed(
+  assetStatus: MediaAsset["status"],
+  session: typeof mediaUploadSessions.$inferSelect,
+  now: Date,
+) {
+  if (session.state === "uploading") return true;
+  const staleBefore = now.getTime() - MULTIPART_STALE_CLAIM_MS;
+  if (session.state === "initializing" || session.state === "recovering") {
+    return (
+      assetStatus !== "pending" || session.updatedAt.getTime() <= staleBefore
+    );
+  }
+  return session.updatedAt.getTime() <= staleBefore;
+}
+
+async function claimMultipartSessionForCleanup(
+  candidate: MultipartCleanupCandidate,
+  now: Date,
+  reason: MultipartCleanupReason,
+  budget: MediaMaintenanceBudget,
+) {
+  if (candidate.session.providerUploadId && !budget.canStartIoAsset()) {
+    return null;
+  }
+  return db.transaction(async (tx) => {
+    const [asset] = await tx
+      .select()
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, candidate.asset.id),
+          eq(mediaAssets.organizationId, candidate.asset.organizationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (
+      !asset ||
+      asset.status !== candidate.asset.status ||
+      !sameInstant(asset.uploadExpiresAt, candidate.asset.uploadExpiresAt) ||
+      (reason === "expired" &&
+        (asset.status !== "pending" ||
+          asset.uploadExpiresAt.getTime() > now.getTime())) ||
+      (reason === "detached" && asset.status === "pending")
+    ) {
+      return null;
+    }
+
+    const [session] = await tx
+      .select()
+      .from(mediaUploadSessions)
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, asset.id),
+          eq(mediaUploadSessions.organizationId, asset.organizationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (
+      !session ||
+      !multipartSessionMatchesSnapshot(session, candidate.session) ||
+      (reason === "expired" &&
+        (session.expiresAt.getTime() > now.getTime() ||
+          session.uploadDeadlineAt.getTime() > now.getTime())) ||
+      !multipartSessionCanBeClaimed(asset.status, session, now)
+    ) {
+      return null;
+    }
+
+    const claimedAt = new Date();
+    const providerUploadCondition = session.providerUploadId
+      ? eq(mediaUploadSessions.providerUploadId, session.providerUploadId)
+      : isNull(mediaUploadSessions.providerUploadId);
+    const [claimed] = await tx
+      .update(mediaUploadSessions)
+      .set({ state: "aborting", updatedAt: claimedAt })
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, session.assetId),
+          eq(mediaUploadSessions.organizationId, session.organizationId),
+          eq(
+            mediaUploadSessions.initializationToken,
+            session.initializationToken,
+          ),
+          providerUploadCondition,
+          eq(mediaUploadSessions.state, session.state),
+          eq(mediaUploadSessions.expiresAt, session.expiresAt),
+          eq(mediaUploadSessions.uploadDeadlineAt, session.uploadDeadlineAt),
+          eq(mediaUploadSessions.updatedAt, session.updatedAt),
+        ),
+      )
+      .returning();
+    return claimed
+      ? ({
+          asset,
+          session: claimed,
+          previousState: session.state,
+          previousUpdatedAt: session.updatedAt,
+        } satisfies MultipartCleanupClaim)
+      : null;
+  });
+}
+
+function multipartCleanupClaimCondition(claim: MultipartCleanupClaim) {
+  return and(
+    eq(mediaUploadSessions.assetId, claim.session.assetId),
+    eq(mediaUploadSessions.organizationId, claim.session.organizationId),
+    eq(
+      mediaUploadSessions.initializationToken,
+      claim.session.initializationToken,
+    ),
+    claim.session.providerUploadId
+      ? eq(mediaUploadSessions.providerUploadId, claim.session.providerUploadId)
+      : isNull(mediaUploadSessions.providerUploadId),
+    eq(mediaUploadSessions.state, "aborting"),
+    eq(mediaUploadSessions.expiresAt, claim.session.expiresAt),
+    eq(mediaUploadSessions.uploadDeadlineAt, claim.session.uploadDeadlineAt),
+    eq(mediaUploadSessions.updatedAt, claim.session.updatedAt),
+  );
+}
+
+async function restoreMultipartCleanupClaim(claim: MultipartCleanupClaim) {
+  await db
+    .update(mediaUploadSessions)
+    .set({
+      state: claim.previousState,
+      updatedAt: claim.previousUpdatedAt,
+    })
+    .where(multipartCleanupClaimCondition(claim));
+}
+
+async function finalizeMultipartCleanupClaim(
+  claim: MultipartCleanupClaim,
+  now: Date,
+  reason: MultipartCleanupReason,
+) {
+  return db.transaction(async (tx) => {
+    const [asset] = await tx
+      .select()
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, claim.asset.id),
+          eq(mediaAssets.organizationId, claim.asset.organizationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!asset) return { sessionRemoved: false, assetExpired: false };
+    const [session] = await tx
+      .select()
+      .from(mediaUploadSessions)
+      .where(
+        and(
+          eq(mediaUploadSessions.assetId, claim.session.assetId),
+          eq(mediaUploadSessions.organizationId, claim.session.organizationId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!session || !multipartSessionMatchesSnapshot(session, claim.session)) {
+      return { sessionRemoved: false, assetExpired: false };
+    }
+    const [removed] = await tx
+      .delete(mediaUploadSessions)
+      .where(multipartCleanupClaimCondition(claim))
+      .returning({ assetId: mediaUploadSessions.assetId });
+    if (!removed) return { sessionRemoved: false, assetExpired: false };
+
+    if (
+      reason !== "expired" ||
+      asset.status !== "pending" ||
+      !sameInstant(asset.uploadExpiresAt, claim.asset.uploadExpiresAt) ||
+      asset.uploadExpiresAt.getTime() > now.getTime()
+    ) {
+      return { sessionRemoved: true, assetExpired: false };
+    }
+    const [expired] = await tx
+      .update(mediaAssets)
+      .set({
+        status: "deleted",
+        deletedAt: now,
+        scanFailureCode: "upload_expired",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(mediaAssets.id, asset.id),
+          eq(mediaAssets.organizationId, asset.organizationId),
+          eq(mediaAssets.status, "pending"),
+          eq(mediaAssets.uploadExpiresAt, asset.uploadExpiresAt),
+        ),
+      )
+      .returning({ id: mediaAssets.id });
+    return { sessionRemoved: true, assetExpired: Boolean(expired) };
+  });
+}
+
+async function cleanupMultipartSession(
+  candidate: MultipartCleanupCandidate,
+  now: Date,
+  action: string,
+  budget: MediaMaintenanceBudget,
+  reason: MultipartCleanupReason,
+) {
+  const claimed = await claimMultipartSessionForCleanup(
+    candidate,
+    now,
+    reason,
+    budget,
+  );
+  if (!claimed) return { sessionRemoved: false, assetExpired: false };
+
+  if (!claimed.session.providerUploadId) {
+    return finalizeMultipartCleanupClaim(claimed, now, reason);
+  }
+  const configuration = getMediaStorageConfiguration();
+  if (
+    configuration.driver !== "s3" ||
+    configuration.compatibilityMode !== "versioned"
+  ) {
+    await restoreMultipartCleanupClaim(claimed);
+    logServerError(
+      new Error("A multipart upload has no versioned S3 configuration."),
+      { action },
+    );
+    return { sessionRemoved: false, assetExpired: false };
+  }
+  if (!budget.tryClaimIoAsset()) {
+    await restoreMultipartCleanupClaim(claimed);
+    return { sessionRemoved: false, assetExpired: false };
+  }
+  try {
+    await budget.runAbortable((signal) =>
+      abortS3MultipartUpload(
+        configuration,
+        {
+          ...mediaAssetIdentity(claimed.asset, "staging"),
+          uploadId: claimed.session.providerUploadId!,
+        },
+        signal,
+      ),
+    );
+  } catch (error) {
+    if (!(
+      error instanceof MediaStorageError && error.code === "object_missing"
+    )) {
+      logServerError(error, { action });
+      return { sessionRemoved: false, assetExpired: false };
+    }
+  }
+  return finalizeMultipartCleanupClaim(claimed, now, reason);
+}
+
+async function cleanupDetachedMultipartUploads(
+  budget: MediaMaintenanceBudget,
+  limit: number,
+  now: Date,
+) {
+  const tenantCursor = mediaMaintenanceTenantCursors.detachedMultipart;
+  const sessions = await db
+    .select({ asset: mediaAssets, session: mediaUploadSessions })
+    .from(mediaUploadSessions)
+    .innerJoin(
+      mediaAssets,
+      and(
+        eq(mediaAssets.id, mediaUploadSessions.assetId),
+        eq(mediaAssets.organizationId, mediaUploadSessions.organizationId),
+      ),
+    )
+    .where(ne(mediaAssets.status, "pending"))
+    .orderBy(
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${mediaUploadSessions.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(mediaUploadSessions.organizationId),
+      asc(mediaUploadSessions.updatedAt),
+      asc(mediaUploadSessions.assetId),
+    )
+    .limit(Math.min(batchSize(limit), FAIR_IO_PHASE_ASSET_LIMIT));
+  if (sessions.length) {
+    mediaMaintenanceTenantCursors.detachedMultipart =
+      sessions[sessions.length - 1]!.session.organizationId;
+  }
+  let cleaned = 0;
+  for (const candidate of sessions) {
+    const result = await cleanupMultipartSession(
+      candidate,
+      now,
+      "media.multipart.detached_cleanup",
+      budget,
+      "detached",
+    );
+    if (result.sessionRemoved) cleaned += 1;
+  }
+  return cleaned;
 }
 
 function unattachedSubmissionReadyCondition(cutoff: Date) {
@@ -548,12 +1002,25 @@ async function expireUnattachedSubmissionAssets(limit: number, now: Date) {
   const cutoff = new Date(
     now.getTime() - UNATTACHED_SUBMISSION_READY_RETENTION_MS,
   );
+  const tenantCursor = mediaMaintenanceTenantCursors.unattachedSubmission;
   return db.transaction(async (tx) => {
     const candidates = await tx
-      .select({ id: mediaAssets.id })
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
       .from(mediaAssets)
       .where(unattachedSubmissionReadyCondition(cutoff))
-      .orderBy(asc(mediaAssets.scanCompletedAt), asc(mediaAssets.id))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.scanCompletedAt),
+        asc(mediaAssets.id),
+      )
       .limit(batchSize(limit))
       .for("update", { of: mediaAssets, skipLocked: true });
     if (!candidates.length) return 0;
@@ -578,6 +1045,8 @@ async function expireUnattachedSubmissionAssets(limit: number, now: Date) {
         ),
       )
       .returning({ id: mediaAssets.id });
+    mediaMaintenanceTenantCursors.unattachedSubmission =
+      candidates[candidates.length - 1]!.organizationId;
     return expired.length;
   });
 }
@@ -604,12 +1073,25 @@ function unattachedCourseReadyCondition(cutoff: Date) {
 
 async function expireUnattachedCourseAssets(limit: number, now: Date) {
   const cutoff = new Date(now.getTime() - UNATTACHED_COURSE_READY_RETENTION_MS);
+  const tenantCursor = mediaMaintenanceTenantCursors.unattachedCourse;
   return db.transaction(async (tx) => {
     const candidates = await tx
-      .select({ id: mediaAssets.id })
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
       .from(mediaAssets)
       .where(unattachedCourseReadyCondition(cutoff))
-      .orderBy(asc(mediaAssets.scanCompletedAt), asc(mediaAssets.id))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.scanCompletedAt),
+        asc(mediaAssets.id),
+      )
       .limit(batchSize(limit))
       .for("update", { of: mediaAssets, skipLocked: true });
     if (!candidates.length) return 0;
@@ -633,6 +1115,8 @@ async function expireUnattachedCourseAssets(limit: number, now: Date) {
         ),
       )
       .returning({ id: mediaAssets.id });
+    mediaMaintenanceTenantCursors.unattachedCourse =
+      candidates[candidates.length - 1]!.organizationId;
     return expired.length;
   });
 }
@@ -664,12 +1148,25 @@ async function expireUnattachedCommunityAssets(limit: number, now: Date) {
   const cutoff = new Date(
     now.getTime() - UNATTACHED_COMMUNITY_READY_RETENTION_MS,
   );
+  const tenantCursor = mediaMaintenanceTenantCursors.unattachedCommunity;
   return db.transaction(async (tx) => {
     const candidates = await tx
-      .select({ id: mediaAssets.id })
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
       .from(mediaAssets)
       .where(unattachedCommunityReadyCondition(cutoff))
-      .orderBy(asc(mediaAssets.scanCompletedAt), asc(mediaAssets.id))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.scanCompletedAt),
+        asc(mediaAssets.id),
+      )
       .limit(batchSize(limit))
       .for("update", { of: mediaAssets, skipLocked: true });
     if (!candidates.length) return 0;
@@ -693,6 +1190,8 @@ async function expireUnattachedCommunityAssets(limit: number, now: Date) {
         ),
       )
       .returning({ id: mediaAssets.id });
+    mediaMaintenanceTenantCursors.unattachedCommunity =
+      candidates[candidates.length - 1]!.organizationId;
     return expired.length;
   });
 }
@@ -721,12 +1220,25 @@ async function expireUnattachedProfileAssets(limit: number, now: Date) {
   const cutoff = new Date(
     now.getTime() - UNATTACHED_PROFILE_READY_RETENTION_MS,
   );
+  const tenantCursor = mediaMaintenanceTenantCursors.unattachedProfile;
   return db.transaction(async (tx) => {
     const candidates = await tx
-      .select({ id: mediaAssets.id })
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
       .from(mediaAssets)
       .where(unattachedProfileReadyCondition(cutoff))
-      .orderBy(asc(mediaAssets.scanCompletedAt), asc(mediaAssets.id))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.scanCompletedAt),
+        asc(mediaAssets.id),
+      )
       .limit(batchSize(limit))
       .for("update", { of: mediaAssets, skipLocked: true });
     if (!candidates.length) return 0;
@@ -750,6 +1262,8 @@ async function expireUnattachedProfileAssets(limit: number, now: Date) {
         ),
       )
       .returning({ id: mediaAssets.id });
+    mediaMaintenanceTenantCursors.unattachedProfile =
+      candidates[candidates.length - 1]!.organizationId;
     return expired.length;
   });
 }
@@ -815,12 +1329,25 @@ async function expireUnattachedProfileFieldAssets(limit: number, now: Date) {
   const cutoff = new Date(
     now.getTime() - UNATTACHED_PROFILE_FIELD_READY_RETENTION_MS,
   );
+  const tenantCursor = mediaMaintenanceTenantCursors.unattachedProfileField;
   return db.transaction(async (tx) => {
     const candidates = await tx
-      .select({ id: mediaAssets.id })
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
       .from(mediaAssets)
       .where(unattachedProfileFieldReadyCondition(cutoff))
-      .orderBy(asc(mediaAssets.scanCompletedAt), asc(mediaAssets.id))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.scanCompletedAt),
+        asc(mediaAssets.id),
+      )
       .limit(batchSize(limit))
       .for("update", { of: mediaAssets, skipLocked: true });
     if (!candidates.length) return 0;
@@ -844,6 +1371,8 @@ async function expireUnattachedProfileFieldAssets(limit: number, now: Date) {
         ),
       )
       .returning({ id: mediaAssets.id });
+    mediaMaintenanceTenantCursors.unattachedProfileField =
+      candidates[candidates.length - 1]!.organizationId;
     return expired.length;
   });
 }
@@ -880,12 +1409,25 @@ async function expireUnattachedBrandingAssets(limit: number, now: Date) {
   const cutoff = new Date(
     now.getTime() - UNATTACHED_BRANDING_READY_RETENTION_MS,
   );
+  const tenantCursor = mediaMaintenanceTenantCursors.unattachedBranding;
   return db.transaction(async (tx) => {
     const candidates = await tx
-      .select({ id: mediaAssets.id })
+      .select({
+        id: mediaAssets.id,
+        organizationId: mediaAssets.organizationId,
+      })
       .from(mediaAssets)
       .where(unattachedBrandingReadyCondition(cutoff))
-      .orderBy(asc(mediaAssets.scanCompletedAt), asc(mediaAssets.id))
+      .orderBy(
+        ...(tenantCursor
+          ? [
+              sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+            ]
+          : []),
+        asc(mediaAssets.organizationId),
+        asc(mediaAssets.scanCompletedAt),
+        asc(mediaAssets.id),
+      )
       .limit(batchSize(limit))
       .for("update", { of: mediaAssets, skipLocked: true });
     if (!candidates.length) return 0;
@@ -909,12 +1451,99 @@ async function expireUnattachedBrandingAssets(limit: number, now: Date) {
         ),
       )
       .returning({ id: mediaAssets.id });
+    mediaMaintenanceTenantCursors.unattachedBranding =
+      candidates[candidates.length - 1]!.organizationId;
     return expired.length;
   });
 }
 
-async function cleanupStoredObjects(budget: MediaMaintenanceBudget, now: Date) {
+function releasableMediaQuotaCondition() {
+  return and(
+    inArray(mediaAssets.status, VERIFIED_DELETED_STATUSES),
+    gt(mediaAssets.quotaBytes, 0),
+    isNotNull(mediaAssets.storageDeletedAt),
+    isNotNull(mediaAssets.stagingDeletedAt),
+    or(
+      gte(
+        mediaAssets.stagingDeletedAt,
+        sql`${mediaAssets.uploadExpiresAt} + interval '1 hour'`,
+      ),
+      sql`(
+        ${mediaAssets.status} = 'deleted'
+        and ${mediaAssets.deletedAt} is not null
+        and ${mediaAssets.multipartAbortVerifiedAt} is not null
+        and ${mediaAssets.multipartAbortVerifiedAt} >= ${mediaAssets.deletedAt}
+        and ${mediaAssets.storageDeletedAt} >= ${mediaAssets.multipartAbortVerifiedAt}
+        and ${mediaAssets.stagingDeletedAt} >= ${mediaAssets.multipartAbortVerifiedAt}
+      )`,
+    ),
+  );
+}
+
+async function releaseVerifiedDeletedQuota(now: Date) {
+  const rankedReleasable = db
+    .select({
+      id: mediaAssets.id,
+      organizationId: mediaAssets.organizationId,
+      updatedAt: mediaAssets.updatedAt,
+      tenantRank:
+        sql<number>`row_number() over (partition by ${mediaAssets.organizationId} order by ${mediaAssets.updatedAt}, ${mediaAssets.id})`.as(
+          "tenant_rank",
+        ),
+    })
+    .from(mediaAssets)
+    .where(releasableMediaQuotaCondition())
+    .as("ranked_releasable_media_quota");
+  const tenantCursor = mediaMaintenanceTenantCursors.quotaRelease;
+  const releasable = await db
+    .select({
+      id: rankedReleasable.id,
+      organizationId: rankedReleasable.organizationId,
+    })
+    .from(rankedReleasable)
+    .orderBy(
+      asc(rankedReleasable.tenantRank),
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${rankedReleasable.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(rankedReleasable.organizationId),
+      asc(rankedReleasable.updatedAt),
+      asc(rankedReleasable.id),
+    )
+    .limit(MAX_QUOTA_RELEASE_BATCH_SIZE);
+  if (!releasable.length) return 0;
+  mediaMaintenanceTenantCursors.quotaRelease =
+    releasable[releasable.length - 1]!.organizationId;
+  const released = await db
+    .update(mediaAssets)
+    .set({ quotaBytes: 0, updatedAt: now })
+    .where(
+      and(
+        inArray(
+          mediaAssets.id,
+          releasable.map(({ id }) => id),
+        ),
+        releasableMediaQuotaCondition(),
+      ),
+    )
+    .returning({ id: mediaAssets.id });
+  return released.length;
+}
+
+async function cleanupStoredObjects(
+  budget: MediaMaintenanceBudget,
+  now: Date,
+  limit = budget.remainingIoAssets,
+) {
   if (!budget.canStartIoAsset()) return 0;
+  const tenantCursor = mediaMaintenanceTenantCursors.storedObject;
+  const boundedLimit = Math.min(
+    Math.max(Number.isInteger(limit) ? limit : 1, 1),
+    FAIR_IO_PHASE_ASSET_LIMIT,
+    budget.remainingIoAssets,
+  );
   const candidates = await db
     .select()
     .from(mediaAssets)
@@ -954,8 +1583,21 @@ async function cleanupStoredObjects(budget: MediaMaintenanceBudget, now: Date) {
         ),
       ),
     )
-    .orderBy(asc(mediaAssets.uploadExpiresAt))
-    .limit(budget.remainingIoAssets);
+    .orderBy(
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(mediaAssets.organizationId),
+      asc(mediaAssets.uploadExpiresAt),
+      asc(mediaAssets.id),
+    )
+    .limit(boundedLimit);
+  if (candidates.length) {
+    mediaMaintenanceTenantCursors.storedObject =
+      candidates[candidates.length - 1]!.organizationId;
+  }
   let cleaned = 0;
   for (const asset of candidates) {
     if (!budget.canStartPhase()) break;
@@ -984,42 +1626,21 @@ async function cleanupStoredObjects(budget: MediaMaintenanceBudget, now: Date) {
       : true;
     if (staging && ready) cleaned += 1;
   }
-  if (!budget.canStartPhase()) return cleaned;
-  const releasable = await db
-    .select({ id: mediaAssets.id })
-    .from(mediaAssets)
-    .where(
-      and(
-        inArray(mediaAssets.status, VERIFIED_DELETED_STATUSES),
-        gt(mediaAssets.quotaBytes, 0),
-        isNotNull(mediaAssets.storageDeletedAt),
-        isNotNull(mediaAssets.stagingDeletedAt),
-        gte(
-          mediaAssets.stagingDeletedAt,
-          sql`${mediaAssets.uploadExpiresAt} + interval '1 hour'`,
-        ),
-      ),
-    )
-    .limit(MAX_MAINTENANCE_BATCH_SIZE);
-  if (releasable.length) {
-    await db
-      .update(mediaAssets)
-      .set({ quotaBytes: 0, updatedAt: new Date() })
-      .where(
-        inArray(
-          mediaAssets.id,
-          releasable.map(({ id }) => id),
-        ),
-      );
-  }
   return cleaned;
 }
 
 async function purgeVerifiedTombstones(
   budget: MediaMaintenanceBudget,
   now: Date,
+  limit = budget.remainingIoAssets,
 ) {
   if (!budget.canStartIoAsset()) return 0;
+  const tenantCursor = mediaMaintenanceTenantCursors.tombstone;
+  const boundedLimit = Math.min(
+    Math.max(Number.isInteger(limit) ? limit : 1, 1),
+    FAIR_IO_PHASE_ASSET_LIMIT,
+    budget.remainingIoAssets,
+  );
   const cutoff = new Date(now.getTime() - TOMBSTONE_RETENTION_MS);
   const candidates = await db
     .select()
@@ -1041,8 +1662,21 @@ async function purgeVerifiedTombstones(
         isNotNull(mediaAssets.stagingDeletedAt),
       ),
     )
-    .orderBy(asc(mediaAssets.createdAt))
-    .limit(budget.remainingIoAssets);
+    .orderBy(
+      ...(tenantCursor
+        ? [
+            sql<number>`case when ${mediaAssets.organizationId}::text > ${tenantCursor} then 0 else 1 end`,
+          ]
+        : []),
+      asc(mediaAssets.organizationId),
+      asc(mediaAssets.createdAt),
+      asc(mediaAssets.id),
+    )
+    .limit(boundedLimit);
+  if (candidates.length) {
+    mediaMaintenanceTenantCursors.tombstone =
+      candidates[candidates.length - 1]!.organizationId;
+  }
   let purged = 0;
   for (const asset of candidates) {
     if (!budget.tryClaimIoAsset()) break;
@@ -1119,6 +1753,10 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
     if (!lock?.acquired) {
       return {
         skipped: true as const,
+        cleanedMultipartSessions: 0,
+        cancelledProcessingJobs: 0,
+        releasedQuotaAssets: 0,
+        removedProcessingArtifacts: 0,
         expired: 0,
         expiredUnattachedSubmissionAssets: 0,
         expiredUnattachedCourseAssets: 0,
@@ -1134,6 +1772,10 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
     lockAcquired = true;
     const result = {
       skipped: false as const,
+      cleanedMultipartSessions: 0,
+      cancelledProcessingJobs: 0,
+      releasedQuotaAssets: 0,
+      removedProcessingArtifacts: 0,
       expired: 0,
       expiredUnattachedSubmissionAssets: 0,
       expiredUnattachedCourseAssets: 0,
@@ -1150,13 +1792,23 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
         ioLimit: limit,
         release: releaseLock,
         work: async (budget) => {
-          // Purge old verified tombstones before cleanup can select them again.
+          // Pure database releases run before any provider backlog can consume
+          // the shared I/O allowance.
           if (budget.canStartPhase()) {
-            result.purged = await purgeVerifiedTombstones(budget, new Date());
+            result.releasedQuotaAssets = await releaseVerifiedDeletedQuota(
+              new Date(),
+            );
+          }
+          if (budget.canStartPhase()) {
+            result.cancelledProcessingJobs =
+              await cancelUnavailableMediaProcessingJobs();
           }
           const now = new Date();
           if (budget.canStartPhase()) {
-            result.expired = await expirePendingUploads(limit, now);
+            result.expired = await expirePendingUploadsWithoutSessions(
+              limit,
+              now,
+            );
           }
           if (budget.canStartPhase()) {
             result.expiredUnattachedSubmissionAssets =
@@ -1180,8 +1832,64 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
             result.expiredUnattachedBrandingAssets =
               await expireUnattachedBrandingAssets(limit, now);
           }
-          if (budget.canStartIoAsset()) {
-            result.cleaned = await cleanupStoredObjects(budget, new Date());
+
+          const fairIoPhases = [
+            async () => {
+              result.cleaned += await cleanupStoredObjects(
+                budget,
+                new Date(),
+                FAIR_IO_PHASE_ASSET_LIMIT,
+              );
+            },
+            async () => {
+              result.removedProcessingArtifacts +=
+                await cleanupMediaProcessingArtifacts(
+                  budget,
+                  FAIR_IO_PHASE_ASSET_LIMIT,
+                );
+            },
+            async () => {
+              result.expired += await expirePendingUploads(
+                budget,
+                FAIR_IO_PHASE_ASSET_LIMIT,
+                now,
+              );
+            },
+            async () => {
+              result.cleanedMultipartSessions +=
+                await cleanupDetachedMultipartUploads(
+                  budget,
+                  FAIR_IO_PHASE_ASSET_LIMIT,
+                  now,
+                );
+            },
+            async () => {
+              result.purged += await purgeVerifiedTombstones(
+                budget,
+                new Date(),
+                FAIR_IO_PHASE_ASSET_LIMIT,
+              );
+            },
+          ] as const;
+          let firstIoPhase =
+            mediaMaintenanceIoPhaseCursor % fairIoPhases.length;
+          mediaMaintenanceIoPhaseCursor =
+            (mediaMaintenanceIoPhaseCursor + 1) % fairIoPhases.length;
+          while (budget.canStartIoAsset()) {
+            const remainingBeforeCycle = budget.remainingIoAssets;
+            for (let offset = 0; offset < fairIoPhases.length; offset += 1) {
+              if (!budget.canStartPhase()) break;
+              await fairIoPhases[
+                (firstIoPhase + offset) % fairIoPhases.length
+              ]();
+            }
+            if (budget.remainingIoAssets === remainingBeforeCycle) break;
+            firstIoPhase = (firstIoPhase + 1) % fairIoPhases.length;
+          }
+          if (budget.canStartPhase()) {
+            result.releasedQuotaAssets += await releaseVerifiedDeletedQuota(
+              new Date(),
+            );
           }
         },
       });

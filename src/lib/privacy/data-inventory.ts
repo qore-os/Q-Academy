@@ -2075,6 +2075,29 @@ export const PRIVACY_DATA_INVENTORY = {
     ),
     legalHold(["media"], "Binary objects and their safe metadata are governed by media holds."),
   ),
+  media_upload_sessions: table(
+    "media_upload_sessions",
+    relation(
+      "indirect",
+      ["asset_id"],
+      ["media_assets"],
+      "asset_id resolves the owner or uploader through the associated media asset; the remaining fields are transient upload control state.",
+    ),
+    exportPolicy(
+      "internal_only",
+      "Do not export multipart provider identities or initialization tokens; subject-facing exports use the associated media asset projection.",
+      { excludedColumns: ["initialization_token", "provider_upload_id"] },
+    ),
+    erasurePolicy(
+      "cascade_delete",
+      ["parent_erasure"],
+      "Remove the transient multipart session with its media asset or when the upload expires or is cancelled.",
+    ),
+    legalHold(
+      [],
+      "Multipart upload sessions are transient transport control state and are not retained as legal evidence.",
+    ),
+  ),
   media_asset_derivatives: table(
     "media_asset_derivatives",
     relation(

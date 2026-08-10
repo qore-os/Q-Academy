@@ -20,6 +20,10 @@ import {
 } from "./s3-object-integrity";
 import { createS3NodeHttpHandler } from "./s3-operation-timeout";
 import { createStratoPresignedPost } from "./s3-presigned-post";
+import {
+  normalizeS3BrowserUploadOrigins,
+  S3BrowserUploadOriginInventoryError,
+} from "./s3-browser-upload-origins";
 import type { S3MediaStorageConfiguration } from "./storage-configuration";
 
 export const STRATO_COMPATIBILITY_CANARY_ROOT =
@@ -167,25 +171,30 @@ async function expectAnonymousRequestRejected(input: {
 
 function assertCorsContract(
   rules: GetBucketCorsOutput,
-  expectedOrigin: string,
+  expectedOrigins: readonly string[],
   canaryPrefix: string,
 ) {
   const corsRules = rules.CORSRules;
-  const matches = corsRules?.some((rule) => {
-    const origins = new Set(rule.AllowedOrigins ?? []);
-    const methods = new Set(rule.AllowedMethods ?? []);
-    const exposedHeaders = new Set(
-      (rule.ExposeHeaders ?? []).map((header) => header.toLowerCase()),
-    );
-    return (
-      origins.has(expectedOrigin) &&
-      !origins.has("*") &&
-      methods.has("GET") &&
-      methods.has("HEAD") &&
-      methods.has("POST") &&
-      exposedHeaders.has("etag")
-    );
-  });
+  const hasWildcardOrigin = corsRules?.some((rule) =>
+    (rule.AllowedOrigins ?? []).some((origin) => origin.includes("*")),
+  );
+  const matches = !hasWildcardOrigin && expectedOrigins.every((expectedOrigin) =>
+    corsRules?.some((rule) => {
+      const origins = new Set(rule.AllowedOrigins ?? []);
+      const methods = new Set(rule.AllowedMethods ?? []);
+      const exposedHeaders = new Set(
+        (rule.ExposeHeaders ?? []).map((header) => header.toLowerCase()),
+      );
+      return (
+        origins.has(expectedOrigin) &&
+        !origins.has("*") &&
+        methods.has("GET") &&
+        methods.has("HEAD") &&
+        methods.has("POST") &&
+        exposedHeaders.has("etag")
+      );
+    }),
+  );
   if (!matches) {
     throw new StratoS3CompatibilityError(
       "cors_contract_invalid",
@@ -219,7 +228,7 @@ async function expectMissing(client: S3Client, bucket: string, key: string) {
 export async function runStratoS3CompatibilityPreflight(input: {
   configuration: S3MediaStorageConfiguration;
   confirmBucket: string;
-  expectedOrigin: string;
+  expectedOrigins: readonly string[];
 }) {
   const { configuration } = input;
   if (input.confirmBucket !== configuration.bucket) {
@@ -239,22 +248,17 @@ export async function runStratoS3CompatibilityPreflight(input: {
       "The explicit STRATO HiDrive compatibility configuration is invalid.",
     );
   }
-  let expectedOrigin: string;
+  let expectedOrigins: readonly string[];
   try {
-    const parsed = new URL(input.expectedOrigin);
-    if (
-      parsed.protocol !== "https:" ||
-      parsed.origin !== input.expectedOrigin
-    ) {
-      throw new Error("invalid_origin");
-    }
-    expectedOrigin = parsed.origin;
-  } catch {
+    expectedOrigins = normalizeS3BrowserUploadOrigins(input.expectedOrigins);
+  } catch (error) {
+    if (!(error instanceof S3BrowserUploadOriginInventoryError)) throw error;
     throw new StratoS3CompatibilityError(
       "invalid_configuration",
-      "The STRATO browser origin must be an exact HTTPS origin.",
+      "The STRATO browser origin inventory is invalid.",
     );
   }
+  const expectedOrigin = expectedOrigins[0]!;
 
   const client = new S3Client({
     endpoint: configuration.endpoint,
@@ -271,6 +275,11 @@ export async function runStratoS3CompatibilityPreflight(input: {
   const canaryPrefix = `${STRATO_COMPATIBILITY_CANARY_ROOT}/${randomUUID()}`;
   const sourceKey = `${canaryPrefix}/source.bin`;
   const browserPostKey = `${canaryPrefix}/browser-post.bin`;
+  const browserPostOriginKeys = expectedOrigins.map((_, index) =>
+    index === 0
+      ? browserPostKey
+      : `${canaryPrefix}/browser-post-origin-${index + 1}.bin`,
+  );
   const browserPostWrongKeySignedKey = `${canaryPrefix}/browser-post-wrong-key-signed.bin`;
   const browserPostWrongKeyTargetKey = `${canaryPrefix}/browser-post-wrong-key-target.bin`;
   const browserPostWrongSizeKey = `${canaryPrefix}/browser-post-wrong-size.bin`;
@@ -284,7 +293,7 @@ export async function runStratoS3CompatibilityPreflight(input: {
   const startAfterBSecondKey = `${canaryPrefix}/start-after-b/b.bin`;
   const keys = [
     sourceKey,
-    browserPostKey,
+    ...browserPostOriginKeys,
     browserPostWrongKeySignedKey,
     browserPostWrongKeyTargetKey,
     browserPostWrongSizeKey,
@@ -314,7 +323,7 @@ export async function runStratoS3CompatibilityPreflight(input: {
       new GetBucketCorsCommand({ Bucket: configuration.bucket }),
       { abortSignal: AbortSignal.timeout(COMMAND_TIMEOUT_MS) },
     );
-    assertCorsContract(cors, expectedOrigin, canaryPrefix);
+    assertCorsContract(cors, expectedOrigins, canaryPrefix);
 
     const browserPostMetadata = {
       "contract-version": "1",
@@ -341,6 +350,29 @@ export async function runStratoS3CompatibilityPreflight(input: {
         "The STRATO browser-compatible presigned POST contract failed.",
         canaryPrefix,
       );
+    }
+    for (const [index, origin] of expectedOrigins.entries()) {
+      if (index === 0) continue;
+      const key = browserPostOriginKeys[index]!;
+      const authorization = createStratoPresignedPost(configuration, {
+        key,
+        mimeType: contentType,
+        sizeBytes: body.byteLength,
+        metadata: browserPostMetadata,
+      });
+      const response = await submitStratoPresignedPost({
+        authorization,
+        expectedOrigin: origin,
+        body,
+        filename: `browser-post-origin-${index + 1}.bin`,
+      });
+      if (response.status !== 201 || response.allowedOrigin !== origin) {
+        throw new StratoS3CompatibilityError(
+          "cors_contract_invalid",
+          "The STRATO browser-compatible presigned POST origin inventory failed.",
+          canaryPrefix,
+        );
+      }
     }
     const browserPostHead = await client.send(
       new HeadObjectCommand({
@@ -860,6 +892,7 @@ export async function runStratoS3CompatibilityPreflight(input: {
     anonymousObjectPutRejected: true as const,
     anonymousObjectDeleteRejected: true as const,
     browserPostCorsVerified: true as const,
+    browserUploadOriginCount: expectedOrigins.length,
     browserPostObjectIntegrityVerified: true as const,
     browserPostExactKeyPolicyVerified: true as const,
     browserPostExactSizePolicyVerified: true as const,

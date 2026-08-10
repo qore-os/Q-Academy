@@ -5,10 +5,7 @@ import test from "node:test";
 
 const deploy = readFileSync("scripts/ops/deploy-release.sh", "utf8");
 const rollback = readFileSync("scripts/ops/rollback-release.sh", "utf8");
-const reconcile = readFileSync(
-  "scripts/ops/reconcile-production.sh",
-  "utf8",
-);
+const reconcile = readFileSync("scripts/ops/reconcile-production.sh", "utf8");
 const emergencyStop = readFileSync(
   "scripts/ops/q-academy-emergency-stop.sh",
   "utf8",
@@ -66,7 +63,10 @@ const packageManifest = JSON.parse(readFileSync("package.json", "utf8")) as {
   devDependencies?: Record<string, string>;
 };
 const zapierPackageManifest = JSON.parse(
-  readFileSync("integrations/automation-connectors/zapier/package.json", "utf8"),
+  readFileSync(
+    "integrations/automation-connectors/zapier/package.json",
+    "utf8",
+  ),
 ) as { packageManager?: string };
 
 test("CI and connector lockfiles share one pinned Node and npm toolchain", () => {
@@ -96,10 +96,7 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
     deploy,
     /up -d --no-recreate --wait --wait-timeout 300 postgres/,
   );
-  assert.match(
-    deploy,
-    /up -d --wait --wait-timeout 900 postgres clamav/,
-  );
+  assert.match(deploy, /up -d --wait --wait-timeout 900 postgres clamav/);
   assert.match(deploy, /predeploy_backup_decision/);
   assert.match(deploy, /pg_class relation_record/);
   assert.match(deploy, /Fresh database has no application relations/);
@@ -124,7 +121,10 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /run docker pull "\$source_image"/);
   assert.match(deploy, /local release tag points to different content/);
   assert.match(deploy, /local-build\)/);
-  assert.match(deploy, /build --pull app migrate key-rotation tenant-admin-ops media-runner media-preflight s3-app-principal-preflight scheduler caddy/);
+  assert.match(
+    deploy,
+    /build --pull app migrate key-rotation tenant-admin-ops media-runner media-preflight s3-app-principal-preflight scheduler caddy/,
+  );
   assert.match(deploy, /immutable release image already exists/);
   assert.match(deploy, /target release image is not present locally/);
   assert.match(
@@ -147,6 +147,7 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   );
   assert.match(deploy, /persist_app_image_tag "\$env_file" "\$release_tag"/);
   assert.match(deploy, /verify_media_work_mount "\$env_file"/);
+  assert.match(deploy, /verify_caddy_sites_directory "\$env_file"/);
   assert.match(deploy, /configure_media_s3_release_services "\$env_file"/);
   assert.match(
     deploy,
@@ -169,7 +170,10 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /run .*database-role/);
   assert.match(deploy, /run .*migrate/);
   assert.match(deploy, /run .*database-permissions/);
-  assert.match(deploy, /--wait --wait-timeout 300 "\$\{DATABASE_RUNTIME_SERVICES\[@\]\}"/);
+  assert.match(
+    deploy,
+    /--wait --wait-timeout 300 "\$\{DATABASE_RUNTIME_SERVICES\[@\]\}"/,
+  );
   assert.match(deploy, /exec -T \\\s+-e[^\n]+\\\s+"\$runtime_service" node -e/);
   assert.match(deploy, /DATABASE_DISPATCHER_SERVICES/);
   assert.match(
@@ -196,9 +200,7 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
     'run "${compose[@]}" run --rm --no-deps -e DATABASE_ROLE_MODE=validate database-role',
   );
   const backupLock = deploy.indexOf('exec 8>"$backup_lock_file"');
-  const inheritedBackupContract = deploy.indexOf(
-    "Q_ACADEMY_BACKUP_LOCK_FD=8",
-  );
+  const inheritedBackupContract = deploy.indexOf("Q_ACADEMY_BACKUP_LOCK_FD=8");
   const backupRun = deploy.indexOf(
     "scripts/ops/postgres-backup.sh",
     inheritedBackupContract,
@@ -284,7 +286,10 @@ test("deploy and rollback seal Compose egress networks before provider or runtim
       'run "${compose[@]}" up -d --no-deps --wait --wait-timeout 300 "${DATABASE_RUNTIME_SERVICES[@]}"',
     ],
   ] as const) {
-    assert.match(operation, /project_name="\$\(compose_project_name "\$\{compose\[@\]\}"\)"/);
+    assert.match(
+      operation,
+      /project_name="\$\(compose_project_name "\$\{compose\[@\]\}"\)"/,
+    );
     assert.match(
       operation,
       /run "\$\{compose\[@\]\}" create --no-build --no-recreate \\\s+"\$\{RELEASE_NETWORK_BOOTSTRAP_SERVICES\[@\]\}"/,
@@ -308,10 +313,7 @@ test("deploy and rollback seal Compose egress networks before provider or runtim
     const create = operation.indexOf(
       'run "${compose[@]}" create --no-build --no-recreate',
     );
-    const apply = operation.indexOf(
-      'docker-egress-firewall.sh" apply',
-      create,
-    );
+    const apply = operation.indexOf('docker-egress-firewall.sh" apply', create);
     const verify = operation.indexOf(
       'docker-egress-firewall.sh" verify',
       apply,
@@ -331,16 +333,8 @@ test("deploy and rollback seal Compose egress networks before provider or runtim
 
 test("Caddy is the final public activation and every failed operation closes it", () => {
   for (const [name, operation, persistenceNeedle] of [
-    [
-      "deploy",
-      deploy,
-      'persist_app_image_tag "$env_file" "$release_tag"',
-    ],
-    [
-      "rollback",
-      rollback,
-      'persist_app_image_tag "$env_file" "$target_tag"',
-    ],
+    ["deploy", deploy, 'persist_app_image_tag "$env_file" "$release_tag"'],
+    ["rollback", rollback, 'persist_app_image_tag "$env_file" "$target_tag"'],
   ] as const) {
     assert.match(operation, /"\$\{compose\[@\]\}" stop -t 30 caddy/);
     assert.match(operation, /run "\$\{compose\[@\]\}" stop -t 30 caddy/);
@@ -375,15 +369,25 @@ test("Caddy is the final public activation and every failed operation closes it"
 test("boot reconcile is versioned, migration-free, and fail closed around Docker", () => {
   assert.equal(compose.match(/restart: "on-failure:5"/g)?.length, 11);
   assert.doesNotMatch(compose, /restart: unless-stopped/);
-  const syntax = spawnSync("bash", ["-n", "scripts/ops/reconcile-production.sh"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-  });
+  const syntax = spawnSync(
+    "bash",
+    ["-n", "scripts/ops/reconcile-production.sh"],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    },
+  );
   assert.equal(syntax.status, 0, syntax.stderr);
   assert.match(reconcile, /RECONCILE_CONTRACT_VERSION=1/);
   assert.match(reconcile, /flock -n 9/);
-  assert.match(reconcile, /release state and production APP_IMAGE_TAG disagree/);
-  assert.match(reconcile, /Git HEAD does not match the active release controller/);
+  assert.match(
+    reconcile,
+    /release state and production APP_IMAGE_TAG disagree/,
+  );
+  assert.match(
+    reconcile,
+    /Git HEAD does not match the active release controller/,
+  );
   assert.match(reconcile, /active runtime image is missing/);
   assert.match(
     reconcile,
@@ -394,19 +398,16 @@ test("boot reconcile is versioned, migration-free, and fail closed around Docker
     reconcile,
     /"\$\{compose\[@\]\}" create --no-build --no-recreate \\\s+"\$\{RELEASE_NETWORK_BOOTSTRAP_SERVICES\[@\]\}"/,
   );
-  assert.doesNotMatch(reconcile, /\bmigrate\b|postgres-restore|persist_app_image_tag|gh attestation|docker pull/);
+  assert.doesNotMatch(
+    reconcile,
+    /\bmigrate\b|postgres-restore|persist_app_image_tag|gh attestation|docker pull/,
+  );
 
   const create = reconcile.indexOf(
     '"${compose[@]}" create --no-build --no-recreate',
   );
-  const apply = reconcile.indexOf(
-    'docker-egress-firewall.sh" apply',
-    create,
-  );
-  const verify = reconcile.indexOf(
-    'docker-egress-firewall.sh" verify',
-    apply,
-  );
+  const apply = reconcile.indexOf('docker-egress-firewall.sh" apply', create);
+  const verify = reconcile.indexOf('docker-egress-firewall.sh" verify', apply);
   const firstStart = reconcile.indexOf(
     '"${compose[@]}" up -d --wait --wait-timeout 900 postgres clamav',
     verify,
@@ -435,21 +436,42 @@ test("boot reconcile is versioned, migration-free, and fail closed around Docker
   assert.match(runtimeService, /^BindsTo=docker[.]service$/m);
   assert.match(runtimeService, /^PartOf=docker[.]service$/m);
   assert.match(runtimeService, /^After=.*docker[.]service$/m);
-  assert.match(runtimeService, /^ExecStart=\/usr\/bin\/bash .*reconcile-production[.]sh start$/m);
+  assert.match(
+    runtimeService,
+    /^ExecStart=\/usr\/bin\/bash .*reconcile-production[.]sh start$/m,
+  );
   assert.match(
     runtimeService,
     /^ExecStopPost=-\/usr\/local\/libexec\/q-academy-emergency-stop$/m,
   );
-  assert.match(runtimeService, /^ConditionFileIsExecutable=\/usr\/local\/libexec\/q-academy-emergency-stop$/m);
-  assert.match(runtimeService, /^ExecStartPre=\/usr\/bin\/test ! -L \/opt\/q-academy$/m);
-  assert.match(runtimeService, /^ExecStartPre=.*find \/opt\/q-academy -xdev ! -user root/m);
-  assert.match(runtimeService, /^ExecStartPre=.*find \/opt\/q-academy -xdev -perm \/022/m);
+  assert.match(
+    runtimeService,
+    /^ConditionFileIsExecutable=\/usr\/local\/libexec\/q-academy-emergency-stop$/m,
+  );
+  assert.match(
+    runtimeService,
+    /^ExecStartPre=\/usr\/bin\/test ! -L \/opt\/q-academy$/m,
+  );
+  assert.match(
+    runtimeService,
+    /^ExecStartPre=.*find \/opt\/q-academy -xdev ! -user root/m,
+  );
+  assert.match(
+    runtimeService,
+    /^ExecStartPre=.*find \/opt\/q-academy -xdev -perm \/022/m,
+  );
   assert.match(emergencyStop, /PRODUCTION_PROJECT=q-academy/);
-  assert.match(emergencyStop, /label=com[.]docker[.]compose[.]project=\$PRODUCTION_PROJECT/);
+  assert.match(
+    emergencyStop,
+    /label=com[.]docker[.]compose[.]project=\$PRODUCTION_PROJECT/,
+  );
   assert.match(emergencyStop, /\^\[a-f0-9\]\{64\}\$/);
   assert.match(emergencyStop, /docker stop --time 30/);
   assert.doesNotMatch(emergencyStop, /docker compose|source |\/opt\/q-academy/);
-  assert.match(runtimeService, /^WantedBy=docker[.]service multi-user[.]target$/m);
+  assert.match(
+    runtimeService,
+    /^WantedBy=docker[.]service multi-user[.]target$/m,
+  );
   assert.match(runtimeService, /^TimeoutStartSec=2h$/m);
   assert.match(runtimeService, /^Restart=on-failure$/m);
   assert.match(runtimeService, /^RestartSec=5m$/m);
@@ -479,7 +501,10 @@ test("pending releases are durable, controller-bound, and recover only explicitl
   assert.match(common, /"\$to_tag" == "git-\$\{controller_commit\}"/);
   assert.match(common, /PHASE=migrations-may-have-run/);
   assert.match(common, /MIGRATIONS_MAY_HAVE_RUN=true/);
-  assert.match(common, /Existing pending release directory must be root-owned with mode 0700/);
+  assert.match(
+    common,
+    /Existing pending release directory must be root-owned with mode 0700/,
+  );
   assert.doesNotMatch(common, /chown root:root "\$directory"/);
   assert.match(
     common,
@@ -512,8 +537,13 @@ test("pending releases are durable, controller-bound, and recover only explicitl
       /stop_production_compose_project "\$PRODUCTION_COMPOSE_PROJECT"/,
     );
     assert.match(operation, /sync -f "\$\(dirname -- "\$state_file"\)"/);
-    const lockAttempt = operation.indexOf('flock -n 9 || fail "another release operation is active"');
-    const lockOwned = operation.indexOf("release_lock_acquired=true", lockAttempt);
+    const lockAttempt = operation.indexOf(
+      'flock -n 9 || fail "another release operation is active"',
+    );
+    const lockOwned = operation.indexOf(
+      "release_lock_acquired=true",
+      lockAttempt,
+    );
     const stateOrEnvironmentValidation = Math.min(
       ...[
         operation.indexOf('[[ -f "$env_file"'),
@@ -526,7 +556,10 @@ test("pending releases are durable, controller-bound, and recover only explicitl
 
   assert.match(deploy, /CONFIRM_RESUME_FAILED_RELEASE/);
   assert.match(deploy, /pending release belongs to a different target/);
-  assert.match(deploy, /pending release belongs to a different controller checkout/);
+  assert.match(
+    deploy,
+    /pending release belongs to a different controller checkout/,
+  );
   assert.match(
     deploy,
     /run write_pending_release_marker "\$pending_file" "\$previous_tag" "\$release_tag" "\$head_commit"/,
@@ -577,7 +610,10 @@ test("pending releases are durable, controller-bound, and recover only explicitl
     /"\$current_tag" == "\$pending_from_tag" && "\$configured_tag" == "\$pending_from_tag"/,
   );
   assert.match(rollback, /pending rollback target must equal FROM_TAG/);
-  assert.match(rollback, /initial-install pending release can only be resumed forward or recovered from backup/);
+  assert.match(
+    rollback,
+    /initial-install pending release can only be resumed forward or recovered from backup/,
+  );
   const rollbackStateSync = rollback.indexOf(
     'sync -f "$(dirname -- "$state_file")"',
   );
@@ -619,6 +655,160 @@ test("pending releases are durable, controller-bound, and recover only explicitl
   assert.equal(dockerFailure.status, 0, dockerFailure.stderr);
 });
 
+test("external Caddy sites stay outside the release checkout and are verified", () => {
+  assert.match(common, /verify_caddy_sites_directory\(\)/);
+  assert.match(common, /CADDY_SITES_DIRECTORY/);
+  assert.match(common, /0:0:755/);
+  assert.match(common, /0:0:644/);
+  assert.match(common, /entry_count <= 20/);
+  for (const operation of [deploy, rollback, reconcile]) {
+    assert.match(operation, /verify_caddy_sites_directory "\$env_file"/);
+  }
+});
+
+test("media storage identity changes require every provider binding to be drained", () => {
+  assert.match(common, /RELEASE_STATE_SCHEMA_VERSION=3/);
+  assert.match(common, /MEDIA_STORAGE_RELEASE_STATE_VARIABLES=/);
+  assert.match(common, /assert_media_storage_change_is_drained\(\)/);
+  assert.match(
+    reconcile,
+    /release state and production media storage identity disagree/,
+  );
+
+  for (const operation of [deploy, rollback]) {
+    const stopWriters = operation.indexOf(
+      'run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"',
+    );
+    const countBindings = operation.indexOf(
+      "public.media_upload_sessions",
+      stopWriters,
+    );
+    const drainGate = operation.indexOf(
+      "assert_media_storage_change_is_drained",
+      countBindings,
+    );
+    assert.ok(stopWriters >= 0 && stopWriters < countBindings);
+    assert.ok(countBindings < drainGate);
+    assert.match(operation, /public\.media_assets where storage_driver/);
+    assert.match(
+      operation,
+      /public\.media_asset_derivatives where storage_driver/,
+    );
+    assert.match(
+      operation,
+      /public\.privacy_export_artifacts where storage_driver/,
+    );
+    assert.match(operation, /write_media_storage_release_state "\$env_file"/);
+  }
+
+  const storageDrainContract = [
+    "set -euo pipefail",
+    "source scripts/ops/release-common.sh",
+    'work="$(mktemp -d)"',
+    "trap 'rm -rf -- \"$work\"' EXIT",
+    'state="$work/state.env"',
+    'environment="$work/production.env"',
+    'write_identity() { { echo "MEDIA_S3_COMPATIBILITY_MODE=$2"; echo "MEDIA_S3_ENDPOINT=$3"; echo "MEDIA_S3_REGION=$4"; echo "MEDIA_S3_BUCKET=$5"; echo "MEDIA_S3_FORCE_PATH_STYLE=$6"; } >"$1"; }',
+    'write_identity "$state" versioned https://old.objects.example eu-central-1 academy-old false',
+    'write_identity "$environment" versioned https://old.objects.example eu-central-1 academy-old false',
+    'validate_media_storage_release_state "$state"',
+    'assert_media_storage_change_is_drained "$state" "$environment" 9',
+    'write_identity "$environment" versioned https://new.objects.example eu-central-1 academy-new false',
+    'assert_media_storage_change_is_drained "$state" "$environment" 0',
+    'if assert_media_storage_change_is_drained "$state" "$environment" 2 >/dev/null 2>&1; then exit 20; fi',
+    'if assert_media_storage_change_is_drained "$state" "$environment" invalid >/dev/null 2>&1; then exit 21; fi',
+    "sed -i '/MEDIA_S3_FORCE_PATH_STYLE=/d' \"$state\"",
+    'if validate_media_storage_release_state "$state" >/dev/null 2>&1; then exit 22; fi',
+  ].join("\n");
+  const contract = spawnSync("bash", [], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: storageDrainContract,
+  });
+  assert.equal(contract.status, 0, contract.stderr);
+});
+
+test("legacy release state is atomically bound to the active storage identity", () => {
+  assert.match(common, /LEGACY_RELEASE_STATE_SCHEMA_VERSION=2/);
+  const upgradeCall = deploy.indexOf(
+    'upgrade_legacy_release_state "$state_file" "$env_file"',
+  );
+  const strictSchemaCheck = deploy.indexOf(
+    '[[ "$state_schema" == "$RELEASE_STATE_SCHEMA_VERSION" ]]',
+    upgradeCall,
+  );
+  assert.ok(upgradeCall >= 0 && upgradeCall < strictSchemaCheck);
+
+  const commit = "a".repeat(40);
+  const previousCommit = "b".repeat(40);
+  const containerId = "c".repeat(64);
+  const contractScript = [
+    "set -euo pipefail",
+    "source scripts/ops/release-common.sh",
+    'work="$(mktemp -d)"',
+    "trap 'rm -rf -- \"$work\"' EXIT",
+    'state="$work/state.env"',
+    'environment="$work/production.env"',
+    `cat >"$state" <<'STATE'`,
+    "SCHEMA_VERSION=2",
+    `CONTROLLER_COMMIT=${commit}`,
+    `CURRENT_TAG=git-${commit}`,
+    `PREVIOUS_TAG=git-${previousCommit}`,
+    "DEPLOYED_AT=2026-07-16T19:55:30Z",
+    "STATE",
+    `cat >"$environment" <<'ENVIRONMENT'`,
+    `APP_IMAGE_TAG=git-${commit}`,
+    "MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive",
+    "MEDIA_S3_ENDPOINT=https://s3.hidrive.strato.com",
+    "MEDIA_S3_REGION=eu-central-1",
+    "MEDIA_S3_BUCKET=q-academy",
+    "MEDIA_S3_FORCE_PATH_STYLE=true",
+    "ENVIRONMENT",
+    'chmod 600 "$state" "$environment"',
+    "stat() {",
+    "  if [[ \"$1\" == -c && \"$2\" == '%u:%g:%a' && \"$3\" == \"$state\" ]]; then",
+    "    printf '%s\\n' '0:0:600'",
+    "  else",
+    "    command stat \"$@\"",
+    "  fi",
+    "}",
+    "docker() {",
+    "  if [[ \"$1\" == ps ]]; then",
+    `    printf '%s\\n' '${containerId}'`,
+    "  elif [[ \"$1\" == inspect && \"$3\" == '{{.Config.Image}}' ]]; then",
+    `    printf '%s\\n' 'q-academy-app:git-${commit}'`,
+    "  elif [[ \"$1\" == inspect ]]; then",
+    "    printf '%s\\n' \\",
+    "      'MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive' \\",
+    "      'MEDIA_S3_ENDPOINT=https://s3.hidrive.strato.com' \\",
+    "      'MEDIA_S3_REGION=eu-central-1' \\",
+    "      'MEDIA_S3_BUCKET=q-academy' \\",
+    "      'MEDIA_S3_FORCE_PATH_STYLE=true'",
+    "  else",
+    "    return 90",
+    "  fi",
+    "}",
+    'upgrade_legacy_release_state "$state" "$environment" false',
+    'test "$(production_env_value "$state" SCHEMA_VERSION)" = 2',
+    'upgrade_legacy_release_state "$state" "$environment"',
+    'test "$(stat -c \'%a\' "$state")" = 600',
+    'test "$(production_env_value "$state" SCHEMA_VERSION)" = 3',
+    'test "$(production_env_value "$state" CURRENT_TAG)" = "git-' + commit + '"',
+    'media_storage_release_state_matches "$state" "$environment"',
+    'test -z "$(find "$work" -maxdepth 1 -name \'*.upgrade.*\' -print -quit)"',
+    "sed -i 's/^SCHEMA_VERSION=3$/SCHEMA_VERSION=2/' \"$state\"",
+    "sed -i 's#^MEDIA_S3_ENDPOINT=.*#MEDIA_S3_ENDPOINT=https://different.example#' \"$environment\"",
+    'if upgrade_legacy_release_state "$state" "$environment" >/dev/null 2>&1; then exit 20; fi',
+    'test "$(production_env_value "$state" SCHEMA_VERSION)" = 2',
+  ].join("\n");
+  const result = spawnSync("bash", [], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: contractScript,
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("external readiness is bounded and bound to the exact release version", () => {
   assert.match(common, /verify_external_release_readiness\(\)/);
   assert.match(common, /--connect-timeout 10 --max-time 30/);
@@ -652,7 +842,10 @@ test("first install skips only an empty database backup", () => {
   assert.match(deploy, /initial_install=true/);
   assert.match(deploy, /release state must be a regular non-symlink file/);
   assert.match(deploy, /production_env_value "\$state_file" CURRENT_TAG/);
-  assert.match(deploy, /release state exists while production APP_IMAGE_TAG is empty/);
+  assert.match(
+    deploy,
+    /release state exists while production APP_IMAGE_TAG is empty/,
+  );
   assert.match(deploy, /release state contains an invalid current tag/);
 
   const dependencyStart = deploy.indexOf(
@@ -705,25 +898,22 @@ test("pre-deployment backup decision executes fail closed", () => {
 });
 
 test("release S3 mode selects the STRATO profile and sweeper fail closed", () => {
-  assert.match(
-    common,
-    /STRATO_PRIVACY_SWEEPER_SERVICE=strato-privacy-sweeper/,
-  );
+  assert.match(common, /STRATO_PRIVACY_SWEEPER_SERVICE=strato-privacy-sweeper/);
   const contractScript = [
     "set -Eeuo pipefail",
     "source scripts/ops/release-common.sh",
     'test_root="/tmp/q-academy-s3-release-contract-$$"',
     'mkdir -p -- "$test_root"',
-    'trap \'rm -rf -- "$test_root"\' EXIT',
+    "trap 'rm -rf -- \"$test_root\"' EXIT",
     'env_file="$test_root/production.env"',
     "write_environment() {",
-    "  printf '%s\\n' \"$@\" >\"$env_file\"",
+    '  printf \'%s\\n\' "$@" >"$env_file"',
     "}",
     "print_selection() {",
     "  local profiles services",
-    "  profiles=\"$(IFS=,; printf '%s' \"${MEDIA_S3_COMPOSE_PROFILE_ARGS[*]}\")\"",
-    "  services=\"$(IFS=,; printf '%s' \"${MEDIA_S3_RELEASE_SERVICES[*]}\")\"",
-    "  printf '%s|%s|%s|%s\\n' \"$profiles\" \"$services\" \"$MEDIA_S3_COMPATIBILITY_MODE\" \"$MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED\"",
+    '  profiles="$(IFS=,; printf \'%s\' "${MEDIA_S3_COMPOSE_PROFILE_ARGS[*]}")"',
+    '  services="$(IFS=,; printf \'%s\' "${MEDIA_S3_RELEASE_SERVICES[*]}")"',
+    '  printf \'%s|%s|%s|%s\\n\' "$profiles" "$services" "$MEDIA_S3_COMPATIBILITY_MODE" "$MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED"',
     "}",
     "export MEDIA_S3_COMPATIBILITY_MODE=untrusted-shell-override",
     "export MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED=untrusted-shell-override",
@@ -763,10 +953,7 @@ test("child backup validates the inherited deployment lock without self-deadlock
     backup,
     /pending release blocks standalone backups until explicit recovery completes/i,
   );
-  assert.match(
-    backup,
-    /"\$active_release_tag" != "\$pending_backup_tag"/,
-  );
+  assert.match(backup, /"\$active_release_tag" != "\$pending_backup_tag"/);
   assert.match(
     backup,
     /inherited_backup_lock_fd="\$\{Q_ACADEMY_BACKUP_LOCK_FD:-\}"/,
@@ -775,14 +962,8 @@ test("child backup validates the inherited deployment lock without self-deadlock
     backup,
     /inherited_backup_lock_path="\/proc\/\$\$\/fd\/\$\{inherited_backup_lock_fd\}"/,
   );
-  assert.match(
-    backup,
-    /stat -Lc '%d:%i' -- "\$inherited_backup_lock_path"/,
-  );
-  assert.match(
-    backup,
-    /stat -Lc '%d:%i' -- "\$BACKUP_LOCK_FILE"/,
-  );
+  assert.match(backup, /stat -Lc '%d:%i' -- "\$inherited_backup_lock_path"/);
+  assert.match(backup, /stat -Lc '%d:%i' -- "\$BACKUP_LOCK_FILE"/);
   assert.match(backup, /flock -n "\$inherited_backup_lock_fd"/);
   assert.match(backup, /exec 9>"\$\{BACKUP_LOCK_FILE\}"/);
   assert.match(backup, /inherited backup lock descriptor is invalid/i);
@@ -791,10 +972,7 @@ test("child backup validates the inherited deployment lock without self-deadlock
     backup,
     /inherited backup lock descriptor does not match the configured lock file/i,
   );
-  assert.match(
-    backup,
-    /inherited backup lock descriptor could not be locked/i,
-  );
+  assert.match(backup, /inherited backup lock descriptor could not be locked/i);
 
   const digest = "a".repeat(64);
   const commit = "b".repeat(40);
@@ -812,7 +990,7 @@ test("child backup validates the inherited deployment lock without self-deadlock
     "set -Eeuo pipefail",
     'test_root="/tmp/q-academy-lock-contract-$$"',
     'mkdir -p -- "$test_root"',
-    'trap \'rm -rf -- "$test_root"\' EXIT',
+    "trap 'rm -rf -- \"$test_root\"' EXIT",
     'env_file="$test_root/production.env"',
     'lock_file="$test_root/backup.lock"',
     ': >"$lock_file"',
@@ -875,7 +1053,10 @@ test("app rollback requires explicit compatibility and never mutates the databas
     rollback,
     /--wait --wait-timeout 300 "\$\{DATABASE_RUNTIME_SERVICES\[@\]\}"/,
   );
-  assert.match(rollback, /exec -T \\\s+-e[^\n]+\\\s+"\$runtime_service" node -e/);
+  assert.match(
+    rollback,
+    /exec -T \\\s+-e[^\n]+\\\s+"\$runtime_service" node -e/,
+  );
   assert.match(rollback, /Q_ACADEMY_EXPECTED_RELEASE=\$target_tag/);
   assert.match(
     rollback,
@@ -901,6 +1082,7 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.match(rollback, /release state and production APP_IMAGE_TAG disagree/);
   assert.match(rollback, /persist_app_image_tag "\$env_file" "\$target_tag"/);
   assert.match(rollback, /verify_media_work_mount "\$env_file"/);
+  assert.match(rollback, /verify_caddy_sites_directory "\$env_file"/);
   assert.match(rollback, /configure_media_s3_release_services "\$env_file"/);
   assert.match(
     rollback,
@@ -932,7 +1114,9 @@ test("app rollback requires explicit compatibility and never mutates the databas
   const stratoSweeperHealthGate = rollback.indexOf(
     '--wait-timeout "$STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS"',
   );
-  assert.ok(dispatcherHealthGate >= 0 && dispatcherHealthGate < releasePersistence);
+  assert.ok(
+    dispatcherHealthGate >= 0 && dispatcherHealthGate < releasePersistence,
+  );
   assert.ok(stratoSweeperHealthGate > dispatcherHealthGate);
   assert.ok(stratoSweeperHealthGate < releasePersistence);
   const caddyVolumeInit = rollback.indexOf(
@@ -990,7 +1174,10 @@ test("release state and upstream image references fail closed", () => {
   assert.match(backup, /Q_ACADEMY_APP_IMAGE_TAG_OVERRIDE/);
   assert.match(backup, /verify_and_export_pinned_images/);
   assert.match(restore, /verify_and_export_pinned_images/);
-  assert.match(common, /MEDIA_WORK_MOUNT=\/var\/lib\/q-academy-media-processing/);
+  assert.match(
+    common,
+    /MEDIA_WORK_MOUNT=\/var\/lib\/q-academy-media-processing/,
+  );
   assert.match(common, /MEDIA_WORK_SENTINEL=\.q-academy-media-work-root/);
   assert.match(common, /findmnt -n -o TARGET --target/);
   assert.match(common, /findmnt -R -n -o TARGET "\$configured"/);
@@ -1011,9 +1198,10 @@ test("release state and upstream image references fail closed", () => {
 });
 
 test("production migration and release verification images contain their runtime inputs", () => {
-  const migratorStage = /^FROM runtime-base AS migrator\r?\n[\s\S]*?(?=^FROM )/m.exec(
-    dockerfile,
-  )?.[0];
+  const migratorStage =
+    /^FROM runtime-base AS migrator\r?\n[\s\S]*?(?=^FROM )/m.exec(
+      dockerfile,
+    )?.[0];
   assert.ok(migratorStage, "Missing production migrator stage");
   for (const path of [
     "scripts/migrate.ts",
@@ -1031,17 +1219,17 @@ test("production migration and release verification images contain their runtime
   }
   assert.match(dockerfile, /^FROM dependencies AS release-verifier$/m);
   assert.match(dockerfile, /^FROM runtime-base AS media-preflight$/m);
-  assert.match(dockerfile, /^FROM runtime-base AS s3-app-principal-preflight$/m);
+  assert.match(
+    dockerfile,
+    /^FROM runtime-base AS s3-app-principal-preflight$/m,
+  );
   assert.equal(
     dockerfile.match(/src\/lib\/media\/s3-privacy-export-lifecycle\.ts/g)
       ?.length,
     2,
   );
   assert.match(dockerfile, /ARG DEBIAN_SNAPSHOT=20260714T202849Z/);
-  assert.match(
-    dockerfile,
-    /ARG CA_CERTIFICATES_VERSION=20230311\+deb12u1/,
-  );
+  assert.match(dockerfile, /ARG CA_CERTIFICATES_VERSION=20230311\+deb12u1/);
   assert.match(dockerfile, /ARG FFMPEG_VERSION=7:5\.1\.9-0\+deb12u1/);
   assert.match(dockerfile, /ARG MESA_VERSION=22\.3\.6-1\+deb12u2/);
   assert.match(dockerfile, /snapshot\.debian\.org\/archive\/debian-security/);
@@ -1050,10 +1238,7 @@ test("production migration and release verification images contain their runtime
       ?.length,
     2,
   );
-  assert.equal(
-    dockerfile.match(/"ffmpeg=\$\{FFMPEG_VERSION\}"/g)?.length,
-    2,
-  );
+  assert.equal(dockerfile.match(/"ffmpeg=\$\{FFMPEG_VERSION\}"/g)?.length, 2);
   for (const packageName of [
     "libgbm1",
     "libgl1-mesa-dri",
@@ -1087,9 +1272,8 @@ test("production migration and release verification images contain their runtime
     2,
   );
   assert.equal(
-    dockerfile.match(
-      /test -s \/etc\/ssl\/certs\/ca-certificates\.crt/g,
-    )?.length,
+    dockerfile.match(/test -s \/etc\/ssl\/certs\/ca-certificates\.crt/g)
+      ?.length,
     2,
   );
   assert.doesNotMatch(
@@ -1114,7 +1298,10 @@ test("production runtime images omit package managers and development dependenci
   };
 
   const runtimeBase = stageSource("runtime-base");
-  assert.match(runtimeBase, /rm -rf --[\s\S]*\/usr\/local\/lib\/node_modules\/npm/);
+  assert.match(
+    runtimeBase,
+    /rm -rf --[\s\S]*\/usr\/local\/lib\/node_modules\/npm/,
+  );
   for (const command of ["npm", "npx", "corepack", "yarn", "yarnpkg"]) {
     assert.match(runtimeBase, new RegExp(`! command -v ${command}\\b`));
   }
@@ -1130,7 +1317,10 @@ test("production runtime images omit package managers and development dependenci
   ]) {
     const stage = stageSource(name);
     assert.match(stage, new RegExp(`^FROM runtime-base AS ${name}$`, "m"));
-    assert.match(stage, /COPY --from=production-dependencies[^\n]+\/app\/node_modules/);
+    assert.match(
+      stage,
+      /COPY --from=production-dependencies[^\n]+\/app\/node_modules/,
+    );
     assert.doesNotMatch(stage, /COPY --from=dependencies/);
   }
   assert.match(dockerfile, /^FROM runner AS media-runner$/m);
@@ -1141,8 +1331,14 @@ test("pinned media image blocks releases on durationless WebM regressions", () =
     dockerfile,
     /COPY --chown=nextjs:nodejs [^\n]*scripts\/webm-duration-preflight\.ts[^\n]* \.\/scripts\//,
   );
-  assert.match(webmDurationPreflight, /WEBM_PREFLIGHT_FFMPEG = "\/usr\/bin\/ffmpeg"/);
-  assert.match(webmDurationPreflight, /WEBM_PREFLIGHT_FFPROBE = "\/usr\/bin\/ffprobe"/);
+  assert.match(
+    webmDurationPreflight,
+    /WEBM_PREFLIGHT_FFMPEG = "\/usr\/bin\/ffmpeg"/,
+  );
+  assert.match(
+    webmDurationPreflight,
+    /WEBM_PREFLIGHT_FFPROBE = "\/usr\/bin\/ffprobe"/,
+  );
   assert.match(webmDurationPreflight, /probeWebmDurationStream\(/);
   assert.match(webmDurationPreflight, /shell: false/);
   assert.match(webmDurationPreflight, /child\.stdout\.once\("error"/);
@@ -1157,7 +1353,10 @@ test("pinned media image blocks releases on durationless WebM regressions", () =
   assert.match(durationlessSmoke, /--cap-drop ALL/);
   assert.match(durationlessSmoke, /--pids-limit 64/);
   assert.match(durationlessSmoke, /--memory 256m/);
-  assert.match(durationlessSmoke, /--tmpfs \/tmp:rw,nosuid,nodev,noexec,size=16m,uid=1001,gid=1001/);
+  assert.match(
+    durationlessSmoke,
+    /--tmpfs \/tmp:rw,nosuid,nodev,noexec,size=16m,uid=1001,gid=1001/,
+  );
   assert.match(durationlessSmoke, /--entrypoint node/);
   assert.match(
     durationlessSmoke,
@@ -1226,7 +1425,10 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /CI_CADDY_BUILDABLE_ARTIFACT_SHA256: [a-f0-9]{64}/,
   );
-  assert.match(continuousIntegration, /CI_CADDY_SOURCE_DATE_EPOCH: "[0-9]{10}"/);
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_SOURCE_DATE_EPOCH: "[0-9]{10}"/,
+  );
   const pinnedNodeImage =
     "node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
   assert.equal(continuousIntegration.split(pinnedNodeImage).length - 1, 2);
@@ -1238,49 +1440,69 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     2,
   );
   assert.equal(
-    continuousIntegration.match(
-      /--build-arg MESA_VERSION="\$CI_MESA_VERSION"/g,
-    )?.length,
+    continuousIntegration.match(/--build-arg MESA_VERSION="\$CI_MESA_VERSION"/g)
+      ?.length,
     2,
   );
   assert.match(
     continuousIntegration,
     /test ! -e \/usr\/local\/lib\/node_modules\/npm/,
   );
-  assert.match(continuousIntegration, /test ! -e \/app\/node_modules\/drizzle-kit/);
+  assert.match(
+    continuousIntegration,
+    /test ! -e \/app\/node_modules\/drizzle-kit/,
+  );
   assert.match(
     continuousIntegration,
     /tsx_image_components=\(migrator key-rotation tenant-ops media-preflight s3-app-principal-preflight\)/,
   );
-  assert.doesNotMatch(continuousIntegration, /tsx_image_components=\([^\n]*dispatcher/);
+  assert.doesNotMatch(
+    continuousIntegration,
+    /tsx_image_components=\([^\n]*dispatcher/,
+  );
   assert.match(
     continuousIntegration,
     /shell_image_components=\(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher\)/,
   );
-  assert.doesNotMatch(continuousIntegration, /shell_image_components=\([^\n]*caddy/);
+  assert.doesNotMatch(
+    continuousIntegration,
+    /shell_image_components=\([^\n]*caddy/,
+  );
   assert.match(
     continuousIntegration,
     /dpkg-query -W -f='\$\{Version\}' "\$package"/,
   );
-  assert.match(
-    continuousIntegration,
-    /TRIVY_LINUX_AMD64_SHA256: [a-f0-9]{64}/,
-  );
+  assert.match(continuousIntegration, /TRIVY_LINUX_AMD64_SHA256: [a-f0-9]{64}/);
   assert.match(continuousIntegration, /create-release-artifact\.sh/);
   assert.match(continuousIntegration, /publish-release-images\.sh/);
-  assert.match(continuousIntegration, /actions\/attest-build-provenance@[a-f0-9]{40}/);
-  assert.match(continuousIntegration, /actions\/download-artifact@[a-f0-9]{40}/);
+  assert.match(
+    continuousIntegration,
+    /actions\/attest-build-provenance@[a-f0-9]{40}/,
+  );
+  assert.match(
+    continuousIntegration,
+    /actions\/download-artifact@[a-f0-9]{40}/,
+  );
   assert.match(continuousIntegration, /packages: write/);
 
   assert.match(createReleaseArtifact, /--format json --list-all-pkgs/);
-  assert.match(createReleaseArtifact, /trivy convert --quiet --format cyclonedx/);
+  assert.match(
+    createReleaseArtifact,
+    /trivy convert --quiet --format cyclonedx/,
+  );
   assert.equal(createReleaseArtifact.match(/trivy image /g)?.length, 2);
   assert.match(createReleaseArtifact, /--severity HIGH,CRITICAL/);
   assert.match(createReleaseArtifact, /--ignore-unfixed --exit-code 1/);
   assert.match(continuousIntegration, /docker builder prune --all --force/);
   assert.match(continuousIntegration, /docker image prune --force/);
-  assert.doesNotMatch(continuousIntegration, /docker (?:image|system) prune --all/);
-  assert.match(continuousIntegration, /cmp --silent "\$before_manifest" "\$after_manifest"/);
+  assert.doesNotMatch(
+    continuousIntegration,
+    /docker (?:image|system) prune --all/,
+  );
+  assert.match(
+    continuousIntegration,
+    /cmp --silent "\$before_manifest" "\$after_manifest"/,
+  );
   assert.match(
     continuousIntegration,
     /image="q-academy-\$component:\$Q_ACADEMY_CI_RELEASE_TAG"/,
@@ -1291,7 +1513,10 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     /docker image inspect --format 'id=\{\{\.Id\}\} size=\{\{\.Size\}\}' "\$image"/,
   );
   assert.doesNotMatch(continuousIntegration, /join \.RepoTags/);
-  assert.match(continuousIntegration, /required_bytes=\$\(\(6 \* 1024 \* 1024 \* 1024\)\)/);
+  assert.match(
+    continuousIntegration,
+    /required_bytes=\$\(\(6 \* 1024 \* 1024 \* 1024\)\)/,
+  );
   assert.match(continuousIntegration, /TMPDIR: \$\{\{ runner\.temp \}\}/);
   assert.match(createReleaseArtifact, /docker save/);
   assert.match(createReleaseArtifact, /s3-app-principal-preflight/);
@@ -1303,7 +1528,10 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(createReleaseArtifact, /CI_CADDY_BUILDER_IMAGE/);
   assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_BUILDER_IMAGE/);
   assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_VERSION/);
-  assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_BUILDABLE_ARTIFACT_SHA256/);
+  assert.match(
+    createReleaseArtifact,
+    /Q_ACADEMY_CADDY_BUILDABLE_ARTIFACT_SHA256/,
+  );
   assert.match(createReleaseArtifact, /Q_ACADEMY_CADDY_SOURCE_DATE_EPOCH/);
   assert.match(createReleaseArtifact, /SHA256SUMS/);
   assert.match(publishReleaseImages, /sha256sum --check --strict/);
@@ -1335,10 +1563,15 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     new RegExp(`image_components=\\(${exactComponents}\\)`),
   );
   assert.equal(
-    continuousIntegration.match(new RegExp(`image_components=\\(${exactComponents}\\)`, "g"))?.length,
+    continuousIntegration.match(
+      new RegExp(`image_components=\\(${exactComponents}\\)`, "g"),
+    )?.length,
     2,
   );
-  assert.match(continuousIntegration, /Scratch Caddy image unexpectedly contains \/bin\/sh/);
+  assert.match(
+    continuousIntegration,
+    /Scratch Caddy image unexpectedly contains \/bin\/sh/,
+  );
   assert.match(
     continuousIntegration,
     /--network none --user 0:0 --read-only \\\s+--security-opt no-new-privileges=true \\\s+--cap-drop ALL --cap-add CHOWN --cap-add DAC_READ_SEARCH/,
@@ -1385,10 +1618,7 @@ test("release publisher uses the tested Docker identity model on a hosted runner
   assert.match(verifier, /^          version: v29\.4\.0$/m);
   assert.match(verifier, /^          set-host: true$/m);
   assert.match(verifier, /"containerd-snapshotter": true/);
-  assert.match(
-    verifier,
-    /docker info --format '\{\{ \.DriverStatus \}\}'/,
-  );
+  assert.match(verifier, /docker info --format '\{\{ \.DriverStatus \}\}'/);
   assert.match(verifier, /grep -Fq 'io\.containerd\.snapshotter\.v1'/);
   assert.ok(
     verifier.indexOf("- name: Set up tested Docker image store") <
@@ -1405,10 +1635,7 @@ test("release publisher uses the tested Docker identity model on a hosted runner
     /docker version --format '\{\{\.Server\.Version\}\}'/,
   );
   assert.match(publisher, /actual_version" != "\$expected_version/);
-  assert.match(
-    publisher,
-    /docker info --format '\{\{ \.DriverStatus \}\}'/,
-  );
+  assert.match(publisher, /docker info --format '\{\{ \.DriverStatus \}\}'/);
   assert.match(publisher, /grep -Fq 'io\.containerd\.snapshotter\.v1'/);
   assert.ok(setupStep >= 0);
   assert.ok(verifyStep > setupStep);
@@ -1433,13 +1660,28 @@ test("database bootstrap, ownership, and runtime privileges stay separated", () 
   );
   assert.match(databaseRole, /q_academy\.bootstrap_role/);
   assert.match(databaseRole, /pg_auth_members/);
-  assert.match(compose, /DATABASE_URL: postgresql:\/\/\$\{OWNER_POSTGRES_USER:/);
+  assert.match(
+    compose,
+    /DATABASE_URL: postgresql:\/\/\$\{OWNER_POSTGRES_USER:/,
+  );
   assert.match(compose, /PGUSER: \$\{OWNER_POSTGRES_USER:/);
   assert.match(databasePermissions, /begin;[\s\S]*commit;/);
-  assert.match(databasePermissions, /grant select \(id, organization_id, avatar_url\) on table public\.users/);
-  assert.doesNotMatch(databasePermissions, /grant select on table public\.users/);
-  assert.match(databasePermissions, /custom_field_values enable row level security/);
-  assert.match(databasePermissions, /platform_settings enable row level security/);
+  assert.match(
+    databasePermissions,
+    /grant select \(id, organization_id, avatar_url\) on table public\.users/,
+  );
+  assert.doesNotMatch(
+    databasePermissions,
+    /grant select on table public\.users/,
+  );
+  assert.match(
+    databasePermissions,
+    /custom_field_values enable row level security/,
+  );
+  assert.match(
+    databasePermissions,
+    /platform_settings enable row level security/,
+  );
   assert.match(databasePermissions, /security definer/);
   assert.match(databasePermissions, /set search_path to pg_catalog, public/);
   assert.match(migrate, /max: 1/);
@@ -1470,7 +1712,10 @@ test("backup verification owns the template public schema before restoring", () 
     "pg_restore \\",
     publicSchemaOwnership,
   );
-  const ownershipAudit = backup.indexOf("misowned_objects", verificationRestore);
+  const ownershipAudit = backup.indexOf(
+    "misowned_objects",
+    verificationRestore,
+  );
 
   assert.ok(verificationDatabaseCreation >= 0);
   assert.ok(publicSchemaConnection > verificationDatabaseCreation);
@@ -1484,7 +1729,10 @@ test("in-place restore isolates every persistent database writer", () => {
     common,
     /DATABASE_WRITER_SERVICES=\(scheduler media-worker media-maintenance app media-runner\)/,
   );
-  assert.match(restore, /compose stop -t 30 "\$\{DATABASE_WRITER_SERVICES\[@\]\}"/);
+  assert.match(
+    restore,
+    /compose stop -t 30 "\$\{DATABASE_WRITER_SERVICES\[@\]\}"/,
+  );
   assert.match(
     restore,
     /compose up -d --no-deps --wait --wait-timeout 300 "\$\{DATABASE_RUNTIME_SERVICES\[@\]\}"/,
@@ -1495,14 +1743,19 @@ test("in-place restore isolates every persistent database writer", () => {
   );
   assert.match(restore, /exec -T "\$runtime_service" node -e/);
   assert.match(restore, /All application and media writers remain stopped/);
-  assert.match(restore, /exec 8>"\$RELEASE_LOCK_FILE"[\s\S]*exec 9>"\$BACKUP_LOCK_FILE"/);
+  assert.match(
+    restore,
+    /exec 8>"\$RELEASE_LOCK_FILE"[\s\S]*exec 9>"\$BACKUP_LOCK_FILE"/,
+  );
   assert.match(backup, /BACKUP_LOCK_FILE_DEFAULT/);
 
   const dispatcherHealthGate = restore.indexOf(
     '--wait-timeout "$DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS"',
   );
   const restoreCompletion = restore.indexOf("restore_ok=true");
-  assert.ok(dispatcherHealthGate >= 0 && dispatcherHealthGate < restoreCompletion);
+  assert.ok(
+    dispatcherHealthGate >= 0 && dispatcherHealthGate < restoreCompletion,
+  );
 });
 
 test("dispatcher health gate shares the bounded long-job timeout", () => {
@@ -1567,20 +1820,14 @@ test("release controllers bind readiness to a root-owned LF production environme
   assert.match(common, /must use LF line endings/);
   assert.match(common, /must not traverse symlinks/);
   assert.match(common, /must not be group- or world-writable/);
-  assert.match(
-    reconcile,
-    /verify_release_environment_security "\$env_file"/,
-  );
+  assert.match(reconcile, /verify_release_environment_security "\$env_file"/);
 
   for (const controller of [deploy, rollback]) {
     assert.match(
       controller,
       /app_domain="\$\(production_env_value "\$env_file" APP_DOMAIN\)"/,
     );
-    assert.match(
-      controller,
-      /requested_app_domain" == "\$app_domain"/,
-    );
+    assert.match(controller, /requested_app_domain" == "\$app_domain"/);
   }
 });
 
