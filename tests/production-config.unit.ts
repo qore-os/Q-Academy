@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import webPush from "web-push";
@@ -36,6 +37,10 @@ const caddyfile = readFileSync(
 );
 const caddyRuntimeEntrypoint = readFileSync(
   new URL("../scripts/ops/caddy-runtime-entrypoint.go", import.meta.url),
+  "utf8",
+);
+const caddyModulePatchLock = readFileSync(
+  new URL("../scripts/ops/caddy-module-patch.lock", import.meta.url),
   "utf8",
 );
 const dispatcherHttpPost = readFileSync(
@@ -533,6 +538,76 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     dockerfile,
     /ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187/,
   );
+  assert.match(dockerfile, /ARG CADDY_X_TEXT_VERSION=0[.]39[.]0/);
+  assert.match(
+    dockerfile,
+    /ARG CADDY_X_TEXT_MODULE_SUM=h1:UbZz4pLOvn600D6Oh6GGEI6VAmndrEBLv8\/6BEXzyus=/,
+  );
+  assert.match(dockerfile, /ARG CADDY_GRPC_VERSION=1[.]82[.]1/);
+  assert.match(
+    dockerfile,
+    /ARG CADDY_GRPC_MODULE_SUM=h1:NnAxzGRA0677vCa4BUkOAnO5\+FfQqVl9iUXeD0IqcGE=/,
+  );
+  assert.match(
+    dockerfile,
+    /ARG CADDY_MODULE_PATCH_LOCK_SHA256=9b61aeb0a5aee2203fcf8dce468f3ce91e717f3c055f6d08b9be96194d9db65b/,
+  );
+  assert.match(
+    dockerfile,
+    /ARG CADDY_MODULE_GRAPH_SHA256=5850737c3bb00d6a4942b61301bf09ac39e5fefcd31974ca7b142177a6a3d0ef/,
+  );
+  assert.match(
+    dockerfile,
+    /ARG CADDY_PATCHED_GO_MOD_SHA256=27ca6abce1c13b0be477307c8b67061408cccaa51012136fa191b755a5887db2/,
+  );
+  assert.match(
+    dockerfile,
+    /ARG CADDY_PATCHED_GO_SUM_SHA256=7598f3ab463a3f6f723ba1a83dac1c424fd782ae716d7d62ed852965ced0bf71/,
+  );
+  assert.match(
+    dockerfile,
+    /COPY scripts\/ops\/caddy-module-patch[.]lock \/tmp\/q-academy-caddy-module-patch[.]lock/,
+  );
+  assert.match(dockerfile, /GOPROXY=https:\/\/proxy[.]golang[.]org/);
+  assert.match(dockerfile, /GOSUMDB=sum[.]golang[.]org/);
+  assert.match(
+    dockerfile,
+    /go mod download -json "golang[.]org\/x\/text@v\$\{CADDY_X_TEXT_VERSION\}"/,
+  );
+  assert.match(
+    dockerfile,
+    /go mod download -json "google[.]golang[.]org\/grpc@v\$\{CADDY_GRPC_VERSION\}"/,
+  );
+  assert.match(dockerfile, /GoModSum/);
+  assert.match(
+    dockerfile,
+    /go get \\\n+      "golang[.]org\/x\/text@v\$\{CADDY_X_TEXT_VERSION\}" \\\n+      "google[.]golang[.]org\/grpc@v\$\{CADDY_GRPC_VERSION\}"/,
+  );
+  assert.match(dockerfile, /caddy-modules[.]before/);
+  assert.match(dockerfile, /caddy-modules[.]expected/);
+  assert.match(dockerfile, /go mod tidy/);
+  assert.match(dockerfile, /go mod download all/);
+  assert.match(dockerfile, /go mod verify/);
+  assert.match(dockerfile, /go list -mod=readonly -m all/);
+  assert.match(
+    dockerfile,
+    /cmp \/tmp\/caddy-modules[.]expected \/tmp\/caddy-modules[.]after/,
+  );
+  assert.match(
+    dockerfile,
+    /CADDY_MODULE_GRAPH_SHA256[\s\S]*sha256sum --check --strict/,
+  );
+  assert.match(
+    dockerfile,
+    /CADDY_PATCHED_GO_MOD_SHA256[\s\S]*CADDY_PATCHED_GO_SUM_SHA256/,
+  );
+  assert.match(dockerfile, /id=q-academy-caddy-go-mod/);
+  assert.match(dockerfile, /id=q-academy-caddy-go-build/);
+  assert.match(dockerfile, /go mod vendor/);
+  assert.match(
+    dockerfile,
+    /go version -m \/out\/rootfs\/usr\/bin\/caddy[\s\S]*golang[.]org\/x\/text[\s\S]*google[.]golang[.]org\/grpc/,
+  );
   assert.match(dockerfile, /^FROM scratch AS caddy$/m);
   assert.match(dockerfile, /^USER 10001:10001$/m);
   assert.match(dockerfile, /CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build/);
@@ -549,6 +624,29 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     /cmp \/out\/rootfs\/usr\/bin\/caddy \/tmp\/caddy-reproducibility-check/,
   );
   assert.match(dockerfile, /q-academy-caddy-volume-v1/);
+
+  const lockedModules = caddyModulePatchLock
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("module "));
+  assert.equal(
+    createHash("sha256").update(caddyModulePatchLock).digest("hex"),
+    "9b61aeb0a5aee2203fcf8dce468f3ce91e717f3c055f6d08b9be96194d9db65b",
+  );
+  assert.equal(lockedModules.length, 13);
+  for (const line of lockedModules) {
+    assert.match(
+      line,
+      /^module \S+ v\S+ v\S+ h1:[A-Za-z0-9+/]{43}= h1:[A-Za-z0-9+/]{43}=$/,
+    );
+  }
+  assert.match(
+    caddyModulePatchLock,
+    /^module golang[.]org\/x\/text v0[.]37[.]0 v0[.]39[.]0 h1:UbZz4pLOvn600D6Oh6GGEI6VAmndrEBLv8\/6BEXzyus= h1:3UwRclnC2g0TU9x8PZiyfOajCd1zaUNHF9cvqcQZ\+ZM=$/m,
+  );
+  assert.match(
+    caddyModulePatchLock,
+    /^module google[.]golang[.]org\/grpc v1[.]81[.]0 v1[.]82[.]1 h1:NnAxzGRA0677vCa4BUkOAnO5\+FfQqVl9iUXeD0IqcGE= h1:yzTZ1TB1Z3SG\+LIYaI\+WiE8D5\+PZ3ArnrSp8zF3\+\/ZA=$/m,
+  );
 
   assert.match(caddyRuntimeEntrypoint, /runtimeUID\s+= 10001/);
   assert.match(caddyRuntimeEntrypoint, /initializeRuntimeDirectory/);

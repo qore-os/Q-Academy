@@ -3,6 +3,16 @@ ARG CADDY_BUILDER_IMAGE=golang:1.26.5-bookworm@sha256:3f6236bd765f898a2a3c294611
 ARG CADDY_VERSION=2.11.4
 ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187
 ARG CADDY_SOURCE_DATE_EPOCH=1780342502
+ARG CADDY_X_TEXT_VERSION=0.39.0
+ARG CADDY_X_TEXT_MODULE_SUM=h1:UbZz4pLOvn600D6Oh6GGEI6VAmndrEBLv8/6BEXzyus=
+ARG CADDY_X_TEXT_GO_MOD_SUM=h1:3UwRclnC2g0TU9x8PZiyfOajCd1zaUNHF9cvqcQZ+ZM=
+ARG CADDY_GRPC_VERSION=1.82.1
+ARG CADDY_GRPC_MODULE_SUM=h1:NnAxzGRA0677vCa4BUkOAnO5+FfQqVl9iUXeD0IqcGE=
+ARG CADDY_GRPC_GO_MOD_SUM=h1:yzTZ1TB1Z3SG+LIYaI+WiE8D5+PZ3ArnrSp8zF3+/ZA=
+ARG CADDY_MODULE_PATCH_LOCK_SHA256=9b61aeb0a5aee2203fcf8dce468f3ce91e717f3c055f6d08b9be96194d9db65b
+ARG CADDY_MODULE_GRAPH_SHA256=5850737c3bb00d6a4942b61301bf09ac39e5fefcd31974ca7b142177a6a3d0ef
+ARG CADDY_PATCHED_GO_MOD_SHA256=27ca6abce1c13b0be477307c8b67061408cccaa51012136fa191b755a5887db2
+ARG CADDY_PATCHED_GO_SUM_SHA256=7598f3ab463a3f6f723ba1a83dac1c424fd782ae716d7d62ed852965ced0bf71
 ARG DEBIAN_SNAPSHOT=20260714T202849Z
 ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
 ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
@@ -40,14 +50,45 @@ FROM ${CADDY_BUILDER_IMAGE} AS caddy-builder
 ARG CADDY_VERSION
 ARG CADDY_BUILDABLE_ARTIFACT_SHA256
 ARG CADDY_SOURCE_DATE_EPOCH
-ENV GOTOOLCHAIN=local
+ARG CADDY_X_TEXT_VERSION
+ARG CADDY_X_TEXT_MODULE_SUM
+ARG CADDY_X_TEXT_GO_MOD_SUM
+ARG CADDY_GRPC_VERSION
+ARG CADDY_GRPC_MODULE_SUM
+ARG CADDY_GRPC_GO_MOD_SUM
+ARG CADDY_MODULE_PATCH_LOCK_SHA256
+ARG CADDY_MODULE_GRAPH_SHA256
+ARG CADDY_PATCHED_GO_MOD_SHA256
+ARG CADDY_PATCHED_GO_SUM_SHA256
+ENV GOTOOLCHAIN=local \
+    GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org
+COPY scripts/ops/caddy-module-patch.lock /tmp/q-academy-caddy-module-patch.lock
 COPY scripts/ops/caddy-runtime-entrypoint.go /tmp/q-academy-caddy-entrypoint.go
-RUN set -eux; \
+RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=q-academy-caddy-go-build,target=/root/.cache/go-build,sharing=locked \
+    set -eux; \
     test "$(go env GOVERSION)" = "go1.26.5"; \
     test "$CADDY_VERSION" = "2.11.4"; \
     test "$CADDY_BUILDABLE_ARTIFACT_SHA256" = "33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187"; \
     test "$CADDY_SOURCE_DATE_EPOCH" = "1780342502"; \
+    test "$CADDY_X_TEXT_VERSION" = "0.39.0"; \
+    test "$CADDY_X_TEXT_MODULE_SUM" = "h1:UbZz4pLOvn600D6Oh6GGEI6VAmndrEBLv8/6BEXzyus="; \
+    test "$CADDY_X_TEXT_GO_MOD_SUM" = "h1:3UwRclnC2g0TU9x8PZiyfOajCd1zaUNHF9cvqcQZ+ZM="; \
+    test "$CADDY_GRPC_VERSION" = "1.82.1"; \
+    test "$CADDY_GRPC_MODULE_SUM" = "h1:NnAxzGRA0677vCa4BUkOAnO5+FfQqVl9iUXeD0IqcGE="; \
+    test "$CADDY_GRPC_GO_MOD_SUM" = "h1:yzTZ1TB1Z3SG+LIYaI+WiE8D5+PZ3ArnrSp8zF3+/ZA="; \
+    test "$CADDY_MODULE_PATCH_LOCK_SHA256" = "9b61aeb0a5aee2203fcf8dce468f3ce91e717f3c055f6d08b9be96194d9db65b"; \
+    test "$CADDY_MODULE_GRAPH_SHA256" = "5850737c3bb00d6a4942b61301bf09ac39e5fefcd31974ca7b142177a6a3d0ef"; \
+    test "$CADDY_PATCHED_GO_MOD_SHA256" = "27ca6abce1c13b0be477307c8b67061408cccaa51012136fa191b755a5887db2"; \
+    test "$CADDY_PATCHED_GO_SUM_SHA256" = "7598f3ab463a3f6f723ba1a83dac1c424fd782ae716d7d62ed852965ced0bf71"; \
     artifact=/tmp/caddy-buildable-artifact.tar.gz; \
+    patch_lock=/tmp/q-academy-caddy-module-patch.lock; \
+    printf '%s  %s\n' "$CADDY_MODULE_PATCH_LOCK_SHA256" "$patch_lock" \
+      | sha256sum --check --strict -; \
+    test "$(grep -c '^module ' "$patch_lock")" -eq 13; \
+    awk 'BEGIN { count = 0 } /^#/ { next } $1 != "module" || NF != 6 { exit 1 } { count++ } END { if (count != 13) exit 1 }' \
+      "$patch_lock"; \
     curl --fail --location --silent --show-error --retry 3 \
       --connect-timeout 15 \
       --max-time 300 \
@@ -74,6 +115,65 @@ RUN set -eux; \
     grep -Fx "require github.com/caddyserver/caddy/v2 v${CADDY_VERSION}" \
       /build/caddy/go.mod; \
     cd /build/caddy; \
+    go mod download -json "golang.org/x/text@v${CADDY_X_TEXT_VERSION}" \
+      > /tmp/caddy-x-text-module.json; \
+    grep -Fq "\"Sum\": \"${CADDY_X_TEXT_MODULE_SUM}\"" \
+      /tmp/caddy-x-text-module.json; \
+    grep -Fq "\"GoModSum\": \"${CADDY_X_TEXT_GO_MOD_SUM}\"" \
+      /tmp/caddy-x-text-module.json; \
+    go mod download -json "google.golang.org/grpc@v${CADDY_GRPC_VERSION}" \
+      > /tmp/caddy-grpc-module.json; \
+    grep -Fq "\"Sum\": \"${CADDY_GRPC_MODULE_SUM}\"" \
+      /tmp/caddy-grpc-module.json; \
+    grep -Fq "\"GoModSum\": \"${CADDY_GRPC_GO_MOD_SUM}\"" \
+      /tmp/caddy-grpc-module.json; \
+    go list -mod=mod -m all > /tmp/caddy-modules.before; \
+    grep -Fx 'golang.org/x/text v0.37.0' /tmp/caddy-modules.before; \
+    grep -Fx 'google.golang.org/grpc v1.81.0' /tmp/caddy-modules.before; \
+    grep -Fx "module golang.org/x/text v0.37.0 v${CADDY_X_TEXT_VERSION} ${CADDY_X_TEXT_MODULE_SUM} ${CADDY_X_TEXT_GO_MOD_SUM}" \
+      "$patch_lock"; \
+    grep -Fx "module google.golang.org/grpc v1.81.0 v${CADDY_GRPC_VERSION} ${CADDY_GRPC_MODULE_SUM} ${CADDY_GRPC_GO_MOD_SUM}" \
+      "$patch_lock"; \
+    grep '^module ' "$patch_lock" \
+      | while read -r record module upstream_version selected_version module_sum go_mod_sum; do \
+          test "$record" = module; \
+          grep -Fx "$module $upstream_version" /tmp/caddy-modules.before; \
+        done; \
+    go get \
+      "golang.org/x/text@v${CADDY_X_TEXT_VERSION}" \
+      "google.golang.org/grpc@v${CADDY_GRPC_VERSION}"; \
+    go mod tidy; \
+    go mod download all; \
+    go mod verify; \
+    awk 'NR == FNR { if ($1 == "module") selected[$2] = $4; next } { if ($1 in selected) $2 = selected[$1]; print }' \
+      "$patch_lock" /tmp/caddy-modules.before \
+      > /tmp/caddy-modules.expected; \
+    go list -mod=readonly -m all > /tmp/caddy-modules.after; \
+    cmp /tmp/caddy-modules.expected /tmp/caddy-modules.after; \
+    printf '%s  %s\n' "$CADDY_MODULE_GRAPH_SHA256" /tmp/caddy-modules.after \
+      | sha256sum --check --strict -; \
+    printf '%s  %s\n' "$CADDY_PATCHED_GO_MOD_SHA256" go.mod \
+      | sha256sum --check --strict -; \
+    printf '%s  %s\n' "$CADDY_PATCHED_GO_SUM_SHA256" go.sum \
+      | sha256sum --check --strict -; \
+    grep '^module ' "$patch_lock" \
+      | while read -r record module upstream_version selected_version module_sum go_mod_sum; do \
+          go mod download -json "$module@$selected_version" \
+            > /tmp/caddy-module-download.json; \
+          grep -Fq "\"Path\": \"$module\"" /tmp/caddy-module-download.json; \
+          grep -Fq "\"Version\": \"$selected_version\"" /tmp/caddy-module-download.json; \
+          grep -Fq "\"Sum\": \"$module_sum\"" /tmp/caddy-module-download.json; \
+          grep -Fq "\"GoModSum\": \"$go_mod_sum\"" /tmp/caddy-module-download.json; \
+        done; \
+    printf '%s  %s\n' "$CADDY_PATCHED_GO_SUM_SHA256" go.sum \
+      | sha256sum --check --strict -; \
+    go mod vendor; \
+    printf '%s  %s\n' "$CADDY_PATCHED_GO_MOD_SHA256" go.mod \
+      | sha256sum --check --strict -; \
+    printf '%s  %s\n' "$CADDY_PATCHED_GO_SUM_SHA256" go.sum \
+      | sha256sum --check --strict -; \
+    grep -Fx "# golang.org/x/text v${CADDY_X_TEXT_VERSION}" vendor/modules.txt; \
+    grep -Fx "# google.golang.org/grpc v${CADDY_GRPC_VERSION}" vendor/modules.txt; \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
       -mod=vendor \
       -trimpath \
@@ -98,6 +198,10 @@ RUN set -eux; \
     /out/rootfs/usr/bin/caddy version | grep -E "^v${CADDY_VERSION}([[:space:]]|$)"; \
     go version -m /out/rootfs/usr/bin/caddy \
       | grep -E "^[[:space:]]*dep[[:space:]]+github.com/caddyserver/caddy/v2[[:space:]]+v${CADDY_VERSION}([[:space:]]|$)"; \
+    go version -m /out/rootfs/usr/bin/caddy \
+      | grep -E "^[[:space:]]*dep[[:space:]]+golang.org/x/text[[:space:]]+v${CADDY_X_TEXT_VERSION}([[:space:]]|$)"; \
+    go version -m /out/rootfs/usr/bin/caddy \
+      | grep -E "^[[:space:]]*dep[[:space:]]+google.golang.org/grpc[[:space:]]+v${CADDY_GRPC_VERSION}([[:space:]]|$)"; \
     if readelf -l /out/rootfs/usr/bin/caddy | grep -q 'INTERP'; then \
       printf 'Caddy must be statically linked.\n' >&2; \
       exit 1; \
@@ -128,8 +232,15 @@ RUN set -eux; \
       touch --no-dereference --date="@${CADDY_SOURCE_DATE_EPOCH}" {} +; \
     rm -f \
       "$artifact" \
+      /tmp/caddy-module-download.json \
+      /tmp/caddy-grpc-module.json \
+      /tmp/caddy-modules.after \
+      /tmp/caddy-modules.before \
+      /tmp/caddy-modules.expected \
+      /tmp/caddy-x-text-module.json \
       /tmp/caddy-reproducibility-check \
-      /tmp/q-academy-caddy-entrypoint.go
+      /tmp/q-academy-caddy-entrypoint.go \
+      "$patch_lock"
 
 FROM scratch AS caddy
 LABEL org.opencontainers.image.title="Q-Academy Caddy" \

@@ -8,7 +8,7 @@ fail() { printf 'Release artifact creation failed: %s\n' "$*" >&2; exit 1; }
 
 [[ "$release_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || fail "release tag must be git-<full commit>"
 [[ -n "$output_directory" ]] || fail "output directory is required"
-for command in docker trivy sha256sum gzip git find sort xargs; do
+for command in docker trivy sha256sum gzip git find sort xargs install; do
   command -v "$command" >/dev/null 2>&1 || fail "required command is missing: $command"
 done
 
@@ -31,6 +31,16 @@ caddy_builder_image="${CI_CADDY_BUILDER_IMAGE:-}"
 caddy_version="${CI_CADDY_VERSION:-}"
 caddy_buildable_artifact_sha256="${CI_CADDY_BUILDABLE_ARTIFACT_SHA256:-}"
 caddy_source_date_epoch="${CI_CADDY_SOURCE_DATE_EPOCH:-}"
+caddy_x_text_version="${CI_CADDY_X_TEXT_VERSION:-}"
+caddy_x_text_module_sum="${CI_CADDY_X_TEXT_MODULE_SUM:-}"
+caddy_x_text_go_mod_sum="${CI_CADDY_X_TEXT_GO_MOD_SUM:-}"
+caddy_grpc_version="${CI_CADDY_GRPC_VERSION:-}"
+caddy_grpc_module_sum="${CI_CADDY_GRPC_MODULE_SUM:-}"
+caddy_grpc_go_mod_sum="${CI_CADDY_GRPC_GO_MOD_SUM:-}"
+caddy_module_patch_lock_sha256="${CI_CADDY_MODULE_PATCH_LOCK_SHA256:-}"
+caddy_module_graph_sha256="${CI_CADDY_MODULE_GRAPH_SHA256:-}"
+caddy_patched_go_mod_sha256="${CI_CADDY_PATCHED_GO_MOD_SHA256:-}"
+caddy_patched_go_sum_sha256="${CI_CADDY_PATCHED_GO_SUM_SHA256:-}"
 [[ "$node_image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$ ]] || fail "CI_NODE_IMAGE must be digest-pinned"
 [[ "$debian_snapshot" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || fail "CI_DEBIAN_SNAPSHOT is invalid"
 [[ "$ca_certificates_version" =~ ^[A-Za-z0-9][A-Za-z0-9.+:~_-]*$ ]] || fail "CI_CA_CERTIFICATES_VERSION is invalid"
@@ -45,6 +55,21 @@ caddy_source_date_epoch="${CI_CADDY_SOURCE_DATE_EPOCH:-}"
 [[ "$caddy_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "CI_CADDY_VERSION is invalid"
 [[ "$caddy_buildable_artifact_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_CADDY_BUILDABLE_ARTIFACT_SHA256 is invalid"
 [[ "$caddy_source_date_epoch" =~ ^[1-9][0-9]{9}$ ]] || fail "CI_CADDY_SOURCE_DATE_EPOCH is invalid"
+[[ "$caddy_x_text_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || fail "CI_CADDY_X_TEXT_VERSION is invalid"
+[[ "$caddy_x_text_module_sum" =~ ^h1:[A-Za-z0-9+/]{43}=$ ]] || fail "CI_CADDY_X_TEXT_MODULE_SUM is invalid"
+[[ "$caddy_x_text_go_mod_sum" =~ ^h1:[A-Za-z0-9+/]{43}=$ ]] || fail "CI_CADDY_X_TEXT_GO_MOD_SUM is invalid"
+[[ "$caddy_grpc_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || fail "CI_CADDY_GRPC_VERSION is invalid"
+[[ "$caddy_grpc_module_sum" =~ ^h1:[A-Za-z0-9+/]{43}=$ ]] || fail "CI_CADDY_GRPC_MODULE_SUM is invalid"
+[[ "$caddy_grpc_go_mod_sum" =~ ^h1:[A-Za-z0-9+/]{43}=$ ]] || fail "CI_CADDY_GRPC_GO_MOD_SUM is invalid"
+[[ "$caddy_module_patch_lock_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_CADDY_MODULE_PATCH_LOCK_SHA256 is invalid"
+[[ "$caddy_module_graph_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_CADDY_MODULE_GRAPH_SHA256 is invalid"
+[[ "$caddy_patched_go_mod_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_CADDY_PATCHED_GO_MOD_SHA256 is invalid"
+[[ "$caddy_patched_go_sum_sha256" =~ ^[a-f0-9]{64}$ ]] || fail "CI_CADDY_PATCHED_GO_SUM_SHA256 is invalid"
+caddy_module_patch_lock="scripts/ops/caddy-module-patch.lock"
+[[ -f "$caddy_module_patch_lock" && ! -L "$caddy_module_patch_lock" ]] || fail "Caddy module patch lock is unavailable"
+caddy_module_patch_lock_actual="$(sha256sum -- "$caddy_module_patch_lock")"
+caddy_module_patch_lock_actual="${caddy_module_patch_lock_actual%% *}"
+[[ "$caddy_module_patch_lock_actual" == "$caddy_module_patch_lock_sha256" ]] || fail "Caddy module patch lock checksum mismatch"
 
 image_components=(postgres app migrator key-rotation tenant-ops media-runner media-preflight s3-app-principal-preflight dispatcher caddy)
 image_variables=(
@@ -67,6 +92,8 @@ else
   mkdir -p -- "$output_directory"
 fi
 mkdir -- "$output_directory/evidence"
+install -m 0444 -- "$caddy_module_patch_lock" \
+  "$output_directory/evidence/caddy-module-patch.lock"
 
 {
   printf 'Q_ACADEMY_RELEASE_TAG=%s\n' "$release_tag"
@@ -86,6 +113,16 @@ mkdir -- "$output_directory/evidence"
   printf 'Q_ACADEMY_CADDY_VERSION=%s\n' "$caddy_version"
   printf 'Q_ACADEMY_CADDY_BUILDABLE_ARTIFACT_SHA256=%s\n' "$caddy_buildable_artifact_sha256"
   printf 'Q_ACADEMY_CADDY_SOURCE_DATE_EPOCH=%s\n' "$caddy_source_date_epoch"
+  printf 'Q_ACADEMY_CADDY_X_TEXT_VERSION=%s\n' "$caddy_x_text_version"
+  printf 'Q_ACADEMY_CADDY_X_TEXT_MODULE_SUM=%s\n' "$caddy_x_text_module_sum"
+  printf 'Q_ACADEMY_CADDY_X_TEXT_GO_MOD_SUM=%s\n' "$caddy_x_text_go_mod_sum"
+  printf 'Q_ACADEMY_CADDY_GRPC_VERSION=%s\n' "$caddy_grpc_version"
+  printf 'Q_ACADEMY_CADDY_GRPC_MODULE_SUM=%s\n' "$caddy_grpc_module_sum"
+  printf 'Q_ACADEMY_CADDY_GRPC_GO_MOD_SUM=%s\n' "$caddy_grpc_go_mod_sum"
+  printf 'Q_ACADEMY_CADDY_MODULE_PATCH_LOCK_SHA256=%s\n' "$caddy_module_patch_lock_sha256"
+  printf 'Q_ACADEMY_CADDY_MODULE_GRAPH_SHA256=%s\n' "$caddy_module_graph_sha256"
+  printf 'Q_ACADEMY_CADDY_PATCHED_GO_MOD_SHA256=%s\n' "$caddy_patched_go_mod_sha256"
+  printf 'Q_ACADEMY_CADDY_PATCHED_GO_SUM_SHA256=%s\n' "$caddy_patched_go_sum_sha256"
   for index in "${!image_components[@]}"; do
     image="q-academy-${image_components[$index]}:$release_tag"
     image_id="$(docker image inspect --format '{{.Id}}' "$image")" || fail "release image is unavailable: $image"

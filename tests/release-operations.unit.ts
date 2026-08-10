@@ -1429,6 +1429,75 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /CI_CADDY_SOURCE_DATE_EPOCH: "[0-9]{10}"/,
   );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_X_TEXT_VERSION: "0[.]39[.]0"/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_X_TEXT_MODULE_SUM: "h1:[A-Za-z0-9+/]{43}="/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_X_TEXT_GO_MOD_SUM: "h1:[A-Za-z0-9+/]{43}="/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_GRPC_VERSION: "1[.]82[.]1"/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_GRPC_MODULE_SUM: "h1:[A-Za-z0-9+/]{43}="/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_GRPC_GO_MOD_SUM: "h1:[A-Za-z0-9+/]{43}="/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_MODULE_PATCH_LOCK_SHA256: "9b61aeb0a5aee2203fcf8dce468f3ce91e717f3c055f6d08b9be96194d9db65b"/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_MODULE_GRAPH_SHA256: "5850737c3bb00d6a4942b61301bf09ac39e5fefcd31974ca7b142177a6a3d0ef"/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_PATCHED_GO_MOD_SHA256: "27ca6abce1c13b0be477307c8b67061408cccaa51012136fa191b755a5887db2"/,
+  );
+  assert.match(
+    continuousIntegration,
+    /CI_CADDY_PATCHED_GO_SUM_SHA256: "7598f3ab463a3f6f723ba1a83dac1c424fd782ae716d7d62ed852965ced0bf71"/,
+  );
+  for (const name of [
+    "CADDY_X_TEXT_VERSION",
+    "CADDY_X_TEXT_MODULE_SUM",
+    "CADDY_X_TEXT_GO_MOD_SUM",
+    "CADDY_GRPC_VERSION",
+    "CADDY_GRPC_MODULE_SUM",
+    "CADDY_GRPC_GO_MOD_SUM",
+    "CADDY_MODULE_PATCH_LOCK_SHA256",
+    "CADDY_MODULE_GRAPH_SHA256",
+    "CADDY_PATCHED_GO_MOD_SHA256",
+    "CADDY_PATCHED_GO_SUM_SHA256",
+  ]) {
+    assert.match(
+      continuousIntegration,
+      new RegExp(`--build-arg ${name}="\\$CI_${name}"`),
+    );
+    assert.match(
+      createReleaseArtifact,
+      new RegExp(`Q_ACADEMY_${name}`),
+    );
+  }
+  assert.match(
+    createReleaseArtifact,
+    /sha256sum -- "\$caddy_module_patch_lock"/,
+  );
+  assert.match(
+    createReleaseArtifact,
+    /evidence\/caddy-module-patch[.]lock/,
+  );
   const pinnedNodeImage =
     "node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
   assert.equal(continuousIntegration.split(pinnedNodeImage).length - 1, 2);

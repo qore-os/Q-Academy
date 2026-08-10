@@ -50,6 +50,33 @@ test("documentation binds the production smoke to the exact CI image", () => {
   assert.match(readiness, /Produktions-App-Image wird per[\s\S]*Browser-Smoke/);
 });
 
+test("Caddy dependency remediation remains content-pinned and release-auditable", () => {
+  assert.match(
+    deployment,
+    /CVE-2026-56852[\s\S]*`golang[.]org\/x\/text` `v0[.]39[.]0`/,
+  );
+  assert.match(
+    deployment,
+    /GHSA-hrxh-6v49-42gf[\s\S]*`google[.]golang[.]org\/grpc` `v1[.]82[.]1`/,
+  );
+  assert.match(
+    deployment,
+    /elf weitere Abhaengigkeiten[\s\S]*Alle 13 Versionspaare[\s\S]*`scripts\/ops\/caddy-module-patch[.]lock`/,
+  );
+  assert.match(
+    deployment,
+    /`go mod tidy`[\s\S]*`go mod verify`[\s\S]*548-zeiligen Endgraphen[\s\S]*`go[.]mod`[\s\S]*`go[.]sum`/,
+  );
+  assert.match(
+    deployment,
+    /Lockfile-Inhalt und alle Graph-Hashes[\s\S]*`release-build[.]env`/,
+  );
+  assert.match(
+    deployment,
+    /Trivy[\s\S]*fixbare `HIGH`- oder `CRITICAL`-Befunde/,
+  );
+});
+
 test("external production and acceptance gates remain open", () => {
   assert.match(readiness, /- \[ \] Produktionsartefakt und CI\/CD sind reproduzierbar/);
   assert.match(readiness, /- \[ \] Managed PostgreSQL, PITR und Restore-Test sind gruen/);

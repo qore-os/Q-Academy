@@ -67,6 +67,28 @@ PostgreSQL und App kommunizieren in diesem Ein-Host-Modell ausschliesslich ueber
 ein internes, nicht am Host publiziertes Docker-Netz. Fuer eine spaetere externe
 oder Managed-Datenbank ist TLS mit Zertifikatspruefung zwingend nachzuruesten.
 
+Der Caddy-Quellvertrag verwendet das offizielle Buildable Artifact `v2.11.4`
+ohne zusaetzliche xcaddy-Plugins und prueft dessen SHA-256 vor dem Entpacken.
+Weil dessen Upstream-Vendorgraph fuer CVE-2026-56852 noch
+`golang.org/x/text` `v0.37.0` und fuer GHSA-hrxh-6v49-42gf noch
+`google.golang.org/grpc` `v1.81.0` enthaelt, fordert der Builder die ersten
+gefixten Versionen an:
+`golang.org/x/text` `v0.39.0` und `google.golang.org/grpc` `v1.82.1`.
+Go-MVS hebt dabei elf weitere Abhaengigkeiten an. Alle 13 Versionspaare sowie
+deren Inhalts- und `go.mod`-Summen aus der offiziellen Go Checksum Database sind
+in `scripts/ops/caddy-module-patch.lock` festgeschrieben. Der Builder akzeptiert
+genau diesen Diff gegen den durch das Upstream-Artefakt gepinnten Ausgangsgraphen.
+Nach `go mod tidy` laedt er den gesamten Endgraphen, fuehrt `go mod verify` gegen
+den persistenten Modulcache aus und prueft die exakten SHA-256-Werte des
+548-zeiligen Endgraphen, von `go.mod` und von `go.sum`, bevor er den Vendorbaum
+erzeugt. Anschliessend prueft er beide Security-Zielversionen in den Metadaten
+des statisch gelinkten Binaries und baut das Binary zweimal byteidentisch.
+
+Der Lockfile-Inhalt und alle Graph-Hashes werden in der Release-Evidence sowie
+in `release-build.env` protokolliert. Der exakte Scratch-Image-Digest darf nur
+veroeffentlicht werden, wenn Trivy fuer fixbare `HIGH`- oder `CRITICAL`-Befunde
+ohne Ausnahme gruen ist.
+
 ## OIDC und kanonische Login-Hosts
 
 OIDC wird pro Tenant in der Owner-Oberflaeche beziehungsweise ueber die
