@@ -60,10 +60,12 @@ ARG CADDY_MODULE_PATCH_LOCK_SHA256
 ARG CADDY_MODULE_GRAPH_SHA256
 ARG CADDY_PATCHED_GO_MOD_SHA256
 ARG CADDY_PATCHED_GO_SUM_SHA256
-ENV GOTOOLCHAIN=local \
+ENV GOENV=off \
+    GOTOOLCHAIN=local \
     GOPROXY=https://proxy.golang.org \
     GOSUMDB=sum.golang.org
 COPY scripts/ops/caddy-module-patch.lock /tmp/q-academy-caddy-module-patch.lock
+COPY scripts/ops/caddy-go-network-retry.sh /tmp/q-academy-caddy-go-network-retry.sh
 COPY scripts/ops/caddy-runtime-entrypoint.go /tmp/q-academy-caddy-entrypoint.go
 RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,id=q-academy-caddy-go-build,target=/root/.cache/go-build,sharing=locked \
@@ -83,6 +85,7 @@ RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=lock
     test "$CADDY_PATCHED_GO_MOD_SHA256" = "27ca6abce1c13b0be477307c8b67061408cccaa51012136fa191b755a5887db2"; \
     test "$CADDY_PATCHED_GO_SUM_SHA256" = "7598f3ab463a3f6f723ba1a83dac1c424fd782ae716d7d62ed852965ced0bf71"; \
     artifact=/tmp/caddy-buildable-artifact.tar.gz; \
+    go_network_retry=/tmp/q-academy-caddy-go-network-retry.sh; \
     patch_lock=/tmp/q-academy-caddy-module-patch.lock; \
     printf '%s  %s\n' "$CADDY_MODULE_PATCH_LOCK_SHA256" "$patch_lock" \
       | sha256sum --check --strict -; \
@@ -115,19 +118,29 @@ RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=lock
     grep -Fx "require github.com/caddyserver/caddy/v2 v${CADDY_VERSION}" \
       /build/caddy/go.mod; \
     cd /build/caddy; \
-    go mod download -json "golang.org/x/text@v${CADDY_X_TEXT_VERSION}" \
-      > /tmp/caddy-x-text-module.json; \
+    /bin/bash "$go_network_retry" \
+      --module-files \
+      --label x-text-target-download \
+      --output /tmp/caddy-x-text-module.json \
+      -- go mod download -json "golang.org/x/text@v${CADDY_X_TEXT_VERSION}"; \
     grep -Fq "\"Sum\": \"${CADDY_X_TEXT_MODULE_SUM}\"" \
       /tmp/caddy-x-text-module.json; \
     grep -Fq "\"GoModSum\": \"${CADDY_X_TEXT_GO_MOD_SUM}\"" \
       /tmp/caddy-x-text-module.json; \
-    go mod download -json "google.golang.org/grpc@v${CADDY_GRPC_VERSION}" \
-      > /tmp/caddy-grpc-module.json; \
+    /bin/bash "$go_network_retry" \
+      --module-files \
+      --label grpc-target-download \
+      --output /tmp/caddy-grpc-module.json \
+      -- go mod download -json "google.golang.org/grpc@v${CADDY_GRPC_VERSION}"; \
     grep -Fq "\"Sum\": \"${CADDY_GRPC_MODULE_SUM}\"" \
       /tmp/caddy-grpc-module.json; \
     grep -Fq "\"GoModSum\": \"${CADDY_GRPC_GO_MOD_SUM}\"" \
       /tmp/caddy-grpc-module.json; \
-    go list -mod=mod -m all > /tmp/caddy-modules.before; \
+    /bin/bash "$go_network_retry" \
+      --module-files \
+      --label upstream-module-list \
+      --output /tmp/caddy-modules.before \
+      -- go list -mod=mod -m all; \
     grep -Fx 'golang.org/x/text v0.37.0' /tmp/caddy-modules.before; \
     grep -Fx 'google.golang.org/grpc v1.81.0' /tmp/caddy-modules.before; \
     grep -Fx "module golang.org/x/text v0.37.0 v${CADDY_X_TEXT_VERSION} ${CADDY_X_TEXT_MODULE_SUM} ${CADDY_X_TEXT_GO_MOD_SUM}" \
@@ -139,16 +152,28 @@ RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=lock
           test "$record" = module; \
           grep -Fx "$module $upstream_version" /tmp/caddy-modules.before; \
         done; \
-    go get \
-      "golang.org/x/text@v${CADDY_X_TEXT_VERSION}" \
-      "google.golang.org/grpc@v${CADDY_GRPC_VERSION}"; \
-    go mod tidy; \
-    go mod download all; \
+    /bin/bash "$go_network_retry" \
+      --module-files \
+      --label pinned-module-upgrade \
+      -- go get \
+        "golang.org/x/text@v${CADDY_X_TEXT_VERSION}" \
+        "google.golang.org/grpc@v${CADDY_GRPC_VERSION}"; \
+    /bin/bash "$go_network_retry" \
+      --module-files \
+      --label module-tidy \
+      -- go mod tidy; \
+    /bin/bash "$go_network_retry" \
+      --module-files \
+      --label module-download-all \
+      -- go mod download all; \
     go mod verify; \
     awk 'NR == FNR { if ($1 == "module") selected[$2] = $4; next } { if ($1 in selected) $2 = selected[$1]; print }' \
       "$patch_lock" /tmp/caddy-modules.before \
       > /tmp/caddy-modules.expected; \
-    go list -mod=readonly -m all > /tmp/caddy-modules.after; \
+    /bin/bash "$go_network_retry" \
+      --label patched-module-list \
+      --output /tmp/caddy-modules.after \
+      -- go list -mod=readonly -m all; \
     cmp /tmp/caddy-modules.expected /tmp/caddy-modules.after; \
     printf '%s  %s\n' "$CADDY_MODULE_GRAPH_SHA256" /tmp/caddy-modules.after \
       | sha256sum --check --strict -; \
@@ -158,8 +183,11 @@ RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=lock
       | sha256sum --check --strict -; \
     grep '^module ' "$patch_lock" \
       | while read -r record module upstream_version selected_version module_sum go_mod_sum; do \
-          go mod download -json "$module@$selected_version" \
-            > /tmp/caddy-module-download.json; \
+          /bin/bash "$go_network_retry" \
+            --module-files \
+            --label locked-module-download \
+            --output /tmp/caddy-module-download.json \
+            -- go mod download -json "$module@$selected_version"; \
           grep -Fq "\"Path\": \"$module\"" /tmp/caddy-module-download.json; \
           grep -Fq "\"Version\": \"$selected_version\"" /tmp/caddy-module-download.json; \
           grep -Fq "\"Sum\": \"$module_sum\"" /tmp/caddy-module-download.json; \
@@ -167,6 +195,9 @@ RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=lock
         done; \
     printf '%s  %s\n' "$CADDY_PATCHED_GO_SUM_SHA256" go.sum \
       | sha256sum --check --strict -; \
+    export GOPROXY=off GOSUMDB=off; \
+    test "$(go env GOPROXY)" = off; \
+    test "$(go env GOSUMDB)" = off; \
     go mod vendor; \
     printf '%s  %s\n' "$CADDY_PATCHED_GO_MOD_SHA256" go.mod \
       | sha256sum --check --strict -; \
@@ -239,6 +270,7 @@ RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=lock
       /tmp/caddy-modules.expected \
       /tmp/caddy-x-text-module.json \
       /tmp/caddy-reproducibility-check \
+      "$go_network_retry" \
       /tmp/q-academy-caddy-entrypoint.go \
       "$patch_lock"
 

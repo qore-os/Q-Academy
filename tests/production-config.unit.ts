@@ -581,7 +581,7 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
   assert.match(dockerfile, /GoModSum/);
   assert.match(
     dockerfile,
-    /go get \\\n+      "golang[.]org\/x\/text@v\$\{CADDY_X_TEXT_VERSION\}" \\\n+      "google[.]golang[.]org\/grpc@v\$\{CADDY_GRPC_VERSION\}"/,
+    /go get \\\n+        "golang[.]org\/x\/text@v\$\{CADDY_X_TEXT_VERSION\}" \\\n+        "google[.]golang[.]org\/grpc@v\$\{CADDY_GRPC_VERSION\}"/,
   );
   assert.match(dockerfile, /caddy-modules[.]before/);
   assert.match(dockerfile, /caddy-modules[.]expected/);
