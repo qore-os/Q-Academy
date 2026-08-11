@@ -128,6 +128,12 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare isolated npm cache
+        shell: bash
+        run: |
+          npm_cache="$(bash scripts/ci/validate-npm-cache.sh --prepare)"
+          printf 'NPM_CONFIG_CACHE=%s\n' "$npm_cache" >>"$GITHUB_ENV"
+
       - name: Set up Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
@@ -137,11 +143,37 @@ jobs:
             package-lock.json
             integrations/automation-connectors/zapier/package-lock.json
 
+      - name: Validate restored npm cache
+        shell: bash
+        run: bash scripts/ci/validate-npm-cache.sh --allow-empty
+
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci \
+            --no-audit \
+            --no-fund \
+            --prefer-offline \
+            --fetch-retries=5 \
+            --fetch-retry-factor=2 \
+            --fetch-retry-mintimeout=10000 \
+            --fetch-retry-maxtimeout=60000 \
+            --maxsockets=5
 
       - name: Install Zapier connector dependencies
-        run: npm ci --prefix integrations/automation-connectors/zapier
+        run: |
+          npm ci --prefix integrations/automation-connectors/zapier \
+            --no-audit \
+            --no-fund \
+            --prefer-offline \
+            --fetch-retries=5 \
+            --fetch-retry-factor=2 \
+            --fetch-retry-mintimeout=10000 \
+            --fetch-retry-maxtimeout=60000 \
+            --maxsockets=5
+
+      - name: Validate populated npm cache
+        shell: bash
+        run: bash scripts/ci/validate-npm-cache.sh --require-populated
 
       - name: Generate disposable CI VAPID keys
         shell: bash
@@ -335,6 +367,22 @@ jobs:
           RUNTIME_MEDIA_CRON_SECRET: 7d6e5f4a3b2c11009988776655443322bbccddeeff00112233445566778899aa
           RUNTIME_MEDIA_METRICS_SECRET: 9f8e7d6c5b4a33221100998877665544ddeeff00112233445566778899aabbdd
         run: |
+          set -euo pipefail
+
+          npm_cacache="$(
+            bash scripts/ci/validate-npm-cache.sh \
+              --require-populated \
+              --print-cacache
+          )"
+          npm_build_args=(
+            --build-context
+            "q-academy-restored-npm-cache=$npm_cacache"
+            --build-arg
+            NPM_CACHE_SEED_SOURCE=q-academy-restored-npm-cache
+            --build-arg
+            NPM_CONFIG_OFFLINE=true
+          )
+
           docker build \
             --file deploy/postgres/Dockerfile \
             --build-arg POSTGRES_BASE_IMAGE="$CI_POSTGRES_BASE_IMAGE" \
@@ -344,24 +392,29 @@ jobs:
             --build-arg GOSU_SOURCE_SHA256="$CI_GOSU_SOURCE_SHA256" \
             -t "q-academy-postgres:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target runner \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             --build-arg NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
             --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
             -t "q-academy-app:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target migrator \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-migrator:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target key-rotation \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-key-rotation:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target tenant-ops \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target media-runner \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
@@ -372,6 +425,7 @@ jobs:
             --build-arg NEXT_PUBLIC_ENABLE_PWA=true \
             -t "q-academy-media-runner:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target media-preflight \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             --build-arg DEBIAN_SNAPSHOT="$CI_DEBIAN_SNAPSHOT" \
@@ -380,6 +434,7 @@ jobs:
             --build-arg MESA_VERSION="$CI_MESA_VERSION" \
             -t "q-academy-media-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
           docker build \
+            "${npm_build_args[@]}" \
             --target s3-app-principal-preflight \
             --build-arg NODE_IMAGE="$CI_NODE_IMAGE" \
             -t "q-academy-s3-app-principal-preflight:$Q_ACADEMY_CI_RELEASE_TAG" .
@@ -1023,14 +1078,14 @@ jobs:
           echo "Disk usage before targeted cleanup:"
           df -h -- / "$RUNNER_TEMP" /tmp
           docker system df
-          du -sh -- .next node_modules "$HOME/.npm" "$HOME/.cache/ms-playwright" .data 2>/dev/null || true
+          du -sh -- .next node_modules "$NPM_CONFIG_CACHE" "$HOME/.cache/ms-playwright" .data 2>/dev/null || true
           record_release_image_ids "$before_manifest"
 
           docker container prune --force
           docker image rm "$CI_ZAP_IMAGE" "$CI_PROMETHEUS_IMAGE"
           docker builder prune --all --force
           docker image prune --force
-          npm cache clean --force
+          rm -rf -- "$NPM_CONFIG_CACHE/_logs" "$NPM_CONFIG_CACHE/_npx"
           rm -rf -- .next
 
           record_release_image_ids "$after_manifest"

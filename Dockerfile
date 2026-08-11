@@ -1,4 +1,5 @@
 ARG NODE_IMAGE=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+ARG NPM_CACHE_SEED_SOURCE=scratch
 ARG CADDY_BUILDER_IMAGE=golang:1.26.5-bookworm@sha256:3f6236bd765f898a2a3c2946112b04097814c4529d44534674700cd07b9c6b4c
 ARG CADDY_VERSION=2.11.4
 ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187
@@ -17,6 +18,8 @@ ARG DEBIAN_SNAPSHOT=20260714T202849Z
 ARG CA_CERTIFICATES_VERSION=20230311+deb12u1
 ARG FFMPEG_VERSION=7:5.1.9-0+deb12u1
 ARG MESA_VERSION=22.3.6-1+deb12u2
+
+FROM ${NPM_CACHE_SEED_SOURCE} AS npm-cache-seed
 
 FROM ${NODE_IMAGE} AS base
 ARG DEBIAN_SNAPSHOT
@@ -297,9 +300,21 @@ COPY --chown=nextjs:nodejs scripts/ops/dispatcher-http-post.mjs /opt/q-academy/d
 USER 1001:1001
 
 FROM base AS dependencies
+ARG NPM_CONFIG_OFFLINE=false
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,id=q-academy-npm-cache,target=/root/.npm,sharing=locked \
-    npm ci \
+    --mount=type=bind,from=npm-cache-seed,source=.,target=/tmp/q-academy-npm-cache-seed,ro \
+    set -eux; \
+    unsafe_cache_entry="$(find /tmp/q-academy-npm-cache-seed -mindepth 1 ! -type d ! -type f -print -quit)"; \
+    if test -n "$unsafe_cache_entry"; then \
+      printf 'The npm cache seed contains an unsafe entry: %s\n' "$unsafe_cache_entry" >&2; \
+      exit 1; \
+    fi; \
+    install -d -m 0700 /root/.npm/_cacache; \
+    cp -a /tmp/q-academy-npm-cache-seed/. /root/.npm/_cacache/; \
+    NPM_CONFIG_CACHE=/root/.npm NPM_CONFIG_OFFLINE=true NPM_CONFIG_UPDATE_NOTIFIER=false NO_UPDATE_NOTIFIER=1 \
+      npm cache verify --cache /root/.npm; \
+    NPM_CONFIG_CACHE=/root/.npm NPM_CONFIG_OFFLINE="$NPM_CONFIG_OFFLINE" NPM_CONFIG_UPDATE_NOTIFIER=false NO_UPDATE_NOTIFIER=1 npm ci \
       --no-audit \
       --no-fund \
       --prefer-offline \
@@ -326,9 +341,21 @@ RUN test -n "$NEXT_PUBLIC_APP_URL" \
     && npm run build
 
 FROM base AS production-dependencies
+ARG NPM_CONFIG_OFFLINE=false
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,id=q-academy-npm-cache,target=/root/.npm,sharing=locked \
-    npm ci --omit=dev \
+    --mount=type=bind,from=npm-cache-seed,source=.,target=/tmp/q-academy-npm-cache-seed,ro \
+    set -eux; \
+    unsafe_cache_entry="$(find /tmp/q-academy-npm-cache-seed -mindepth 1 ! -type d ! -type f -print -quit)"; \
+    if test -n "$unsafe_cache_entry"; then \
+      printf 'The npm cache seed contains an unsafe entry: %s\n' "$unsafe_cache_entry" >&2; \
+      exit 1; \
+    fi; \
+    install -d -m 0700 /root/.npm/_cacache; \
+    cp -a /tmp/q-academy-npm-cache-seed/. /root/.npm/_cacache/; \
+    NPM_CONFIG_CACHE=/root/.npm NPM_CONFIG_OFFLINE=true NPM_CONFIG_UPDATE_NOTIFIER=false NO_UPDATE_NOTIFIER=1 \
+      npm cache verify --cache /root/.npm; \
+    NPM_CONFIG_CACHE=/root/.npm NPM_CONFIG_OFFLINE="$NPM_CONFIG_OFFLINE" NPM_CONFIG_UPDATE_NOTIFIER=false NO_UPDATE_NOTIFIER=1 npm ci --omit=dev \
       --no-audit \
       --no-fund \
       --prefer-offline \
