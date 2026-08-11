@@ -865,12 +865,13 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Prepare ephemeral production-smoke credentials
+        id: prepare_production_smoke_credentials
         shell: bash
         env:
           NODE_ENV: test
           ALLOW_DESTRUCTIVE_SEED: "true"
           SEED_EXPECTED_DATABASE: q_academy
-        run: npx tsx scripts/ci/production-smoke-credentials.ts prepare
+        run: ./node_modules/.bin/tsx scripts/ci/production-smoke-credentials.ts prepare
 
       - name: Smoke-test exact production app image
         shell: bash
@@ -949,13 +950,13 @@ jobs:
           exit "$smoke_status"
 
       - name: Restore disposable demo credentials
-        if: always()
+        if: always() && steps.prepare_production_smoke_credentials.outcome != 'skipped'
         shell: bash
         env:
           NODE_ENV: test
           ALLOW_DESTRUCTIVE_SEED: "true"
           SEED_EXPECTED_DATABASE: q_academy
-        run: npx tsx scripts/ci/production-smoke-credentials.ts restore
+        run: ./node_modules/.bin/tsx scripts/ci/production-smoke-credentials.ts restore
 
       - name: Smoke-test production media worker
         shell: bash

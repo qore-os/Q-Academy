@@ -49,37 +49,33 @@ runner_temp_input="${runner_temp_input%/}"
 [[ -d "$runner_temp_input" ]] || fail "RUNNER_TEMP is not a directory"
 
 runner_temp="$(realpath --canonicalize-existing -- "$runner_temp_input")"
-cache_input="$runner_temp_input/$CACHE_DIRECTORY_NAME"
 expected_cache="$runner_temp/$CACHE_DIRECTORY_NAME"
 
-if [[ "$mode" == --prepare ]]; then
-  if [[ -e "$cache_input" || -L "$cache_input" ]]; then
-    fail "the isolated cache path already exists"
-  fi
+npm_cache=""
+validate_cache_root_identity() {
+  local cache_gid
+  local cache_metadata
+  local cache_mode
+  local cache_uid
+  local candidate="$1"
 
-  old_umask="$(umask)"
-  umask 077
-  install -d -m 0700 -- "$cache_input"
-  umask "$old_umask"
+  [[ "$candidate" == /* ]] || fail "NPM_CONFIG_CACHE must be absolute"
+  [[ -d "$candidate" ]] || fail "the isolated cache root is missing"
+  [[ ! -L "$candidate" ]] || fail "the isolated cache root is a symlink"
 
-  [[ ! -L "$cache_input" ]] || fail "the isolated cache root is a symlink"
-  prepared_cache="$(realpath --canonicalize-existing -- "$cache_input")"
-  [[ "$prepared_cache" == "$expected_cache" ]] ||
-    fail "the isolated cache escaped RUNNER_TEMP"
-  printf '%s\n' "$cache_input"
-  exit 0
-fi
+  npm_cache="$(realpath --canonicalize-existing -- "$candidate")"
+  [[ "$candidate" == "$npm_cache" ]] ||
+    fail "NPM_CONFIG_CACHE is not canonical"
+  [[ "$npm_cache" == "$expected_cache" ]] ||
+    fail "NPM_CONFIG_CACHE is not the exact isolated cache path"
 
-npm_cache_input="${NPM_CONFIG_CACHE:-}"
-[[ -n "$npm_cache_input" ]] || fail "NPM_CONFIG_CACHE is required"
-[[ "$npm_cache_input" == "$cache_input" ]] ||
-  fail "NPM_CONFIG_CACHE is not the prepared isolated path"
-[[ -d "$npm_cache_input" ]] || fail "the isolated cache root is missing"
-[[ ! -L "$npm_cache_input" ]] || fail "the isolated cache root is a symlink"
-
-npm_cache="$(realpath --canonicalize-existing -- "$npm_cache_input")"
-[[ "$npm_cache" == "$expected_cache" ]] ||
-  fail "the isolated cache escaped RUNNER_TEMP"
+  cache_metadata="$(stat --format='%u:%g:%a' -- "$npm_cache")" ||
+    fail "the isolated cache metadata is unavailable"
+  IFS=: read -r cache_uid cache_gid cache_mode <<<"$cache_metadata"
+  [[ "$cache_uid" == "$(id -u)" && "$cache_gid" == "$(id -g)" ]] ||
+    fail "the isolated cache ownership is invalid"
+  [[ "$cache_mode" == 700 ]] || fail "the isolated cache mode is not 0700"
+}
 
 validate_cache_root_entry_types() {
   local unsafe_entry
@@ -90,6 +86,22 @@ validate_cache_root_entry_types() {
     fail "the isolated cache contains an unsafe entry: $unsafe_entry"
 }
 
+if [[ "$mode" == --prepare ]]; then
+  cache_input="$expected_cache"
+  if [[ ! -e "$cache_input" && ! -L "$cache_input" ]]; then
+    umask 077
+    mkdir -- "$cache_input" || fail "failed to create the isolated cache"
+  fi
+  validate_cache_root_identity "$cache_input"
+  validate_cache_root_entry_types
+  printf '%s\n' "$npm_cache"
+  exit 0
+fi
+
+npm_cache_input="${NPM_CONFIG_CACHE:-}"
+[[ -n "$npm_cache_input" ]] || fail "NPM_CONFIG_CACHE is required"
+validate_cache_root_identity "$npm_cache_input"
+
 validate_cache_root_entry_types
 configured_cache="$(
   NPM_CONFIG_OFFLINE=true \
@@ -97,7 +109,7 @@ configured_cache="$(
     NO_UPDATE_NOTIFIER=1 \
     npm config get cache
 )"
-[[ "$configured_cache" == "$npm_cache_input" ]] ||
+[[ "$configured_cache" == "$npm_cache" ]] ||
   fail "npm did not retain the isolated cache configuration"
 
 validate_cacache_structure() {
@@ -136,7 +148,7 @@ validate_cacache_structure() {
   fi
 }
 
-cacache_input="$npm_cache_input/_cacache"
+cacache_input="$npm_cache/_cacache"
 if [[ ! -e "$cacache_input" && ! -L "$cacache_input" ]]; then
   [[ "$mode" == --allow-empty ]] || fail "_cacache is missing"
   exit 0
@@ -152,6 +164,7 @@ NPM_CONFIG_OFFLINE=true \
   NPM_CONFIG_UPDATE_NOTIFIER=false \
   NO_UPDATE_NOTIFIER=1 \
   npm cache verify --cache "$npm_cache" >&2
+validate_cache_root_identity "$npm_cache"
 validate_cache_root_entry_types
 validate_cacache_structure "$cacache_input" "$require_populated"
 

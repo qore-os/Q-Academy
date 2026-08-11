@@ -229,13 +229,26 @@ test("CI rotates and always restores only disposable production-smoke credential
       restoreStart > smokeStart &&
       mediaStart > restoreStart,
   );
+  const prepareStep = workflow.slice(prepareStart, smokeStart);
   assert.match(
-    workflow.slice(prepareStart, smokeStart),
-    /production-smoke-credentials\.ts prepare/,
+    prepareStep,
+    /id: prepare_production_smoke_credentials/,
   );
+  assert.match(
+    prepareStep,
+    /\.\/node_modules\/\.bin\/tsx scripts\/ci\/production-smoke-credentials\.ts prepare/,
+  );
+  assert.doesNotMatch(prepareStep, /\bnpx\b/);
   const restoreStep = workflow.slice(restoreStart, mediaStart);
-  assert.match(restoreStep, /if: always\(\)/);
-  assert.match(restoreStep, /production-smoke-credentials\.ts restore/);
+  assert.match(
+    restoreStep,
+    /if: always\(\) && steps\.prepare_production_smoke_credentials\.outcome != 'skipped'/,
+  );
+  assert.match(
+    restoreStep,
+    /\.\/node_modules\/\.bin\/tsx scripts\/ci\/production-smoke-credentials\.ts restore/,
+  );
+  assert.doesNotMatch(restoreStep, /\bnpx\b/);
 
   assert.match(credentials, /CI !== "true" \|\| environment\.GITHUB_ACTIONS !== "true"/);
   assert.match(credentials, /assertDestructiveSeedAllowed\(environment\)/);

@@ -84,6 +84,13 @@ test("Quality seeds only npm cacache and makes every Node image build offline", 
       installPosition < populatedPosition &&
       populatedPosition < buildPosition,
   );
+  const setupNodeStep = workflow.slice(setupNodePosition, restoredPosition);
+  assert.match(setupNodeStep, /cache: npm/);
+  assert.match(setupNodeStep, /package-lock\.json/);
+  assert.match(
+    setupNodeStep,
+    /integrations\/automation-connectors\/zapier\/package-lock\.json/,
+  );
   assert.match(
     workflow,
     /validate-npm-cache[.]sh --prepare[)]"\n\s+printf 'NPM_CONFIG_CACHE=%s\\n' "\$npm_cache" >>"\$GITHUB_ENV"/,
