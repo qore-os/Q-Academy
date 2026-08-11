@@ -32,7 +32,11 @@ test("npm dependency stages retain a verified cache across interrupted downloads
     assert.match(stage, /ARG NPM_CONFIG_OFFLINE=false/);
     assert.match(
       stage,
-      /--mount=type=bind,from=npm-cache-seed,source=\.,target=\/tmp\/q-academy-npm-cache-seed,ro/,
+      /--mount=type=bind,from=npm-cache-seed,source=\.,target=\/tmp\/q-academy-npm-cache-seed(?:\s|\\)/,
+    );
+    assert.doesNotMatch(
+      stage,
+      /target=\/tmp\/q-academy-npm-cache-seed,(?:rw|readwrite)/,
     );
     assert.match(
       stage,

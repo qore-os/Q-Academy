@@ -1,4 +1,10 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Page,
+  type Request,
+  type TestInfo,
+} from "@playwright/test";
 
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 
@@ -7,6 +13,14 @@ type Diagnostics = {
   failedRequests: string[];
   pageErrors: string[];
 };
+
+function isCommunityFollowCleanupAbort(request: Request) {
+  return (
+    request.method() === "GET" &&
+    new URL(request.url()).pathname === "/api/community/follows" &&
+    request.failure()?.errorText === "net::ERR_ABORTED"
+  );
+}
 
 function collectDiagnostics(page: Page): Diagnostics {
   const diagnostics: Diagnostics = {
@@ -19,6 +33,8 @@ function collectDiagnostics(page: Page): Diagnostics {
   });
   page.on("pageerror", (error) => diagnostics.pageErrors.push(error.message));
   page.on("requestfailed", (request) => {
+    // Strict Mode remounts the provider and its cleanup aborts the first overview fetch.
+    if (isCommunityFollowCleanupAbort(request)) return;
     diagnostics.failedRequests.push(
       `${request.method()} ${request.url()} ${request.failure()?.errorText ?? "failed"}`,
     );
@@ -205,7 +221,14 @@ test("academy remains usable and responsive for a learner", async ({ page }, tes
   await expect(page.getByRole("heading", { name: "Meine Kurse" })).toBeVisible();
   await capture(page, testInfo, "academy-courses");
 
+  const followOverviewResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/api/community/follows",
+  );
   await visit(page, "/academy/community");
+  const followOverviewResponse = await followOverviewResponsePromise;
+  expect(followOverviewResponse.status(), "community follows overview status").toBe(200);
   await expect(page.getByRole("heading", { name: "Q-Community" })).toBeVisible();
   await capture(page, testInfo, "academy-community");
 

@@ -299,11 +299,12 @@ ENV NODE_ENV=production
 COPY --chown=nextjs:nodejs scripts/ops/dispatcher-http-post.mjs /opt/q-academy/dispatcher-http-post.mjs
 USER 1001:1001
 
+# BuildKit bind mounts are read-only by default; Semgrep 1.169 cannot parse an explicit `,ro` here.
 FROM base AS dependencies
 ARG NPM_CONFIG_OFFLINE=false
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,id=q-academy-npm-cache,target=/root/.npm,sharing=locked \
-    --mount=type=bind,from=npm-cache-seed,source=.,target=/tmp/q-academy-npm-cache-seed,ro \
+    --mount=type=bind,from=npm-cache-seed,source=.,target=/tmp/q-academy-npm-cache-seed \
     set -eux; \
     unsafe_cache_entry="$(find /tmp/q-academy-npm-cache-seed -mindepth 1 ! -type d ! -type f -print -quit)"; \
     if test -n "$unsafe_cache_entry"; then \
@@ -344,7 +345,7 @@ FROM base AS production-dependencies
 ARG NPM_CONFIG_OFFLINE=false
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,id=q-academy-npm-cache,target=/root/.npm,sharing=locked \
-    --mount=type=bind,from=npm-cache-seed,source=.,target=/tmp/q-academy-npm-cache-seed,ro \
+    --mount=type=bind,from=npm-cache-seed,source=.,target=/tmp/q-academy-npm-cache-seed \
     set -eux; \
     unsafe_cache_entry="$(find /tmp/q-academy-npm-cache-seed -mindepth 1 ! -type d ! -type f -print -quit)"; \
     if test -n "$unsafe_cache_entry"; then \
