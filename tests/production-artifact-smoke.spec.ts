@@ -45,11 +45,16 @@ test("production login renders without development-only access", async ({
   expect(response?.status()).toBeLessThan(400);
   expect(response?.headers()["x-powered-by"]).toBeUndefined();
 
+  const emailInput = page.locator('input[name="email"]');
+  const passwordInput = page.locator('input[name="password"]');
+
   await expect(page.getByRole("main")).toBeVisible();
-  await expect(page.locator('input[name="email"]')).toBeEnabled();
-  await expect(page.locator('input[name="email"]')).toHaveValue("");
-  await expect(page.locator('input[name="password"]')).toBeEnabled();
-  await expect(page.locator('input[name="password"]')).toHaveValue("");
+  await expect(emailInput).toHaveCount(1);
+  await expect(emailInput).toBeEnabled();
+  expect(await emailInput.inputValue()).toBe("");
+  await expect(passwordInput).toHaveCount(1);
+  await expect(passwordInput).toBeEnabled();
+  expect(await passwordInput.inputValue()).toBe("");
   await expect(page.getByRole("button", { name: /testen|demo/i })).toHaveCount(0);
 });
 
