@@ -1363,7 +1363,7 @@ function BlockEditorFields({
               onDescriptionPendingChange={onDescriptionPendingChange}
               onPosterPendingChange={onPosterPendingChange}
             />
-            {!videoSourceChanged && activeVideoAssetId ? (
+            {!videoSourceChanged ? (
               <TranscriptWizardControls
                 courseId={courseId}
                 blockId={block.id}

@@ -233,5 +233,13 @@ test("a newly selected primary video drives and resets the unsaved editor", () =
     builder,
     /automaticallyLoadTranscript=\{\s*!videoSourceChanged &&\s*Boolean\(activeVideoAssetId\)\s*\}/,
   );
+  assert.match(
+    builder,
+    /\{!videoSourceChanged \? \(\s*<TranscriptWizardControls/,
+  );
+  assert.doesNotMatch(
+    builder,
+    /!videoSourceChanged && activeVideoAssetId \? \(\s*<TranscriptWizardControls/,
+  );
   assert.doesNotMatch(editor, /querySelector<HTMLInputElement>/);
 });
