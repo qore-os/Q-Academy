@@ -34,6 +34,7 @@ test("job dispatch exposes only aggregate queue health metrics", async ({
     "examDeadlines",
     "nativePush",
     "push",
+    "videoDescriptions",
     "webhooks",
   ]);
   for (const queue of Object.values(body.data.queues)) {
