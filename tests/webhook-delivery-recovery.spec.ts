@@ -23,6 +23,15 @@ type ReceivedRequest = {
   url: string | undefined;
 };
 
+function isConnectionReset(error: unknown) {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String(error.code)
+      : "";
+  const message = error instanceof Error ? error.message : String(error);
+  return code === "ECONNRESET" || /\bECONNRESET\b/.test(message);
+}
+
 test("stale webhook deliveries are reclaimed and delivered once", async ({
   request,
 }, testInfo) => {
@@ -59,24 +68,84 @@ test("stale webhook deliveries are reclaimed and delivered once", async ({
 
   const sql = postgres(databaseUrl, { max: 2, prepare: false });
   const suffix = randomUUID();
+  const webhookName = `Recovery webhook ${suffix}`;
+  const webhookUrl =
+    `http://localhost:${address.port}/webhook-receiver?case=${suffix}`;
+  const createIdempotencyKey = `recovery-webhook-create-${suffix}`;
   const requestIds: string[] = [];
+  let apiKeyId: string | null = null;
+  let organizationId: string | null = null;
   let webhookId: string | null = null;
 
   try {
-    const created = await request.post("/api/v1/webhooks", {
-      headers: { Authorization: `Bearer ${demoKey}` },
-      data: {
-        name: `Recovery webhook ${suffix}`,
-        url: `http://localhost:${address.port}/webhook-receiver?case=${suffix}`,
-        events: ["course.published"],
-      },
-    });
-    requestIds.push(created.headers()["x-request-id"]);
+    const [apiIdentity] = await sql<
+      Array<{ id: string; organization_id: string }>
+    >`
+      select id, organization_id
+      from api_keys
+      where key_hash = ${createHash("sha256").update(demoKey).digest("hex")}
+        and status = 'active'
+      limit 1
+    `;
+    if (!apiIdentity) throw new Error("The demo API key was not found.");
+    apiKeyId = apiIdentity.id;
+    organizationId = apiIdentity.organization_id;
+
+    const committedWebhooks = () => sql<Array<{ id: string }>>`
+      select id
+      from webhooks
+      where organization_id = ${apiIdentity.organization_id}
+        and name = ${webhookName}
+        and url = ${webhookUrl}
+      order by id
+    `;
+    const postWebhook = () => {
+      const requestId = randomUUID();
+      requestIds.push(requestId);
+      return request.post("/api/v1/webhooks", {
+        headers: {
+          Authorization: `Bearer ${demoKey}`,
+          "Idempotency-Key": createIdempotencyKey,
+          "X-Request-Id": requestId,
+        },
+        data: {
+          name: webhookName,
+          url: webhookUrl,
+          events: ["course.published"],
+        },
+      });
+    };
+
+    let created: Awaited<ReturnType<typeof postWebhook>>;
+    let committedAfterResetId: string | null = null;
+    try {
+      created = await postWebhook();
+    } catch (error) {
+      if (!isConnectionReset(error)) throw error;
+
+      const committedAfterReset = await committedWebhooks();
+      if (committedAfterReset.length > 1) {
+        throw new Error(
+          `Webhook creation committed ${committedAfterReset.length} rows after ECONNRESET.`,
+        );
+      }
+      committedAfterResetId = committedAfterReset[0]?.id ?? null;
+
+      // This is a single, targeted replay. The stable key makes both the
+      // no-commit retry and the committed response recovery non-duplicating.
+      created = await postWebhook();
+    }
+
     expect(created.status()).toBe(201);
     const createdBody = (await created.json()) as {
       data: { id: string; secret: string };
     };
     webhookId = createdBody.data.id;
+    if (committedAfterResetId) {
+      expect(created.headers()["idempotent-replayed"]).toBe("true");
+      expect(webhookId).toBe(committedAfterResetId);
+    }
+    await expect(committedWebhooks()).resolves.toEqual([{ id: webhookId }]);
 
     const queued = await request.post(
       `/api/v1/webhooks/${webhookId}/test`,
@@ -204,7 +273,20 @@ test("stale webhook deliveries are reclaimed and delivered once", async ({
     for (const requestId of requestIds.filter(Boolean)) {
       await sql`delete from api_audit_logs where request_id = ${requestId}`;
     }
-    if (webhookId) {
+    if (apiKeyId && organizationId) {
+      await sql`
+        delete from api_idempotency_keys
+        where organization_id = ${organizationId}
+          and api_key_id = ${apiKeyId}
+          and key = ${createIdempotencyKey}
+      `;
+      await sql`
+        delete from webhooks
+        where organization_id = ${organizationId}
+          and name = ${webhookName}
+          and url = ${webhookUrl}
+      `;
+    } else if (webhookId) {
       await sql`delete from webhooks where id = ${webhookId}`;
     }
     await sql.end();
