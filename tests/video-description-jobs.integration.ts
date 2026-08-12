@@ -28,7 +28,15 @@ process.env.PRIVACY_SUBJECT_HMAC_SECRET ??=
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
+const cleanupDatabaseUrl = new URL(
+  process.env.POSTGRES_ADMIN_URL ?? databaseUrl,
+);
+cleanupDatabaseUrl.pathname = new URL(databaseUrl).pathname;
 const sql = postgres(databaseUrl, { max: 4, prepare: false });
+const cleanupSql = postgres(cleanupDatabaseUrl.toString(), {
+  max: 1,
+  prepare: false,
+});
 const originalFetch = globalThis.fetch;
 
 type Fixture = {
@@ -269,7 +277,11 @@ async function removeBlockUpdateFault() {
 after(async () => {
   globalThis.fetch = originalFetch;
   await removeBlockUpdateFault().catch(() => undefined);
-  await Promise.all([sql.end(), postgresClient.end()]);
+  await Promise.all([
+    sql.end({ timeout: 5 }),
+    cleanupSql.end({ timeout: 5 }),
+    postgresClient.end({ timeout: 5 }),
+  ]);
 });
 
 test("saved auto-description intent survives close and uses the exact later transcript", async () => {
@@ -1038,7 +1050,7 @@ test("cleanup observes a hold committed while it waits for the subject fence", a
     assert.equal(remaining.count, 1);
   } finally {
     releaseBlocker?.();
-    await sql.begin(async (transaction) => {
+    await cleanupSql.begin(async (transaction) => {
       await transaction.unsafe("set local session_replication_role = replica");
       await transaction`
         delete from privacy_request_events

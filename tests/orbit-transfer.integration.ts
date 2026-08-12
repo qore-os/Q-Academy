@@ -32,7 +32,15 @@ import {
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
+const cleanupDatabaseUrl = new URL(
+  process.env.POSTGRES_ADMIN_URL ?? databaseUrl,
+);
+cleanupDatabaseUrl.pathname = new URL(databaseUrl).pathname;
 const sql = postgres(databaseUrl, { max: 4, prepare: false });
+const cleanupSql = postgres(cleanupDatabaseUrl.toString(), {
+  max: 1,
+  prepare: false,
+});
 
 type Fixture = {
   sourceOrganizationId: string;
@@ -312,7 +320,7 @@ async function removeFixture(fixture: Fixture) {
       }).catch(() => undefined),
     ]);
   }
-  await sql.begin(async (transaction) => {
+  await cleanupSql.begin(async (transaction) => {
     await transaction.unsafe("set local session_replication_role = replica");
     await transaction`
       delete from orbit_audit_events where workspace_id = ${fixture.workspaceId}
@@ -349,7 +357,11 @@ async function removeFixture(fixture: Fixture) {
 }
 
 after(async () => {
-  await Promise.all([sql.end(), postgresClient.end()]);
+  await Promise.all([
+    sql.end({ timeout: 5 }),
+    cleanupSql.end({ timeout: 5 }),
+    postgresClient.end({ timeout: 5 }),
+  ]);
 });
 
 test("createOrbitTransfer commits media, graph, one automatic thumbnail, and no phantom description job", async () => {
