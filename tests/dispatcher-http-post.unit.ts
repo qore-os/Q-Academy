@@ -44,8 +44,8 @@ async function close(server: Server) {
 
 test("dispatcher arguments only admit the fixed internal POST contracts", () => {
   for (const endpoint of [
-    "http://app:3000/api/internal/jobs/dispatch",
-    "http://app:3000/api/internal/jobs/dispatch?cleanup=run&cleanupLimit=1000",
+    "http://q-academy-app:3000/api/internal/jobs/dispatch",
+    "http://q-academy-app:3000/api/internal/jobs/dispatch?cleanup=run&cleanupLimit=1000",
     "http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1",
     "http://media-runner:3000/api/internal/jobs/media/maintenance?limit=5",
   ]) {
@@ -54,6 +54,7 @@ test("dispatcher arguments only admit the fixed internal POST contracts", () => 
 
   for (const endpoint of [
     "https://app:3000/api/internal/jobs/dispatch",
+    "http://app:3000/api/internal/jobs/dispatch",
     "http://app:3000/api/internal/jobs/dispatch?cleanup=run",
     "http://media-runner:3000/api/internal/jobs/media/dispatch?limit=2",
     "http://127.0.0.1:3000/api/internal/jobs/dispatch",
@@ -74,7 +75,7 @@ test("dispatcher arguments only admit the fixed internal POST contracts", () => 
 
   const parsed = parseArguments([
     "--url",
-    "http://app:3000/api/internal/jobs/dispatch",
+    "http://q-academy-app:3000/api/internal/jobs/dispatch",
     "--timeout-seconds",
     "45",
   ]);
@@ -84,7 +85,7 @@ test("dispatcher arguments only admit the fixed internal POST contracts", () => 
     () =>
       parseArguments([
         "--url",
-        "http://app:3000/api/internal/jobs/dispatch",
+        "http://q-academy-app:3000/api/internal/jobs/dispatch",
         "--timeout-seconds",
         "14401",
       ]),

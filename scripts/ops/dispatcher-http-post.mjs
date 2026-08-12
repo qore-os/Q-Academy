@@ -13,8 +13,8 @@ const maximumTimeoutSeconds = 14_400;
 const productionTemporaryDirectory = "/tmp";
 
 const allowedEndpoints = new Set([
-  "http://app:3000/api/internal/jobs/dispatch",
-  "http://app:3000/api/internal/jobs/dispatch?cleanup=run&cleanupLimit=1000",
+  "http://q-academy-app:3000/api/internal/jobs/dispatch",
+  "http://q-academy-app:3000/api/internal/jobs/dispatch?cleanup=run&cleanupLimit=1000",
   "http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1",
   "http://media-runner:3000/api/internal/jobs/media/maintenance?limit=5",
 ]);

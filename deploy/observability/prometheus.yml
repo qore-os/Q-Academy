@@ -14,7 +14,7 @@ scrape_configs:
       type: Bearer
       credentials_file: /run/secrets/app_metrics_token
     static_configs:
-      - targets: ["app:3000"]
+      - targets: ["q-academy-app:3000"]
         labels:
           runtime: app
 

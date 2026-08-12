@@ -445,6 +445,11 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
     assert.match(service, /no-new-privileges:true/);
     assert.doesNotMatch(service, /\bcurl\b/);
   }
+  assert.match(
+    dispatcherServices[0],
+    /http:\/\/q-academy-app:3000\/api\/internal\/jobs\/dispatch/,
+  );
+  assert.doesNotMatch(dispatcherServices[0], /http:\/\/app:3000/);
   assert.equal(
     productionCompose.match(/image: q-academy-dispatcher:/g)?.length,
     3,
@@ -509,7 +514,7 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
   );
   assert.match(
     caddyfile,
-    /reverse_proxy @multipart_status_recovery app:3000[\s\S]*response_header_timeout 5m/,
+    /reverse_proxy @multipart_status_recovery q-academy-app:3000[\s\S]*response_header_timeout 5m/,
   );
   assert.match(caddyfile, /@multipart_complete path_regexp multipart_complete/);
   assert.match(
@@ -518,17 +523,18 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
   );
   assert.match(
     caddyfile,
-    /reverse_proxy @multipart_complete app:3000[\s\S]*response_header_timeout 15m/,
+    /reverse_proxy @multipart_complete q-academy-app:3000[\s\S]*response_header_timeout 15m/,
   );
   assert.match(caddyfile, /@multipart_delete \{[\s\S]*method DELETE/);
   assert.match(
     caddyfile,
-    /path_regexp multipart_delete \^\/api\/\(media-assets\/[\s\S]*\|v1\/media-assets\/[\s\S]*\/multipart\)\$[\s\S]*reverse_proxy @multipart_delete app:3000[\s\S]*response_header_timeout 15m/,
+    /path_regexp multipart_delete \^\/api\/\(media-assets\/[\s\S]*\|v1\/media-assets\/[\s\S]*\/multipart\)\$[\s\S]*reverse_proxy @multipart_delete q-academy-app:3000[\s\S]*response_header_timeout 15m/,
   );
   assert.match(
     caddyfile,
-    /reverse_proxy app:3000[\s\S]*response_header_timeout 60s/,
+    /reverse_proxy q-academy-app:3000[\s\S]*response_header_timeout 60s/,
   );
+  assert.doesNotMatch(caddyfile, /reverse_proxy(?:\s+@[a-z_]+)?\s+app:3000/);
   assert.match(caddyfile, /^import \/etc\/caddy\/sites\/\*[.]caddy$/m);
   assert.match(
     dockerfile,
@@ -715,6 +721,7 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(app, /Q_ACADEMY_RUNTIME_ROLE: app/);
   assert.match(app, /CRON_SECRET: \$\{CRON_SECRET:/);
   assert.match(app, /METRICS_SECRET: \$\{METRICS_SECRET:/);
+  assert.match(app, /^      proxy:\s+aliases:\s+- q-academy-app$/m);
   assert.match(app, /^      database:$/m);
   assert.match(app, /^      tls-ask:$/m);
   assert.match(app, /^          - tls-ask-app$/m);

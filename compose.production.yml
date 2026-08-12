@@ -479,6 +479,8 @@ services:
         condition: service_completed_successfully
     networks:
       proxy:
+        aliases:
+          - q-academy-app
       database:
       tls-ask:
         aliases:
@@ -912,7 +914,7 @@ services:
         success_marker=/tmp/scheduler.last-success
         while true; do
           now="$$(date +%s)"
-          endpoint="http://app:3000/api/internal/jobs/dispatch"
+          endpoint="http://q-academy-app:3000/api/internal/jobs/dispatch"
           cleanup_due=false
           if [ "$$((now - last_cleanup))" -ge "$${MAINTENANCE_CLEANUP_INTERVAL_SECONDS}" ]; then
             endpoint="$${endpoint}?cleanup=run&cleanupLimit=1000"

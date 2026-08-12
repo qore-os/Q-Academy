@@ -85,6 +85,8 @@ test("monitoring profile is isolated and keeps Prometheus on loopback", () => {
 
 test("Prometheus scrapes authenticated aggregate metrics and evaluates alerts", () => {
   assert.match(prometheus, /job_name: q-academy-app/);
+  assert.match(prometheus, /targets: \["q-academy-app:3000"\]/);
+  assert.doesNotMatch(prometheus, /targets: \["app:3000"\]/);
   assert.match(prometheus, /job_name: q-academy-media-runner/);
   assert.equal(
     prometheus.match(/metrics_path: \/api\/internal\/metrics/g)?.length,
