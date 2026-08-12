@@ -505,11 +505,11 @@ unfertig und werden niemals als `ready` freigegeben. Die offiziellen
 [ClamAV-Docker-Hinweise](https://docs.clamav.net/manual/Installing/Docker.html)
 nennen 3 GiB als Minimum und 4 GiB als bevorzugten RAM-Bedarf allein fuer
 `clamd`; 2 GiB koennen unzureichend sein. Die Compose-Grenzen reservieren daher
-bis zu 5 GiB fuer `clamd` und separat bis zu 2 GiB fuer `clamav-freshclam`, weil
+bis zu 12 GiB fuer `clamd` und separat bis zu 2 GiB fuer `clamav-freshclam`, weil
 Signaturaufbereitung und laufende Scans waehrend eines Reloads ueberlappen
 koennen. Zusammen mit je 2 GiB fuer App und Medienrunner sowie PostgreSQL,
-Proxy, Dispatchern und optionalem Monitoring ist 16 GB die kleinste
-Betriebsklasse; fuer reale Parallelitaet sind 24 GB oder mehr vorzusehen.
+Proxy, Dispatchern und optionalem Monitoring ist 32 GB die kleinste
+Betriebsklasse; fuer reale Parallelitaet sind 48 GB oder mehr vorzusehen.
 Der App-Container besitzt unabhaengig davon ein festes Limit von 2 CPUs und
 2 GiB RAM. Der Medienrunner definiert seinen eigenen 2-CPU-/2-GiB-Block und
 erbt das App-Limit nicht implizit. Diese Grenzen muessen in Lasttests mit einem
@@ -543,6 +543,21 @@ abgelehnt. Vor Freischaltung realer Uploads muessen Scan-Timeout und parallele
 Scanlast mit Dateien nahe dieser Obergrenze getestet werden. Ein nicht
 erreichbarer Scanner, ein Limitfehler oder eine veraltete Signaturdatenbank darf
 in Produktion keine Freigabe eines Objekts bewirken.
+
+Zwei `media-worker`-Replikate koennen gleichzeitig je genau einen Dispatch mit
+einem Scan ausfuehren. `clamd` ist deshalb explizit auf `MaxThreads 2` und
+`MaxQueue 4` begrenzt. Sein dediziertes `/tmp`-Tmpfs besitzt 5 GiB: zwei
+vollstaendige Streams zu je 2.000.000.000 Bytes plus 1 GiB garantierter Headroom
+und die verbleibende Aufrundungsreserve. Das 12-GiB-Containerlimit reserviert
+neben der vollen 5-GiB-Tmpfs-Kapazitaet weitere 4 GiB fuer Signatur-Engine und
+Scanner-Prozesse sowie 3 GiB Laufzeitreserve. Der Entrypoint prueft vor dem
+Start, dass `/tmp` wirklich `tmpfs` ist und sowohl seine Gesamtkapazitaet als
+auch der aktuell freie Platz mindestens
+`MEDIA_MAX_UPLOAD_BYTES * CLAMAV_SCAN_CONCURRENCY +
+CLAMAV_TMPFS_HEADROOM_BYTES` aufnehmen koennen. Ausserdem muss das endliche
+cgroup-v2- oder cgroup-v1-Speicherlimit mindestens die volle Tmpfs-Kapazitaet
+plus `CLAMAV_ENGINE_MEMORY_RESERVE_BYTES` (4 GiB) tragen. Eine kleinere,
+unbegrenzte oder nicht nachweisbare Laufzeit startet geschlossen nicht.
 
 Der Release-Medienpreflight streamt deshalb einen sauberen Canary und einen nur
 zur Laufzeit zusammengesetzten Standard-AV-Testvektor ueber `INSTREAM`. Der

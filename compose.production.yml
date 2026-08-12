@@ -814,6 +814,9 @@ services:
     environment:
       CLAMAV_NO_FRESHCLAMD: "true"
       MEDIA_MAX_UPLOAD_BYTES: ${MEDIA_MAX_UPLOAD_BYTES:-2000000000}
+      CLAMAV_SCAN_CONCURRENCY: "2"
+      CLAMAV_TMPFS_HEADROOM_BYTES: "1073741824"
+      CLAMAV_ENGINE_MEMORY_RESERVE_BYTES: "4294967296"
       CLAMAV_SIGNATURE_MAX_AGE_SECONDS: ${CLAMAV_SIGNATURE_MAX_AGE_SECONDS:-129600}
     depends_on:
       clamav-freshclam:
@@ -827,11 +830,13 @@ services:
         target: /opt/q-academy/clamav-daemon-entrypoint.sh
       - source: clamav-render-config
         target: /opt/q-academy/clamav-render-config.sh
+      - source: clamav-resource-contract
+        target: /opt/q-academy/clamav-resource-contract.sh
     networks:
       - media
     read_only: true
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=5g,mode=1777
       - /run/clamav:size=8m,mode=1777
       - /var/log/clamav:size=16m,mode=1777
     cap_drop:
@@ -842,9 +847,9 @@ services:
       resources:
         limits:
           cpus: "3.0"
-          memory: 5G
+          memory: 12G
         reservations:
-          memory: 3G
+          memory: 8G
     healthcheck:
       test: ["CMD", "/bin/sh", "/opt/q-academy/clamav-signature-health.sh", "clamd"]
       interval: 30s
@@ -1340,6 +1345,8 @@ configs:
     file: ./scripts/ops/clamav-daemon-entrypoint.sh
   clamav-render-config:
     file: ./scripts/ops/clamav-render-config.sh
+  clamav-resource-contract:
+    file: ./scripts/ops/clamav-resource-contract.sh
   clamav-signature-health:
     file: ./scripts/ops/clamav-signature-health.sh
   database-config-preflight:

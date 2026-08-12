@@ -1427,6 +1427,7 @@ export async function uploadSessionMediaAsset(
           error.code === "object_missing" ? 409 : 422,
           error.code === "object_missing" ? "conflict" : "validation_error",
           error.message,
+          { reason: error.code },
         );
       }
       throw error;
@@ -1700,6 +1701,7 @@ export async function completeSessionMediaAsset(user: User, id: string) {
           error.code === "object_missing" ? 409 : 422,
           error.code === "object_missing" ? "conflict" : "validation_error",
           error.message,
+          { reason: error.code },
         );
       }
       throw error;

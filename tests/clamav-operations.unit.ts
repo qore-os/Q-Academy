@@ -20,6 +20,10 @@ const signatureHealth = readFileSync(
   new URL("scripts/ops/clamav-signature-health.sh", root),
   "utf8",
 );
+const resourceContract = readFileSync(
+  new URL("scripts/ops/clamav-resource-contract.sh", root),
+  "utf8",
+);
 
 function writeDailyDatabase(path: string, timestampSeconds: number) {
   const header = [
@@ -51,6 +55,10 @@ test("ClamAV renderer writes the effective bounded clamd configuration", () => {
       "MaxScanSize 100M",
       "MaxScanTime 120000",
       "ReadTimeout 120",
+      "MaxThreads 20",
+      "MaxQueue 200",
+      "ConcurrentDatabaseReload yes",
+      "TemporaryDirectory /var/tmp",
       "AlertExceedsMax no",
       "TCPSocket 3310",
     ].join("\n"),
@@ -65,6 +73,7 @@ test("ClamAV renderer writes the effective bounded clamd configuration", () => {
         unixPath(source),
         unixPath(target),
         "123456789",
+        "2",
       ],
       { cwd: process.cwd(), encoding: "utf8" },
     );
@@ -76,6 +85,10 @@ test("ClamAV renderer writes the effective bounded clamd configuration", () => {
       "MaxScanSize 123456789",
       "MaxScanTime 600000",
       "ReadTimeout 600",
+      "MaxThreads 2",
+      "MaxQueue 4",
+      "ConcurrentDatabaseReload no",
+      "TemporaryDirectory /tmp",
       "AlertExceedsMax yes",
     ]) {
       assert.equal(output.match(new RegExp(`^${directive}$`, "gm"))?.length, 1);
@@ -89,6 +102,7 @@ test("ClamAV renderer writes the effective bounded clamd configuration", () => {
         unixPath(source),
         unixPath(invalidTarget),
         "2000000001",
+        "2",
       ],
       { cwd: process.cwd(), encoding: "utf8" },
     );
@@ -103,12 +117,86 @@ test("hardened clamd executes only the rendered tmpfs config", () => {
   assert.match(compose, /entrypoint: \["\/init-unprivileged"\]/);
   assert.match(compose, /command: \["\/bin\/sh", "\/opt\/q-academy\/clamav-daemon-entrypoint\.sh"\]/);
   assert.match(compose, /clamav-render-config/);
+  assert.match(compose, /clamav-resource-contract/);
+  assert.match(compose, /CLAMAV_SCAN_CONCURRENCY: "2"/);
+  assert.match(compose, /CLAMAV_TMPFS_HEADROOM_BYTES: "1073741824"/);
+  assert.match(compose, /CLAMAV_ENGINE_MEMORY_RESERVE_BYTES: "4294967296"/);
+  assert.match(compose, /\/tmp:size=5g,mode=1777/);
   assert.doesNotMatch(compose, /CLAMD_CONF_/);
   assert.match(
     daemonEntrypoint,
     /exec clamd --foreground --config-file="\$runtime_config"/,
   );
   assert.match(daemonEntrypoint, /runtime_config=\/tmp\/q-academy-clamd\.conf/);
+  assert.match(daemonEntrypoint, /stat -f -c %T \/tmp/);
+  assert.match(daemonEntrypoint, /df -Pk \/tmp/);
+  assert.match(daemonEntrypoint, /\/sys\/fs\/cgroup\/memory\.max/);
+  assert.match(daemonEntrypoint, /memory\/memory\.limit_in_bytes/);
+  assert.match(resourceContract, /max_upload_bytes \* scan_concurrency \+ headroom_bytes/);
+  assert.match(resourceContract, /tmpfs_capacity_bytes \+ engine_memory_reserve_bytes/);
+});
+
+test("ClamAV resource contract enforces available tmpfs and cgroup memory", () => {
+  const run = (...args: string[]) =>
+    spawnSync("bash", ["scripts/ops/clamav-resource-contract.sh", ...args], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+    });
+  const contract = ["2000000000", "2", "1073741824", "4294967296"];
+  const capacityKib = "5242880";
+  const memoryLimitBytes = "12884901888";
+  assert.equal(
+    run(...contract, "tmpfs", capacityKib, capacityKib, memoryLimitBytes).status,
+    0,
+  );
+
+  const undersized = run(...contract, "tmpfs", "65536", "65536", memoryLimitBytes);
+  assert.notEqual(undersized.status, 0);
+  assert.match(undersized.stderr, /too small/);
+
+  const occupied = run(
+    ...contract,
+    "tmpfs",
+    capacityKib,
+    "4954825",
+    memoryLimitBytes,
+  );
+  assert.notEqual(occupied.status, 0);
+  assert.match(occupied.stderr, /enough available space/);
+
+  const constrained = run(
+    ...contract,
+    "tmpfs",
+    capacityKib,
+    capacityKib,
+    "9663676415",
+  );
+  assert.notEqual(constrained.status, 0);
+  assert.match(constrained.stderr, /memory limit is too small/);
+
+  const unbounded = run(...contract, "tmpfs", capacityKib, capacityKib, "max");
+  assert.notEqual(unbounded.status, 0);
+  assert.match(unbounded.stderr, /effectively unbounded/);
+
+  const v1UnlimitedSentinel = run(
+    ...contract,
+    "tmpfs",
+    capacityKib,
+    capacityKib,
+    "9223372036854771712",
+  );
+  assert.notEqual(v1UnlimitedSentinel.status, 0);
+  assert.match(v1UnlimitedSentinel.stderr, /effectively unbounded/);
+
+  const wrongFilesystem = run(
+    ...contract,
+    "ext4",
+    capacityKib,
+    capacityKib,
+    memoryLimitBytes,
+  );
+  assert.notEqual(wrongFilesystem.status, 0);
+  assert.match(wrongFilesystem.stderr, /dedicated tmpfs/);
 });
 
 test("ClamAV health reads the CVD header timestamp and rejects touched stale signatures", () => {

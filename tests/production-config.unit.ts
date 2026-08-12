@@ -813,7 +813,13 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(freshclam, /cap_drop:\s+- ALL/);
 
   assert.match(clamav, /cpus: "3\.0"/);
-  assert.match(clamav, /memory: 5G/);
+  assert.match(clamav, /memory: 12G/);
+  assert.match(clamav, /reservations:\s+memory: 8G/);
+  assert.match(clamav, /CLAMAV_SCAN_CONCURRENCY: "2"/);
+  assert.match(clamav, /CLAMAV_TMPFS_HEADROOM_BYTES: "1073741824"/);
+  assert.match(clamav, /CLAMAV_ENGINE_MEMORY_RESERVE_BYTES: "4294967296"/);
+  assert.match(clamav, /\/tmp:size=5g,mode=1777/);
+  assert.match(clamav, /clamav-resource-contract/);
   assert.match(clamav, /CLAMAV_NO_FRESHCLAMD: "true"/);
   assert.match(clamav, /clamav-freshclam:\s+condition: service_healthy/);
   assert.match(clamav, /clamav_signatures:\/var\/lib\/clamav:ro/);

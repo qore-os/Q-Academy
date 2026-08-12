@@ -1,6 +1,10 @@
 "use client";
 
 import { browserUploadHeaders } from "@/lib/media/browser-upload";
+import {
+  BrowserSingleUploadError,
+  uploadStratoSinglePostWithRecovery,
+} from "@/lib/media/browser-single-post-recovery";
 
 type MediaAssetStatus =
   "pending" | "uploaded" | "scanning" | "ready" | "quarantined" | "failed";
@@ -47,7 +51,7 @@ type UploadIntent = BrowserSessionMediaAsset & {
     | null;
 };
 
-class SessionMediaRequestError extends Error {
+export class SessionMediaRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -57,6 +61,21 @@ class SessionMediaRequestError extends Error {
     super(message);
     this.name = "SessionMediaRequestError";
   }
+}
+
+export function isMissingSessionMediaObject(error: unknown) {
+  return (
+    error instanceof SessionMediaRequestError &&
+    error.status === 409 &&
+    error.reason === "object_missing"
+  );
+}
+
+export function isTransientSessionMediaCompletionFailure(error: unknown) {
+  if (error instanceof SessionMediaRequestError) {
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  return error instanceof TypeError;
 }
 
 type MultipartUploadStatus = {
@@ -218,16 +237,37 @@ function uploadFile(
       if (xhr.status >= 200 && xhr.status < 300) {
         onProgress(100);
         resolve();
-      } else
-        reject(new Error("Der Datei-Upload wurde vom Speicher abgelehnt."));
+      } else {
+        const retryable =
+          xhr.status === 408 ||
+          xhr.status === 425 ||
+          xhr.status === 429 ||
+          xhr.status >= 500;
+        reject(
+          new BrowserSingleUploadError(
+            `Der Datei-Upload wurde vom Speicher abgelehnt (HTTP ${xhr.status}).`,
+            retryable,
+          ),
+        );
+      }
     };
     xhr.onerror = () => {
       cleanup();
-      reject(new Error("Der Datei-Upload ist fehlgeschlagen."));
+      reject(
+        new BrowserSingleUploadError(
+          "Der Datei-Upload ist beim Übertragen zum Speicher fehlgeschlagen.",
+          true,
+        ),
+      );
     };
     xhr.ontimeout = () => {
       cleanup();
-      reject(new Error("Der Datei-Upload hat zu lange nicht geantwortet."));
+      reject(
+        new BrowserSingleUploadError(
+          "Der Datei-Upload hat zu lange nicht geantwortet.",
+          true,
+        ),
+      );
     };
     xhr.onabort = () => {
       cleanup();
@@ -677,6 +717,30 @@ export async function uploadBrowserSessionMedia(input: {
         intent.statusUrl,
         input.signal,
       );
+    } else if (
+      intent.upload.transport === "s3" &&
+      intent.upload.method === "POST" &&
+      intent.completeUrl
+    ) {
+      const stratoUpload = intent.upload;
+      const completeUrl = intent.completeUrl;
+      await uploadStratoSinglePostWithRecovery({
+        signal: input.signal,
+        upload: () =>
+          uploadFile(input.file, stratoUpload, input.signal, (progress) =>
+            input.onProgress?.(progress),
+          ),
+        complete: () =>
+          sessionDataWithRetry(
+            completeUrl,
+            { method: "POST" },
+            input.signal,
+          ).then(() => undefined),
+        isObjectMissing: isMissingSessionMediaObject,
+        isTransientCompletionFailure:
+          isTransientSessionMediaCompletionFailure,
+        waitForRetry: wait,
+      });
     } else {
       let recovered = false;
       try {
