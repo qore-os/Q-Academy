@@ -619,7 +619,215 @@ try {
     )
   `;
 
+  const legacyOrbitOrganizations = await testClient<
+    Array<{ id: string; slug: string }>
+  >`
+    insert into organizations (name, slug) values
+      ('Legacy Orbit source', 'legacy-orbit-source'),
+      ('Legacy Orbit target', 'legacy-orbit-target')
+    returning id, slug
+  `;
+  const legacyOrbitSourceOrganizationId = legacyOrbitOrganizations.find(
+    (organization) => organization.slug === "legacy-orbit-source",
+  )!.id;
+  const legacyOrbitTargetOrganizationId = legacyOrbitOrganizations.find(
+    (organization) => organization.slug === "legacy-orbit-target",
+  )!.id;
+  const [legacyOrbitWorkspace] = await testClient<[{ id: string }]>`
+    insert into orbit_workspaces (name, slug, instance_slot_limit)
+    values ('Legacy Orbit', 'legacy-orbit', 2)
+    returning id
+  `;
+  await testClient`
+    insert into orbit_instances (
+      workspace_id, organization_id, status, seat_limit, course_limit,
+      entitlements
+    ) values
+      (
+        ${legacyOrbitWorkspace.id}, ${legacyOrbitSourceOrganizationId},
+        'active', 100, 100, array['content_transfer']::text[]
+      ),
+      (
+        ${legacyOrbitWorkspace.id}, ${legacyOrbitTargetOrganizationId},
+        'active', 100, 100, array['content_transfer']::text[]
+      )
+  `;
+  await testClient`
+    update organization_contracts
+    set storage_limit_bytes = 1
+    where organization_id = ${legacyOrbitTargetOrganizationId}
+  `;
+  const legacyOrbitSourceIds = [
+    "00000000-0000-4000-8000-000000000001",
+    "00000000-0000-4000-8000-000000000002",
+  ];
+  const legacyOrbitSourceMedia = await testClient<
+    Array<{
+      id: string;
+      safeFileName: string;
+      actualSizeBytes: number;
+      contentSha256: string;
+    }>
+  >`
+    insert into media_assets (
+      id, organization_id, purpose, kind, status, storage_driver, storage_key,
+      staging_storage_key, original_file_name, safe_file_name,
+      declared_mime_type, declared_size_bytes, actual_size_bytes, quota_bytes,
+      content_sha256, upload_expires_at, uploaded_at, scan_completed_at
+    ) values
+      (
+        ${legacyOrbitSourceIds[0]}, ${legacyOrbitSourceOrganizationId},
+        'course_content', 'video', 'ready',
+        'filesystem',
+        ${`tenants/${legacyOrbitSourceOrganizationId}/assets/00000000-0000-4000-8000-000000000001/source-video.mp4`},
+        ${`incoming/tenants/${legacyOrbitSourceOrganizationId}/assets/00000000-0000-4000-8000-000000000001/source-video.upload`},
+        'source-video.mp4', 'source-video.mp4', 'video/mp4', 17, 17, 17,
+        ${"a".repeat(64)}, '2026-08-12T12:00:00.000Z',
+        '2026-08-12T11:00:00.000Z', '2026-08-12T11:05:00.000Z'
+      ),
+      (
+        ${legacyOrbitSourceIds[1]}, ${legacyOrbitSourceOrganizationId},
+        'course_content', 'image', 'ready',
+        'filesystem',
+        ${`tenants/${legacyOrbitSourceOrganizationId}/assets/00000000-0000-4000-8000-000000000002/source-image.webp`},
+        ${`incoming/tenants/${legacyOrbitSourceOrganizationId}/assets/00000000-0000-4000-8000-000000000002/source-image.upload`},
+        'source-image.webp', 'source-image.webp', 'image/webp', 23, 23, 23,
+        ${"b".repeat(64)}, '2026-08-12T12:00:00.000Z',
+        '2026-08-12T11:00:00.000Z', '2026-08-12T11:05:00.000Z'
+      )
+    returning id, safe_file_name as "safeFileName",
+              actual_size_bytes as "actualSizeBytes",
+              content_sha256 as "contentSha256"
+  `;
+  const [legacyOrbitJob] = await testClient<[{ id: string }]>`
+    insert into orbit_transfer_jobs (
+      workspace_id, source_organization_id, target_organization_id,
+      source_course_ids, idempotency_key, request_hash, status, preflight,
+      started_at, created_at, updated_at
+    ) values (
+      ${legacyOrbitWorkspace.id}, ${legacyOrbitSourceOrganizationId},
+      ${legacyOrbitTargetOrganizationId},
+      array[gen_random_uuid()]::uuid[], 'legacy-processing-transfer',
+      ${"c".repeat(64)}, 'processing',
+      ${JSON.stringify({
+        sourceCourseCount: 1,
+        targetCourseCount: 0,
+        targetCourseLimit: 100,
+        mediaAssetCount: 2,
+        mediaBytes: 40,
+        warnings: [],
+      })}::jsonb,
+      '2026-08-12T10:00:00.000Z', '2026-08-12T10:00:00.000Z',
+      '2026-08-12T10:00:00.000Z'
+    ) returning id
+  `;
+  const legacyOrbitTargetIds = [
+    "00000000-0000-4000-8000-000000000011",
+    "00000000-0000-4000-8000-000000000012",
+  ];
+  for (const [index, source] of legacyOrbitSourceMedia.entries()) {
+    await testClient`
+      insert into orbit_transfer_items (
+        job_id, kind, source_id, target_id, checksum
+      ) values (
+        ${legacyOrbitJob.id}, 'media_asset', ${source.id},
+        ${legacyOrbitTargetIds[index]}, ${source.contentSha256}
+      )
+    `;
+  }
+  const [invalidLegacyOrbitItem] = await testClient<[{ id: string }]>`
+    insert into orbit_transfer_items (
+      job_id, kind, source_id, target_id, checksum
+    ) values (
+      ${legacyOrbitJob.id}, 'media_asset', gen_random_uuid(),
+      '00000000-0000-4000-8000-000000000013', ${"d".repeat(64)}
+    ) returning id
+  `;
+
+  try {
+    await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+    throw new Error(
+      "Migration 0081 accepted an unreconstructable legacy Orbit media item.",
+    );
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes(
+        "legacy Orbit transfer media cannot be reconstructed safely",
+      )
+    ) {
+      throw error;
+    }
+  }
+  await testClient`
+    delete from orbit_transfer_items where id = ${invalidLegacyOrbitItem.id}
+  `;
+
   await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+
+  const legacyOrbitRecovery = await testClient<
+    Array<{
+      id: string;
+      status: string;
+      storageKey: string;
+      stagingStorageKey: string;
+      declaredSizeBytes: number;
+      quotaBytes: number;
+      uploadExpiresAt: Date;
+      leaseExpiresAt: Date;
+      metadata: Record<string, unknown>;
+    }>
+  >`
+    select asset.id, asset.status,
+           asset.storage_key as "storageKey",
+           asset.staging_storage_key as "stagingStorageKey",
+           asset.declared_size_bytes as "declaredSizeBytes",
+           asset.quota_bytes as "quotaBytes",
+           asset.upload_expires_at as "uploadExpiresAt",
+           job.lease_expires_at as "leaseExpiresAt",
+           item.metadata
+    from orbit_transfer_jobs job
+    join orbit_transfer_items item
+      on item.job_id = job.id and item.kind = 'media_asset'
+    join media_assets asset on asset.id = item.target_id
+    where job.id = ${legacyOrbitJob.id}
+    order by asset.id
+  `;
+  if (legacyOrbitRecovery.length !== 2) {
+    throw new Error("Migration 0081 did not reserve every legacy Orbit object.");
+  }
+  const [legacyOrbitQuota] = await testClient<[{ quotaBytes: number }]>`
+    select coalesce(sum(quota_bytes), 0)::bigint as "quotaBytes"
+    from media_assets
+    where organization_id = ${legacyOrbitTargetOrganizationId}
+      and deleted_at is null
+  `;
+  if (Number(legacyOrbitQuota.quotaBytes) !== 40) {
+    throw new Error(
+      "Migration 0081 did not retain legacy Orbit cleanup quota above the contract limit.",
+    );
+  }
+  for (const [index, reservation] of legacyOrbitRecovery.entries()) {
+    const source = legacyOrbitSourceMedia[index];
+    if (
+      reservation.id !== legacyOrbitTargetIds[index] ||
+      reservation.status !== "pending" ||
+      reservation.storageKey !==
+        `tenants/${legacyOrbitTargetOrganizationId}/assets/${reservation.id}/${source.safeFileName}` ||
+      reservation.stagingStorageKey !==
+        `incoming/tenants/${legacyOrbitTargetOrganizationId}/assets/${reservation.id}/source-${index ? "image" : "video"}.upload` ||
+      Number(reservation.declaredSizeBytes) !== Number(source.actualSizeBytes) ||
+      Number(reservation.quotaBytes) !== Number(source.actualSizeBytes) ||
+      new Date(reservation.uploadExpiresAt).getTime() !==
+        new Date(reservation.leaseExpiresAt).getTime() ||
+      reservation.metadata.legacyRecovery !== true ||
+      reservation.metadata.cleanupReservationId !== reservation.id
+    ) {
+      throw new Error(
+        "Migration 0081 produced an unsafe legacy Orbit cleanup reservation.",
+      );
+    }
+  }
 
   const [normalizedIntercomSupport] = await testClient<
     [{ enabled: boolean; identitySecretEncrypted: string | null }]

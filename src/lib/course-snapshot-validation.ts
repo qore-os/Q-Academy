@@ -1,6 +1,7 @@
 import type { CourseVersionSnapshot } from "@/db/schema";
 import { safeCourseImageSource } from "@/lib/content-blocks/interactive-documents";
 import { parseVideoPlaybackPolicy } from "@/lib/media/video-playback-policy";
+import { sanitizeVideoPoster } from "@/lib/media/video-poster";
 import { safeRichTextHref } from "@/lib/rich-text/document";
 
 const UUID_PATTERN =
@@ -43,8 +44,10 @@ function validContentBlocks(value: unknown) {
         (revision === undefined ||
           (Number.isInteger(revision) && Number(revision) > 0)) &&
         (block.type !== "video" ||
-          data?.videoPlayback === undefined ||
-          parseVideoPlaybackPolicy(data.videoPlayback) !== null)
+          ((data?.videoPlayback === undefined ||
+            parseVideoPlaybackPolicy(data.videoPlayback) !== null) &&
+            (data?.videoPoster === undefined ||
+              sanitizeVideoPoster(data.videoPoster) !== null)))
       );
     })
   );

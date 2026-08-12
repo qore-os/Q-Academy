@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import {
   contentBlocks,
@@ -26,6 +26,8 @@ import {
 } from "@/lib/course-content-copy-model";
 import type { CoursePermissionTransaction } from "@/lib/course-permissions";
 import { assertLearningModuleStructureMutation } from "@/lib/module-structure-service";
+import { enqueueCopiedVideoDescriptionJobsInTransaction } from "@/lib/ai/video-description-jobs";
+import type { AppLocale } from "@/lib/i18n/model";
 
 type CopyReason =
   "source_unavailable" | "target_unavailable" | "reference_invalid";
@@ -34,8 +36,10 @@ type CopyContext = {
   organizationId: string;
   sourceCourseId: string;
   targetCourseId: string;
+  targetCourseIds: readonly string[];
   targetModuleId: string;
   attachedById: string;
+  locale: AppLocale;
 };
 
 export type CopiedLessonResult = {
@@ -240,6 +244,15 @@ async function bindCopiedMedia(
   }
   const ids = [...references.keys()];
   if (!ids.length) return;
+  const targetCourseIds = [
+    ...new Set(context.targetCourseIds.map((courseId) => courseId.toLowerCase())),
+  ].sort();
+  if (
+    !targetCourseIds.length ||
+    !targetCourseIds.includes(context.targetCourseId.toLowerCase())
+  ) {
+    throw copyError(404, "target_unavailable");
+  }
 
   const boundAssets = await transaction
     .select({ id: mediaAssets.id, kind: mediaAssets.kind })
@@ -257,6 +270,7 @@ async function bindCopiedMedia(
         eq(mediaAssets.organizationId, context.organizationId),
         eq(mediaAssets.purpose, "course_content"),
         eq(mediaAssets.status, "ready"),
+        isNull(mediaAssets.deletedAt),
         inArray(mediaAssets.id, ids),
       ),
     )
@@ -275,12 +289,14 @@ async function bindCopiedMedia(
   await transaction
     .insert(courseMediaAssets)
     .values(
-      ids.map((mediaAssetId) => ({
-        organizationId: context.organizationId,
-        courseId: context.targetCourseId,
-        mediaAssetId,
-        attachedById: context.attachedById,
-      })),
+      targetCourseIds.flatMap((courseId) =>
+        ids.map((mediaAssetId) => ({
+          organizationId: context.organizationId,
+          courseId,
+          mediaAssetId,
+          attachedById: context.attachedById,
+        })),
+      ),
     )
     .onConflictDoNothing();
 }
@@ -376,8 +392,7 @@ async function cloneLessonGraph(
     );
   }
   if (sourceBlocks.length) {
-    await transaction.insert(contentBlocks).values(
-      sourceBlocks.map((block) => ({
+    const copiedBlocks = sourceBlocks.map((block) => ({
         id: blockIds.get(block.id)!,
         lessonId: copiedLessonId,
         pageId: block.pageId ? pageIds.get(block.pageId) : null,
@@ -385,10 +400,17 @@ async function cloneLessonGraph(
         title: block.title,
         sortOrder: block.sortOrder,
         required: block.required,
-        data: courseContentDataForCopy(block.data),
+        data: courseContentDataForCopy(block.type, block.data),
         style: block.style,
-      })),
-    );
+      }));
+    await transaction.insert(contentBlocks).values(copiedBlocks);
+    await enqueueCopiedVideoDescriptionJobsInTransaction(transaction, {
+      organizationId: context.organizationId,
+      originCourseId: context.targetCourseId,
+      requestedById: context.attachedById,
+      blocks: copiedBlocks,
+      locale: context.locale,
+    });
   }
   return {
     lessonId: copiedLessonId,

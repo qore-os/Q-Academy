@@ -6,6 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import { loadAiApiKey } from "../src/lib/ai/api-key-credential-core";
 
 import {
   createLocalVerificationEvidence,
@@ -44,7 +45,9 @@ function externalInvocations(
     ];
   }
   if (operation === "ai-provider") {
-    requiredEnvironment("AI_API_KEY");
+    if (!loadAiApiKey()) {
+      throw new Error("An AI provider credential is required for this gate.");
+    }
     return [{ args: ["run", "ai:course-provider:preflight"] }];
   }
   if (operation === "s3-provider") {

@@ -535,6 +535,18 @@ export function validateProductionServerEnvironment(
   if (valueOf(environment, "DEMO_API_KEY")) {
     issues.push("DEMO_API_KEY must be unset in production.");
   }
+  if (valueOf(environment, "AI_API_KEY")) {
+    issues.push("AI_API_KEY must be unset in production; use AI_API_KEY_FILE.");
+  }
+  const aiApiKeyFile = valueOf(environment, "AI_API_KEY_FILE");
+  if (
+    aiApiKeyFile &&
+    aiApiKeyFile !== "/run/secrets/q-academy-ai-api-key"
+  ) {
+    issues.push(
+      "AI_API_KEY_FILE must be '/run/secrets/q-academy-ai-api-key' in production.",
+    );
+  }
 
   const secrets = Object.fromEntries(
     REQUIRED_SECRET_NAMES.map((name) => [
@@ -828,6 +840,7 @@ const MEDIA_WORKER_FORBIDDEN_ENVIRONMENT = [
   "MEDIA_S3_APP_ACCESS_KEY_ID",
   "MEDIA_S3_APP_SECRET_ACCESS_KEY",
   "AI_API_KEY",
+  "AI_API_KEY_FILE",
   "OPENAI_API_KEY",
   "OPENAI_TRANSCRIPTION_API_KEY",
   "DEMO_API_KEY",

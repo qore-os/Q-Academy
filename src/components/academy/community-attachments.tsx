@@ -26,13 +26,19 @@ import {
 import {
   deleteBrowserSessionMediaAsset,
   discardBrowserSessionMediaAsset,
+  isTerminalSessionMediaUploadError,
   uploadBrowserSessionMedia,
+  type DirectPostUploadResume,
+  type BrowserSessionTransferStatus,
 } from "@/lib/media/browser-session-upload";
+import { UploadTransferIndicator } from "@/components/media/upload-transfer-indicator";
 import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { ImageLightbox } from "@/components/content/image-lightbox";
 import { getImageLightboxCopy } from "@/lib/i18n/image-lightbox";
 import { getMainPageDictionary } from "@/lib/i18n/main-pages";
+import { getMediaUploadCopy } from "@/lib/i18n/media-upload";
 import type { AppLocale } from "@/lib/i18n/model";
+import { useFileDrop } from "@/lib/use-file-drop";
 import { cn } from "@/lib/utils";
 
 const ACCEPTED_TYPES = [
@@ -65,8 +71,11 @@ type UploadEntry = {
   mimeType: string;
   sizeBytes: number;
   progress: number;
+  transferStatus: BrowserSessionTransferStatus | null;
   status: "preparing" | "uploading" | "processing" | "ready" | "error";
   error: string | null;
+  retryable: boolean;
+  directPostResume: DirectPostUploadResume | null;
 };
 
 export type CommunityAttachmentView = {
@@ -123,10 +132,13 @@ export const CommunityAttachmentUploader = forwardRef<
   ref,
 ) {
   const copy = getMainPageDictionary(locale).academy.communityUi;
+  const uploadCopy = getMediaUploadCopy(locale);
   const [entries, setEntries] = useState<UploadEntry[]>([]);
   const [message, setMessage] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
   const controllers = useRef(new Map<string, AbortController>());
+  const directPostResumeRef = useRef(
+    new Map<string, DirectPostUploadResume | null>(),
+  );
   const entriesRef = useRef(entries);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -145,12 +157,12 @@ export const CommunityAttachmentUploader = forwardRef<
   const clearEntries = (deleteAssets: boolean) => {
     for (const controller of controllers.current.values()) controller.abort();
     controllers.current.clear();
+    directPostResumeRef.current.clear();
     const assetIds = entriesRef.current.flatMap((entry) =>
       entry.assetId ? [entry.assetId] : [],
     );
     setEntries([]);
     setMessage(null);
-    setDragging(false);
     if (inputRef.current) inputRef.current.value = "";
     if (deleteAssets) {
       for (const assetId of assetIds) {
@@ -175,6 +187,7 @@ export const CommunityAttachmentUploader = forwardRef<
   useEffect(
     () => () => {
       for (const controller of controllers.current.values()) controller.abort();
+      directPostResumeRef.current.clear();
       for (const entry of entriesRef.current) {
         if (entry.assetId) discardBrowserSessionMediaAsset(entry.assetId);
       }
@@ -191,12 +204,19 @@ export const CommunityAttachmentUploader = forwardRef<
         file,
         purpose: "community",
         clientUploadId: clientId,
+        directPostResume: directPostResumeRef.current.get(clientId) ?? null,
+        onDirectPostResumeChange: (directPostResume) => {
+          directPostResumeRef.current.set(clientId, directPostResume);
+          updateEntry(clientId, { directPostResume });
+        },
         signal: controller.signal,
         onAssetCreated: (asset) => {
           assetId = asset.id;
           updateEntry(clientId, { assetId: asset.id });
         },
         onProgress: (progress) => updateEntry(clientId, { progress }),
+        onTransferStatus: (transferStatus) =>
+          updateEntry(clientId, { transferStatus }),
         onStage: (stage) =>
           updateEntry(clientId, {
             status:
@@ -208,12 +228,14 @@ export const CommunityAttachmentUploader = forwardRef<
             ...(stage === "processing" ? { progress: 100 } : {}),
           }),
       });
-      updateEntry(clientId, { status: "ready", error: null });
+      updateEntry(clientId, { status: "ready", error: null, retryable: false });
+      directPostResumeRef.current.delete(clientId);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       updateEntry(clientId, {
         assetId,
         status: "error",
+        retryable: !isTerminalSessionMediaUploadError(error),
         error: browserUploadErrorMessage(
           error,
           copy.attachments.uploadFailed,
@@ -243,12 +265,16 @@ export const CommunityAttachmentUploader = forwardRef<
         mimeType: file.type,
         sizeBytes: file.size,
         progress: 0,
+        transferStatus: null,
         status: "preparing",
         error: null,
+        retryable: true,
+        directPostResume: null,
       };
       if (!file.type || file.size <= 0) {
         entry.status = "error";
         entry.error = copy.attachments.invalidFile;
+        entry.retryable = false;
       }
       setEntries((current) => [...current, entry]);
       if (!entry.error) void runUpload(file, clientId);
@@ -259,6 +285,7 @@ export const CommunityAttachmentUploader = forwardRef<
   const removeEntry = (entry: UploadEntry) => {
     controllers.current.get(entry.clientId)?.abort();
     controllers.current.delete(entry.clientId);
+    directPostResumeRef.current.delete(entry.clientId);
     setEntries((current) =>
       current.filter((candidate) => candidate.clientId !== entry.clientId),
     );
@@ -274,42 +301,34 @@ export const CommunityAttachmentUploader = forwardRef<
     if (controllers.current.has(entry.clientId)) return;
     updateEntry(entry.clientId, {
       progress: 0,
+      transferStatus: null,
       status: "preparing",
       error: null,
+      retryable: true,
     });
     void runUpload(entry.file, entry.clientId);
   };
 
+  const { isDraggingFiles, fileDropProps } = useFileDrop({
+    disabled: disabled || entries.length >= maxAttachments,
+    multiple: true,
+    onFiles: enqueueFiles,
+  });
+
   return (
     <div className={cn("mt-3 min-w-0", compact && "mt-2")}>
       <div
+        {...fileDropProps}
         className={cn(
           "min-w-0 overflow-hidden rounded-md border border-dashed border-[#c9d2d9] bg-[#f8fafb] p-3 transition-colors",
-          dragging && "border-[#2b9188] bg-[#edf9f7]",
+          isDraggingFiles && "border-[#2b9188] bg-[#edf9f7]",
           disabled && "opacity-60",
         )}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          if (!disabled) setDragging(true);
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={(event) => {
-          if (
-            !event.currentTarget.contains(event.relatedTarget as Node | null)
-          ) {
-            setDragging(false);
-          }
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          enqueueFiles(Array.from(event.dataTransfer.files));
-        }}
       >
         <div className="flex min-h-8 min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-[#52606d]">
             <Paperclip className="size-4 text-[#2b9188]" />
-            {copy.attachments.title}
+            {isDraggingFiles ? uploadCopy.dropActiveMultiple : copy.attachments.title}
             <span className="text-[10px] font-medium text-[#87919a]">
               {entries.length}/{maxAttachments}
             </span>
@@ -375,23 +394,28 @@ export const CommunityAttachmentUploader = forwardRef<
                   {entry.status === "preparing"
                     ? copy.attachments.preparing
                     : entry.status === "uploading"
-                      ? copy.attachments.uploading(entry.progress)
+                      ? entry.transferStatus?.kind === "determinate"
+                        ? copy.attachments.uploading(entry.transferStatus.progress)
+                        : uploadCopy.transferring
                       : entry.status === "processing"
                         ? copy.attachments.securityCheck
                         : entry.status === "ready"
                           ? copy.attachments.ready(bytesLabel(entry.sizeBytes))
                           : entry.error}
                 </span>
-                {entry.status === "uploading" ? (
-                  <span className="mt-1 block h-1 overflow-hidden rounded bg-[#e4e9ec]">
-                    <span
-                      className="block h-full bg-[#2b9188] transition-[width]"
-                      style={{ width: `${entry.progress}%` }}
-                    />
-                  </span>
+                {entry.status === "uploading" && entry.transferStatus ? (
+                  <UploadTransferIndicator
+                    status={entry.transferStatus}
+                    label={
+                      entry.transferStatus.kind === "determinate"
+                        ? copy.attachments.uploading(entry.transferStatus.progress)
+                        : uploadCopy.transferring
+                    }
+                    className="mt-1 bg-[#e4e9ec]"
+                  />
                 ) : null}
               </span>
-              {entry.status === "error" && entry.file.type && entry.file.size > 0 ? (
+              {entry.status === "error" && entry.retryable && entry.file.type && entry.file.size > 0 ? (
                 <button
                   type="button"
                   onClick={() => retryEntry(entry)}

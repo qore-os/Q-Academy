@@ -1,11 +1,9 @@
-import { desc, eq, and, inArray } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { db } from "@/db";
 import {
   mediaAssetTranscripts,
-  courseMediaAssets,
-  mediaAssets,
   mediaProcessingJobs,
 } from "@/db/schema";
 import { serializeWebVttTranscript } from "@/lib/content-blocks/video-transcript";
@@ -19,14 +17,14 @@ import {
 } from "@/lib/media/processing-worker";
 import { sanitizeVideoEditPlan } from "@/lib/media/video-edit-plan";
 import {
-  canUseVideoCompositionSource,
   sanitizeVideoComposition,
   videoProcessingOptionsConflict,
 } from "@/lib/media/video-composition";
 import {
-  coursePermissionAllows,
-  coursePermissionForUser,
-} from "@/lib/course-permissions";
+  assertManageableSharedCourseMedia,
+  assertVideoBlockPrimaryAssetContext,
+} from "@/lib/media/shared-course-media";
+import { requireSharedModuleContentPermission } from "@/lib/shared-module-permissions";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 660;
@@ -68,7 +66,8 @@ const requestSchema = z
       .max(35)
       .optional(),
     atMilliseconds: z.number().int().min(0).max(604_800_000).optional(),
-    courseId: z.string().uuid().optional(),
+    courseId: z.string().uuid(),
+    blockId: z.string().uuid(),
     videoEdit: videoEditSchema.optional(),
     videoComposition: videoCompositionSchema.optional(),
   })
@@ -88,11 +87,11 @@ const requestSchema = z
         message: "Mehrspur-Kompositionen sind nur fuer Transcodes erlaubt.",
       });
     }
-    if (input.videoComposition && !input.courseId) {
+    if (input.atMilliseconds !== undefined && input.type !== "thumbnail") {
       context.addIssue({
         code: "custom",
-        path: ["courseId"],
-        message: "Mehrspur-Kompositionen benoetigen einen Kurskontext.",
+        path: ["atMilliseconds"],
+        message: "Ein Frame-Zeitpunkt ist nur fuer Vorschaubilder erlaubt.",
       });
     }
     if (videoProcessingOptionsConflict(input)) {
@@ -105,80 +104,34 @@ const requestSchema = z
     }
   });
 
-async function assertCompositionCourseSources(input: {
+async function assertSharedVideoProcessingSources(input: {
   user: Parameters<typeof getSessionMediaAsset>[0];
   courseId: string;
+  blockId: string;
   primaryAssetId: string;
-  composition: NonNullable<ReturnType<typeof sanitizeVideoComposition>>;
+  composition?: NonNullable<ReturnType<typeof sanitizeVideoComposition>>;
 }) {
-  const permission = await coursePermissionForUser(input.user, input.courseId);
-  if (!coursePermissionAllows(permission, "edit")) {
-    throw new ApiError(
-      403,
-      "forbidden",
-      "Keine Bearbeitungsrechte fuer diesen Kurs.",
+  await db.transaction(async (transaction) => {
+    const shared = await requireSharedModuleContentPermission(
+      transaction,
+      input.user,
+      input.courseId,
+      { type: "block", id: input.blockId },
     );
-  }
-  const assetIds = [
-    ...new Set([
-      input.primaryAssetId,
-      ...input.composition.audioTracks.map((track) => track.mediaAssetId),
-    ]),
-  ];
-  const rows = await db
-    .select({
-      id: mediaAssets.id,
-      uploadedById: mediaAssets.uploadedById,
-      courseId: courseMediaAssets.courseId,
-    })
-    .from(mediaAssets)
-    .leftJoin(
-      courseMediaAssets,
-      and(
-        eq(courseMediaAssets.organizationId, mediaAssets.organizationId),
-        eq(courseMediaAssets.mediaAssetId, mediaAssets.id),
-        eq(courseMediaAssets.courseId, input.courseId),
-      ),
-    )
-    .where(
-      and(
-        eq(mediaAssets.organizationId, input.user.organizationId),
-        eq(mediaAssets.purpose, "course_content"),
-        eq(mediaAssets.status, "ready"),
-        inArray(mediaAssets.id, assetIds),
-      ),
-    );
-  const allBindings = await db
-    .select({ mediaAssetId: courseMediaAssets.mediaAssetId })
-    .from(courseMediaAssets)
-    .where(
-      and(
-        eq(courseMediaAssets.organizationId, input.user.organizationId),
-        inArray(courseMediaAssets.mediaAssetId, assetIds),
-      ),
-    );
-  const boundAnywhere = new Set(
-    allBindings.map((binding) => binding.mediaAssetId),
-  );
-  const allowed = new Set(
-    rows
-      .filter((row) =>
-        canUseVideoCompositionSource({
-          role: input.user.role,
-          uploadedByActor: row.uploadedById === input.user.id,
-          boundToCurrentCourse: row.courseId === input.courseId,
-          boundAnywhere: boundAnywhere.has(row.id),
-        }),
-      )
-      .map((row) => row.id),
-  );
-  if (allowed.size !== assetIds.length) {
-    throw new ApiError(
-      422,
-      "validation_error",
-      "Die Mehrspurquellen gehoeren nicht zum Kurs oder sind nicht verfuegbar.",
-    );
-  }
+    await assertVideoBlockPrimaryAssetContext(transaction, {
+      blockId: input.blockId,
+      primaryAssetId: input.primaryAssetId,
+    });
+    await assertManageableSharedCourseMedia(transaction, input.user, {
+      referencedCourseIds: shared.referencedCourseIds,
+      references: new Map<string, "video" | "audio">([
+        [input.primaryAssetId, "video"],
+        ...(input.composition?.audioTracks.map(
+          (track) => [track.mediaAssetId, "audio"] as const,
+        ) ?? []),
+      ]),
+    });
+  });
 }
 
 function response(data: unknown, status = 200) {
@@ -272,6 +225,11 @@ export async function GET(request: Request, { params }: Context) {
             typeof job.options.language === "string"
               ? job.options.language
               : null,
+          atMilliseconds:
+            job.type === "thumbnail" &&
+            Number.isSafeInteger(job.options.atMilliseconds)
+              ? Number(job.options.atMilliseconds)
+              : null,
           createdAt: job.createdAt,
           completedAt: job.completedAt,
         })),
@@ -320,13 +278,29 @@ export async function POST(request: Request, { params }: Context) {
           422,
         );
       }
-      if (parsed.data.videoComposition && parsed.data.courseId) {
-        await assertCompositionCourseSources({
-          user,
-          courseId: parsed.data.courseId,
-          primaryAssetId: id,
-          composition: parsed.data.videoComposition,
-        });
+      if (
+        parsed.data.atMilliseconds !== undefined &&
+        (!asset.durationMilliseconds ||
+          parsed.data.atMilliseconds >= asset.durationMilliseconds)
+      ) {
+        return response(
+          { error: "Der Frame-Zeitpunkt liegt ausserhalb des Videos." },
+          422,
+        );
+      }
+      await assertSharedVideoProcessingSources({
+        user,
+        courseId: parsed.data.courseId,
+        blockId: parsed.data.blockId,
+        primaryAssetId: id,
+        ...(parsed.data.videoComposition
+          ? { composition: parsed.data.videoComposition }
+          : {}),
+      });
+      if (parsed.data.type === "thumbnail") {
+        if (asset.kind !== "video") {
+          return response({ error: "Vorschaubilder benoetigen ein Video." }, 422);
+        }
       }
       const job = await enqueueMediaProcessingJob({
         organizationId: user.organizationId,
@@ -335,6 +309,9 @@ export async function POST(request: Request, { params }: Context) {
         type: parsed.data.type,
         compositionCourseId: parsed.data.videoComposition
           ? parsed.data.courseId
+          : undefined,
+        compositionBlockId: parsed.data.videoComposition
+          ? parsed.data.blockId
           : undefined,
         options:
           parsed.data.type === "transcript"
@@ -362,6 +339,11 @@ export async function POST(request: Request, { params }: Context) {
           id: job.id,
           type: job.type,
           status: job.status,
+          atMilliseconds:
+            job.type === "thumbnail" &&
+            Number.isSafeInteger(job.options.atMilliseconds)
+              ? Number(job.options.atMilliseconds)
+              : null,
         },
         job.status === "succeeded" ? 200 : 202,
       );

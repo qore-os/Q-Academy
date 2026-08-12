@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -88,7 +89,7 @@ test("transient completion probes preserve the ambiguous STRATO upload failure",
     new SessionMediaRequestError(
       "Completion service unavailable.",
       503,
-      undefined,
+      "storage_unavailable",
       undefined,
     ),
     new SessionMediaRequestError(
@@ -134,6 +135,32 @@ test("transient completion probes preserve the ambiguous STRATO upload failure",
     assert.equal(completions, 3);
     assert.equal(waits, 2);
   }
+});
+
+test("session completion exposes unavailable storage as a retryable service failure", () => {
+  const service = readFileSync("src/lib/media/session-service.ts", "utf8");
+  const start = service.indexOf(
+    "export async function completeSessionMediaAsset",
+  );
+  const end = service.indexOf("\nexport async function ", start + 1);
+  assert.ok(start >= 0 && end > start);
+  const completion = service.slice(start, end);
+
+  assert.match(
+    completion,
+    /error\.code === "storage_unavailable"[\s\S]*?503[\s\S]*?"internal_error"/,
+  );
+  assert.equal(
+    isTransientSessionMediaCompletionFailure(
+      new SessionMediaRequestError(
+        "Completion service unavailable.",
+        503,
+        "storage_unavailable",
+        undefined,
+      ),
+    ),
+    true,
+  );
 });
 
 test("a definitive completion rejection remains authoritative", async () => {
@@ -231,10 +258,11 @@ test("a stored STRATO object is recovered when XHR reports a failure", async () 
   assert.equal(waits, 0);
 });
 
-test("a successful STRATO POST is completed exactly once", async () => {
+test("a successful STRATO POST retries a transiently missing object without replay", async () => {
   const controller = new AbortController();
   let uploads = 0;
   let completions = 0;
+  const delays: number[] = [];
 
   const result = await uploadStratoSinglePostWithRecovery({
     signal: controller.signal,
@@ -243,15 +271,26 @@ test("a successful STRATO POST is completed exactly once", async () => {
     },
     complete: async () => {
       completions += 1;
+      if (completions === 1) {
+        throw new SessionMediaRequestError(
+          "The media object is missing.",
+          409,
+          "object_missing",
+          undefined,
+        );
+      }
     },
     isObjectMissing: isMissingSessionMediaObject,
     isTransientCompletionFailure: isTransientSessionMediaCompletionFailure,
-    waitForRetry: noDelay,
+    waitForRetry: async (delayMs) => {
+      delays.push(delayMs);
+    },
   });
 
-  assert.deepEqual(result, { completionAttempts: 1, recovered: false });
+  assert.deepEqual(result, { completionAttempts: 2, recovered: true });
   assert.equal(uploads, 1);
-  assert.equal(completions, 1);
+  assert.equal(completions, 2);
+  assert.deepEqual(delays, [500]);
 });
 
 test("an aborted STRATO POST is never completed or retried", async () => {

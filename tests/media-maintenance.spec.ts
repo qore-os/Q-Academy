@@ -59,6 +59,83 @@ test("media maintenance authenticates before enforcing bounded queries", async (
   expect((await defaultLimit.json()).data.skipped).toBe(false);
 });
 
+test("maintenance expires claimed direct uploads without blocking the next batch", async ({
+  request,
+}) => {
+  const sql = postgres(databaseUrl, { max: 1, prepare: false });
+  const claimedAssetId = randomUUID();
+  const nextAssetId = randomUUID();
+  const directClaimToken = randomUUID();
+  try {
+    const [organization] = await sql<Array<{ id: string }>>`
+      select id from organizations order by created_at limit 1
+    `;
+    expect(organization?.id).toBeTruthy();
+    await sql`
+      insert into media_assets (
+        id, organization_id, purpose, kind, status, storage_driver,
+        storage_key, staging_storage_key, original_file_name, safe_file_name,
+        declared_mime_type, declared_size_bytes, quota_bytes,
+        upload_expires_at, direct_upload_claim_token,
+        direct_upload_claimed_at, created_at
+      ) values
+      (
+        ${claimedAssetId}, ${organization.id}, 'course_content', 'video',
+        'pending', 's3',
+        ${`tenants/${organization.id}/assets/${claimedAssetId}/ready.mp4`},
+        ${`incoming/tenants/${organization.id}/assets/${claimedAssetId}/incoming.mp4`},
+        'claimed.mp4', 'claimed.mp4', 'video/mp4', 8, 8,
+        '2000-01-01T00:00:00Z', ${directClaimToken}, now(), now()
+      ),
+      (
+        ${nextAssetId}, ${organization.id}, 'course_content', 'video',
+        'pending', 's3',
+        ${`tenants/${organization.id}/assets/${nextAssetId}/ready.mp4`},
+        ${`incoming/tenants/${organization.id}/assets/${nextAssetId}/incoming.mp4`},
+        'next.mp4', 'next.mp4', 'video/mp4', 8, 8,
+        '2000-01-02T00:00:00Z', null, null, now()
+      )
+    `;
+
+    const first = await maintain(request, "?limit=1");
+    expect(first.status()).toBe(200);
+    expect((await first.json()).data.expiredUploads).toBeGreaterThanOrEqual(1);
+    const [claimed] = await sql<
+      Array<{
+        status: string;
+        directUploadClaimToken: string | null;
+        directUploadClaimedAt: Date | null;
+        scanFailureCode: string | null;
+      }>
+    >`
+      select status,
+        direct_upload_claim_token as "directUploadClaimToken",
+        direct_upload_claimed_at as "directUploadClaimedAt",
+        scan_failure_code as "scanFailureCode"
+      from media_assets where id = ${claimedAssetId}
+    `;
+    expect(claimed).toMatchObject({
+      status: "deleted",
+      directUploadClaimToken: null,
+      directUploadClaimedAt: null,
+      scanFailureCode: "upload_expired",
+    });
+
+    const second = await maintain(request, "?limit=1");
+    expect(second.status()).toBe(200);
+    const [next] = await sql<Array<{ status: string }>>`
+      select status from media_assets where id = ${nextAssetId}
+    `;
+    expect(next?.status).toBe("deleted");
+  } finally {
+    await sql`
+      delete from media_assets
+      where id in (${claimedAssetId}, ${nextAssetId})
+    `.catch(() => undefined);
+    await sql.end();
+  }
+});
+
 test("media dispatch serializes a non-empty PostgreSQL backlog timestamp", async ({
   request,
 }) => {

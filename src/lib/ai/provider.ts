@@ -3,6 +3,7 @@ import "server-only";
 import { z } from "zod";
 
 import type { AiMessageCitation } from "@/db/schema";
+import { loadAiApiKey } from "@/lib/ai/api-key-credential";
 import { dedupeAiMessageCitations } from "@/lib/ai/citations";
 import {
   rankAiCourseContext,
@@ -375,7 +376,13 @@ export async function completeAiMessage(
 ): Promise<AiCompletionResult> {
   const started = performance.now();
   const context = rankAiCourseContext(input.message, input.courses);
-  const apiKey = process.env.AI_API_KEY?.trim();
+  let apiKey: string | null;
+  try {
+    apiKey = loadAiApiKey();
+  } catch (error) {
+    logServerError(error, { action: "ai.provider.credential" });
+    return completeWithFallback(input, context, started, "provider_error");
+  }
   if (!apiKey) {
     return completeWithFallback(input, context, started, "not_configured");
   }

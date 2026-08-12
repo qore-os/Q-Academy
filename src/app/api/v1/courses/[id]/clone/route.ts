@@ -35,6 +35,9 @@ import {
   CourseContentCopyReferenceError,
   remapCopiedExamQuestionPools,
 } from "@/lib/course-content-copy-model";
+import { enqueueCopiedVideoDescriptionJobsInTransaction } from "@/lib/ai/video-description-jobs";
+import { normalizeLocale } from "@/lib/i18n/model";
+import { resolveUserLocale } from "@/lib/i18n/server";
 
 export const dynamic = "force-dynamic";
 export const OPTIONS = apiOptions;
@@ -90,6 +93,15 @@ export async function POST(
           organizationId: context.organizationId,
           apiKeyId: context.apiKeyId,
         });
+        const locale = normalizeLocale(
+          await resolveUserLocale(
+            { organizationId: context.organizationId, preferredLocale: null },
+            tx,
+          ),
+        );
+        const copiedDescriptionBlocks: Array<
+          Pick<typeof contentBlocks.$inferSelect, "id" | "type" | "data">
+        > = [];
         const [clone] = await tx
           .insert(courses)
           .values({
@@ -294,7 +306,7 @@ export async function POST(
               copiedBlockData = new Map(
                 blocks.map((block) => [
                   block.id,
-                  courseContentDataForCopy(block.data),
+                  courseContentDataForCopy(block.type, block.data),
                 ]),
               );
             } catch (error) {
@@ -352,8 +364,7 @@ export async function POST(
               );
             }
             if (blocks.length) {
-              await tx.insert(contentBlocks).values(
-                blocks.map((block) => ({
+              const copiedBlocks = blocks.map((block) => ({
                   id: blockIds.get(block.id)!,
                   lessonId: lessonClone.id,
                   pageId: block.pageId ? pageIds.get(block.pageId)! : null,
@@ -363,7 +374,10 @@ export async function POST(
                   required: block.required,
                   data: copiedBlockData.get(block.id)!,
                   style: block.style,
-                })),
+                }));
+              await tx.insert(contentBlocks).values(copiedBlocks);
+              copiedDescriptionBlocks.push(
+                ...copiedBlocks.map(({ id, type, data }) => ({ id, type, data })),
               );
             }
           }
@@ -425,6 +439,13 @@ export async function POST(
             )
             .onConflictDoNothing();
         }
+        await enqueueCopiedVideoDescriptionJobsInTransaction(tx, {
+          organizationId: context.organizationId,
+          originCourseId: clone.id,
+          requestedById: actor.id,
+          blocks: copiedDescriptionBlocks,
+          locale,
+        });
         return clone;
       });
       await enqueueWebhook(context.organizationId, "course.created", {

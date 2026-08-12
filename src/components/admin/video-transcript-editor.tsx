@@ -2,6 +2,7 @@
 
 import {
   Captions,
+  Check,
   Download,
   Film,
   ImageIcon,
@@ -10,11 +11,12 @@ import {
   Play,
   Plus,
   Scissors,
+  Sparkles,
   Trash2,
   Upload,
   Volume2,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -32,6 +34,7 @@ import { getCourseParityCopy } from "@/lib/i18n/course-parity";
 import { intlLocale, type AppLocale } from "@/lib/i18n/model";
 import { getVideoCutsCopy } from "@/lib/i18n/video-cuts";
 import { getVideoCompositionCopy } from "@/lib/i18n/video-composition";
+import { getVideoWorkflowCopy } from "@/lib/i18n/video-workflow";
 import {
   CourseMediaSourceField,
   type CourseMediaSelection,
@@ -48,28 +51,70 @@ import {
   videoPlaybackPolicyFromForm,
   videoPlaybackPolicyHasEdits,
 } from "@/lib/media/video-playback-policy";
+import {
+  exactVideoThumbnailJobStatus,
+  sanitizeVideoPoster,
+  type ExactVideoThumbnailJobStatus,
+  type VideoPoster,
+} from "@/lib/media/video-poster";
+import {
+  TRANSCRIPT_POLLING_MAXIMUM_MS,
+  waitForAbortableDelay,
+} from "@/lib/media/browser-async-retry";
 
 const inputClass =
   "focus-ring h-10 w-full rounded-md border border-[#d5dde3] bg-white px-3 text-sm";
 const textareaClass =
   "focus-ring min-h-48 w-full rounded-md border border-[#d5dde3] bg-white p-3 font-mono text-xs leading-5";
+type AsyncAssetScope = {
+  assetId: string;
+  controller: AbortController;
+};
+type PosterFrameState = {
+  assetId: string;
+  atMilliseconds: number;
+  jobId: string | null;
+  status: ExactVideoThumbnailJobStatus;
+};
 
 export function VideoTranscriptEditor({
   transcript,
+  transcriptLanguage,
   playbackPolicy,
   endCard,
   composition,
+  poster,
+  description,
+  descriptionIntent,
   sourceUrl,
+  sourceAssetId,
+  sourceDurationMilliseconds,
+  automaticallyLoadTranscript = false,
+  serverProcessingEnabled = true,
   courseId,
+  blockId,
   locale,
+  onDescriptionPendingChange,
+  onPosterPendingChange,
 }: {
   transcript?: unknown;
+  transcriptLanguage?: string;
   playbackPolicy?: unknown;
   endCard?: unknown;
   composition?: unknown;
+  poster?: unknown;
+  description?: string;
+  descriptionIntent?: "automatic" | "touched";
   sourceUrl?: string;
+  sourceAssetId?: string;
+  sourceDurationMilliseconds?: number | null;
+  automaticallyLoadTranscript?: boolean;
+  serverProcessingEnabled?: boolean;
   courseId: string;
+  blockId: string;
   locale: AppLocale;
+  onDescriptionPendingChange?: (pending: boolean) => void;
+  onPosterPendingChange?: (pending: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -77,6 +122,7 @@ export function VideoTranscriptEditor({
   const copy = getCourseParityCopy(locale).video;
   const cutsCopy = getVideoCutsCopy(locale);
   const compositionCopy = getVideoCompositionCopy(locale);
+  const workflowCopy = getVideoWorkflowCopy(locale);
   const secondsFormatter = useMemo(
     () =>
       new Intl.NumberFormat(intlLocale(locale), {
@@ -85,19 +131,43 @@ export function VideoTranscriptEditor({
       }),
     [locale],
   );
-  const initialLanguage =
+  const persistedLanguage = transcriptLanguage?.trim().toLowerCase();
+  const embeddedLanguage =
     typeof transcript === "object" &&
     transcript !== null &&
     "language" in transcript &&
     typeof transcript.language === "string"
-      ? transcript.language
+      ? transcript.language.trim().toLowerCase()
+      : "";
+  const initialLanguage = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(
+    persistedLanguage ?? "",
+  )
+    ? persistedLanguage!
+    : /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(embeddedLanguage)
+      ? embeddedLanguage
       : locale;
   const [language, setLanguage] = useState(initialLanguage);
   const [webVtt, setWebVtt] = useState(() =>
     serializeWebVttTranscript(transcript),
   );
   const [generating, setGenerating] = useState(false);
+  const transcriptEditVersionRef = useRef(0);
+  const [descriptionPending, setDescriptionPending] = useState(false);
+  const [descriptionValue, setDescriptionValue] = useState(description ?? "");
+  const initialDescriptionTouched =
+    descriptionIntent === "touched" || Boolean(description?.trim());
+  const [descriptionTouched, setDescriptionTouched] = useState(
+    initialDescriptionTouched,
+  );
+  const [descriptionSuggestion, setDescriptionSuggestion] = useState("");
+  const [descriptionSuggestionAssetId, setDescriptionSuggestionAssetId] =
+    useState("");
+  const descriptionRequestRef = useRef(0);
+  const automaticTranscriptRequestedRef = useRef(false);
+  const asyncAssetScopeRef = useRef<AsyncAssetScope | null>(null);
+  const generateTranscriptRef = useRef<(() => Promise<void>) | null>(null);
   const [variantsPending, setVariantsPending] = useState(false);
+  const posterFrameControllerRef = useRef<AbortController | null>(null);
   const initialComposition = useMemo(
     () => sanitizeVideoComposition(composition),
     [composition],
@@ -127,6 +197,28 @@ export function VideoTranscriptEditor({
     () => sanitizeVideoPlaybackPolicy(playbackPolicy),
     [playbackPolicy],
   );
+  const initialPoster = useMemo(() => sanitizeVideoPoster(poster), [poster]);
+  const [posterMode, setPosterMode] = useState<"auto" | "frame" | "upload">(
+    sourceAssetId ? (initialPoster?.source ?? "auto") : "auto",
+  );
+  const [posterFrameState, setPosterFrameState] =
+    useState<PosterFrameState | null>(() =>
+      sourceAssetId && initialPoster?.source === "frame"
+        ? {
+            assetId: sourceAssetId,
+            atMilliseconds: initialPoster.atMilliseconds,
+            jobId: null,
+            status: "succeeded",
+          }
+        : null,
+    );
+  const [posterUpload, setPosterUpload] = useState<
+    Extract<VideoPoster, { source: "upload" }> | undefined
+  >(
+    sourceAssetId && initialPoster?.source === "upload"
+      ? initialPoster
+      : undefined,
+  );
   const [trimStartSeconds, setTrimStartSeconds] = useState(
     String(policy.trimStartMs / 1_000),
   );
@@ -140,8 +232,26 @@ export function VideoTranscriptEditor({
       endSeconds: String(segment.endMs / 1_000),
     })),
   );
-  const [durationMs, setDurationMs] = useState<number | null>(null);
-  const [thumbnailMs, setThumbnailMs] = useState(policy.trimStartMs);
+  const [durationMs, setDurationMs] = useState<number | null>(() =>
+    Number.isSafeInteger(sourceDurationMilliseconds) &&
+    Number(sourceDurationMilliseconds) > 0
+      ? Number(sourceDurationMilliseconds)
+      : null,
+  );
+  const [thumbnailMs, setThumbnailMs] = useState(
+    initialPoster?.source === "frame"
+      ? initialPoster.atMilliseconds
+      : policy.trimStartMs,
+  );
+  const requestedFrameMilliseconds = Math.max(0, Math.round(thumbnailMs));
+  const currentPosterFrameStatus =
+    posterFrameState?.assetId === (sourceAssetId?.trim() ?? "") &&
+    posterFrameState.atMilliseconds === requestedFrameMilliseconds
+      ? posterFrameState.status
+      : null;
+  const posterFrameBusy =
+    currentPosterFrameStatus === "pending" ||
+    currentPosterFrameStatus === "processing";
   const [playheadMs, setPlayheadMs] = useState(policy.trimStartMs);
   const parsed = useMemo(
     () => (webVtt.trim() ? parseWebVttTranscript(webVtt, language) : null),
@@ -215,6 +325,60 @@ export function VideoTranscriptEditor({
   const compositionDocument = rawComposition
     ? sanitizeVideoComposition(rawComposition)
     : null;
+  const posterDocument: VideoPoster | null =
+    sourceAssetId &&
+    posterMode === "frame" &&
+    currentPosterFrameStatus === "succeeded"
+      ? {
+          version: 1,
+          source: "frame",
+          atMilliseconds: requestedFrameMilliseconds,
+        }
+      : sourceAssetId && posterMode === "upload" && posterUpload
+        ? posterUpload
+        : null;
+  const posterPending = posterMode !== "auto" && !posterDocument;
+
+  useEffect(() => {
+    const scope: AsyncAssetScope = {
+      assetId: sourceAssetId?.trim() ?? "",
+      controller: new AbortController(),
+    };
+    asyncAssetScopeRef.current?.controller.abort();
+    asyncAssetScopeRef.current = scope;
+    automaticTranscriptRequestedRef.current = false;
+    return () => {
+      scope.controller.abort();
+      if (asyncAssetScopeRef.current === scope) {
+        asyncAssetScopeRef.current = null;
+      }
+    };
+  }, [sourceAssetId]);
+
+  useEffect(() => {
+    posterFrameControllerRef.current?.abort();
+    posterFrameControllerRef.current = null;
+    return () => posterFrameControllerRef.current?.abort();
+  }, [sourceAssetId]);
+
+  useEffect(
+    () => () => {
+      onDescriptionPendingChange?.(false);
+    },
+    [onDescriptionPendingChange],
+  );
+
+  useEffect(() => {
+    onPosterPendingChange?.(posterPending);
+  }, [onPosterPendingChange, posterPending]);
+
+  useEffect(
+    () => () => {
+      onPosterPendingChange?.(false);
+    },
+    [onPosterPendingChange],
+  );
+
   const updateAudioTrack = (
     id: string,
     update: Partial<(typeof audioTracks)[number]>,
@@ -254,6 +418,7 @@ export function VideoTranscriptEditor({
         await file.arrayBuffer(),
         language,
       );
+      transcriptEditVersionRef.current += 1;
       setLanguage(imported.document.language);
       setWebVtt(imported.webVtt);
       toast.success(copy.success.transcriptImported);
@@ -287,29 +452,48 @@ export function VideoTranscriptEditor({
   };
 
   const generateTranscript = async () => {
-    const form = containerRef.current?.closest("form");
-    const assetField = form?.elements.namedItem("mediaAssetId");
-    const assetId =
-      assetField instanceof HTMLInputElement ? assetField.value.trim() : "";
+    const assetId = sourceAssetId?.trim() ?? "";
+    if (!serverProcessingEnabled) return;
     if (!assetId) {
       toast.error(copy.errors.assetRequired);
       return;
     }
+    const scope = asyncAssetScopeRef.current;
+    if (!scope || scope.assetId !== assetId || scope.controller.signal.aborted)
+      return;
+    const requestedLanguage = language.toLowerCase();
+    const editVersion = transcriptEditVersionRef.current;
+    const scopeIsCurrent = () =>
+      asyncAssetScopeRef.current === scope &&
+      !scope.controller.signal.aborted;
     setGenerating(true);
     try {
       const queued = await fetch(`/api/media-assets/${assetId}/processing`, {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "transcript", language }),
+        body: JSON.stringify({
+          type: "transcript",
+          language,
+          courseId,
+          blockId,
+        }),
+        signal: scope.controller.signal,
       });
       if (!queued.ok) throw new Error(copy.errors.queueTranscript);
-      for (let attempt = 0; attempt < 60; attempt += 1) {
+      const pollingStartedAt = Date.now();
+      for (
+        let attempt = 0;
+        Date.now() - pollingStartedAt < TRANSCRIPT_POLLING_MAXIMUM_MS;
+        attempt += 1
+      ) {
+        if (!scopeIsCurrent()) return;
         const status = await fetch(
-          `/api/media-assets/${assetId}/processing?language=${encodeURIComponent(language.toLowerCase())}`,
+          `/api/media-assets/${assetId}/processing?language=${encodeURIComponent(requestedLanguage)}`,
           {
             credentials: "same-origin",
             cache: "no-store",
+            signal: scope.controller.signal,
           },
         );
         if (!status.ok) throw new Error(copy.errors.transcriptStatus);
@@ -323,6 +507,10 @@ export function VideoTranscriptEditor({
           }>;
         };
         if (result.transcript?.webVtt) {
+          if (!scopeIsCurrent()) return;
+          if (editVersion !== transcriptEditVersionRef.current) {
+            return;
+          }
           setLanguage(result.transcript.language ?? language);
           setWebVtt(result.transcript.webVtt);
           toast.success(copy.success.transcriptLoaded);
@@ -331,7 +519,7 @@ export function VideoTranscriptEditor({
         const transcriptJob = result.jobs?.find(
           (job) =>
             job.type === "transcript" &&
-            job.language === language.toLowerCase(),
+            job.language === requestedLanguage,
         );
         if (transcriptJob?.status === "failed") {
           throw new Error(
@@ -340,27 +528,107 @@ export function VideoTranscriptEditor({
               : copy.errors.transcriptFailed,
           );
         }
-        await new Promise((resolve) => window.setTimeout(resolve, 2_000));
+        await waitForAbortableDelay(
+          attempt < 60 ? 2_000 : 10_000,
+          scope.controller.signal,
+        );
       }
       throw new Error(copy.errors.transcriptContinues);
     } catch (error) {
+      if (!scopeIsCurrent()) return;
       toast.error(
         error instanceof Error ? error.message : copy.errors.transcriptGeneric,
       );
     } finally {
-      setGenerating(false);
+      if (scopeIsCurrent()) setGenerating(false);
     }
   };
+  generateTranscriptRef.current = generateTranscript;
 
-  const selectedAssetId = () => {
-    const form = containerRef.current?.closest("form");
-    const assetField = form?.elements.namedItem("mediaAssetId");
-    return assetField instanceof HTMLInputElement
-      ? assetField.value.trim()
-      : "";
+  function selectedAssetId() {
+    return sourceAssetId?.trim() ?? "";
+  }
+
+  const generateDescription = async () => {
+    if (!serverProcessingEnabled) return;
+    const assetId = selectedAssetId();
+    if (!assetId) {
+      toast.error(copy.errors.assetRequired);
+      return;
+    }
+    if (!parsed) {
+      toast.error(workflowCopy.descriptionTranscriptRequired);
+      return;
+    }
+    const scope = asyncAssetScopeRef.current;
+    if (!scope || scope.assetId !== assetId || scope.controller.signal.aborted)
+      return;
+    const scopeIsCurrent = () =>
+      asyncAssetScopeRef.current === scope &&
+      !scope.controller.signal.aborted;
+    const requestId = ++descriptionRequestRef.current;
+    setDescriptionPending(true);
+    onDescriptionPendingChange?.(true);
+    try {
+      const response = await fetch(
+        `/api/media-assets/${assetId}/video-description`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            courseId,
+            blockId,
+            locale,
+            transcriptLanguage: language,
+          }),
+          signal: scope.controller.signal,
+        },
+      );
+      const payload = (await response.json().catch(() => null)) as {
+        description?: string;
+      } | null;
+      if (!response.ok || !payload?.description) {
+        throw new Error(workflowCopy.descriptionFailed);
+      }
+      if (
+        requestId !== descriptionRequestRef.current ||
+        !scopeIsCurrent()
+      ) {
+        return;
+      }
+      setDescriptionSuggestion(payload.description);
+      setDescriptionSuggestionAssetId(assetId);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : workflowCopy.descriptionFailed,
+      );
+    } finally {
+      if (
+        requestId === descriptionRequestRef.current &&
+        scopeIsCurrent()
+      ) {
+        setDescriptionPending(false);
+        onDescriptionPendingChange?.(false);
+      }
+    }
   };
+  useEffect(() => {
+    if (
+      !automaticallyLoadTranscript ||
+      automaticTranscriptRequestedRef.current ||
+      parsed ||
+      !sourceAssetId ||
+      !serverProcessingEnabled
+    ) {
+      return;
+    }
+    automaticTranscriptRequestedRef.current = true;
+    void generateTranscriptRef.current?.();
+  }, [automaticallyLoadTranscript, parsed, serverProcessingEnabled, sourceAssetId]);
 
   const queueVideoVariants = async () => {
+    if (!serverProcessingEnabled) return;
     const assetId = selectedAssetId();
     if (!assetId) {
       toast.error(copy.errors.assetRequired);
@@ -386,9 +654,11 @@ export function VideoTranscriptEditor({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(
                 type === "thumbnail"
-                  ? { type, atMilliseconds: thumbnailMs }
+                  ? { type, atMilliseconds: thumbnailMs, courseId, blockId }
                   : {
                       type,
+                      courseId,
+                      blockId,
                       ...(!compositionDocument &&
                       videoPlaybackPolicyHasEdits(draftPlaybackPolicy)
                         ? {
@@ -399,10 +669,7 @@ export function VideoTranscriptEditor({
                           }
                         : {}),
                       ...(compositionDocument
-                        ? {
-                            courseId,
-                            videoComposition: compositionDocument,
-                          }
+                        ? { videoComposition: compositionDocument }
                         : {}),
                     },
               ),
@@ -431,6 +698,121 @@ export function VideoTranscriptEditor({
       );
     } finally {
       setVariantsPending(false);
+    }
+  };
+
+  const queuePosterFrame = async () => {
+    if (!serverProcessingEnabled) return;
+    const assetId = selectedAssetId();
+    if (!assetId) {
+      toast.error(copy.errors.assetRequired);
+      return;
+    }
+    const atMilliseconds = requestedFrameMilliseconds;
+    posterFrameControllerRef.current?.abort();
+    const controller = new AbortController();
+    posterFrameControllerRef.current = controller;
+    const updateStatus = (
+      status: ExactVideoThumbnailJobStatus,
+      jobId: string | null,
+    ) => {
+      if (posterFrameControllerRef.current !== controller) return;
+      setPosterFrameState({ assetId, atMilliseconds, jobId, status });
+    };
+    updateStatus("pending", null);
+    try {
+      const response = await fetch(`/api/media-assets/${assetId}/processing`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "thumbnail",
+          atMilliseconds,
+          courseId,
+          blockId,
+        }),
+        signal: controller.signal,
+      });
+      const queued = (await response.json().catch(() => null)) as {
+        id?: unknown;
+        type?: unknown;
+        status?: unknown;
+        atMilliseconds?: unknown;
+      } | null;
+      if (!response.ok || typeof queued?.id !== "string") {
+        throw new Error(workflowCopy.posterFrameFailed);
+      }
+      const initialStatus = exactVideoThumbnailJobStatus(
+        [queued],
+        queued.id,
+        atMilliseconds,
+      );
+      if (!initialStatus) throw new Error(workflowCopy.posterFrameFailed);
+      updateStatus(initialStatus, queued.id);
+      if (initialStatus === "failed") {
+        throw new Error(workflowCopy.posterFrameFailed);
+      }
+      if (initialStatus === "succeeded") {
+        toast.success(workflowCopy.posterFrameSucceeded);
+        return;
+      }
+
+      const pollingStartedAt = Date.now();
+      for (
+        let attempt = 0;
+        Date.now() - pollingStartedAt < TRANSCRIPT_POLLING_MAXIMUM_MS;
+        attempt += 1
+      ) {
+        await waitForAbortableDelay(
+          attempt < 60 ? 2_000 : 10_000,
+          controller.signal,
+        );
+        const statusResponse = await fetch(
+          `/api/media-assets/${assetId}/processing`,
+          {
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: controller.signal,
+          },
+        );
+        if (!statusResponse.ok) {
+          throw new Error(workflowCopy.posterFrameFailed);
+        }
+        const result = (await statusResponse.json().catch(() => null)) as {
+          jobs?: Array<Readonly<Record<string, unknown>>>;
+        } | null;
+        const matchingJob = result?.jobs?.find(
+          (job) => job.id === queued.id,
+        );
+        if (!matchingJob) continue;
+        const exactStatus = exactVideoThumbnailJobStatus(
+          [matchingJob],
+          queued.id,
+          atMilliseconds,
+        );
+        if (!exactStatus) throw new Error(workflowCopy.posterFrameFailed);
+        updateStatus(exactStatus, queued.id);
+        if (exactStatus === "failed") {
+          throw new Error(workflowCopy.posterFrameFailed);
+        }
+        if (exactStatus === "succeeded") {
+          toast.success(workflowCopy.posterFrameSucceeded);
+          return;
+        }
+      }
+      throw new Error(workflowCopy.posterFrameFailed);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      updateStatus("failed", null);
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : workflowCopy.posterFrameFailed,
+      );
+    } finally {
+      if (posterFrameControllerRef.current === controller) {
+        posterFrameControllerRef.current = null;
+      }
     }
   };
 
@@ -571,9 +953,9 @@ export function VideoTranscriptEditor({
             <input
               type="range"
               min="0"
-              max={timelineDurationMs}
+              max={Math.max(0, timelineDurationMs - 1)}
               step="100"
-              value={Math.min(thumbnailMs, timelineDurationMs)}
+              value={Math.min(thumbnailMs, Math.max(0, timelineDurationMs - 1))}
               onChange={(event) => setThumbnailMs(Number(event.target.value))}
               className="mt-2 w-full accent-[#c95b4f]"
             />
@@ -616,6 +998,129 @@ export function VideoTranscriptEditor({
           </span>
         </div>
       </section>
+      <fieldset className="space-y-3 rounded-md border border-[#dce3e8] bg-[#f8fafb] p-3">
+        <legend className="px-1 text-xs font-bold text-[#354555]">
+          {workflowCopy.posterTitle}
+        </legend>
+        <input
+          type="hidden"
+          name="videoPoster"
+          value={posterDocument ? JSON.stringify(posterDocument) : ""}
+        />
+        <div
+          role="group"
+          aria-label={workflowCopy.posterTitle}
+          className="inline-flex max-w-full flex-wrap rounded-md border border-[#dce1e5] bg-[#eef2f4] p-0.5"
+        >
+          {(
+            [
+              ["auto", workflowCopy.posterAuto, Sparkles],
+              ["frame", workflowCopy.posterFrame, Film],
+              ["upload", workflowCopy.posterUpload, ImageIcon],
+            ] as const
+          ).map(([mode, label, Icon]) => (
+            <button
+              key={mode}
+              type="button"
+              aria-pressed={posterMode === mode}
+              disabled={
+                mode !== "auto" &&
+                (!sourceAssetId || (mode === "frame" && !serverProcessingEnabled))
+              }
+              onClick={() => {
+                setPosterMode(mode);
+                if (mode !== "upload") setPosterUpload(undefined);
+              }}
+              className={`focus-ring inline-flex h-8 items-center gap-2 rounded px-3 text-xs font-semibold ${
+                posterMode === mode
+                  ? "bg-white text-[#294f79] shadow-sm"
+                  : "text-[#71808b]"
+              } disabled:opacity-40`}
+            >
+              <Icon className="size-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
+        {posterMode === "frame" ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="min-w-0 flex-1 text-xs leading-5 text-[#66727f]">
+                {workflowCopy.posterFrameHint}
+              </p>
+              <button
+                type="button"
+                onClick={() => void queuePosterFrame()}
+                disabled={
+                  posterFrameBusy || !sourceAssetId || !serverProcessingEnabled
+                }
+                className="focus-ring inline-flex h-9 items-center gap-2 rounded-md border border-[#b8c7d2] bg-white px-3 text-xs font-bold text-[#365f8d] hover:bg-[#f3f7fa] disabled:opacity-45"
+              >
+                {posterFrameBusy ? (
+                  <LoaderCircle className="size-4 animate-spin" />
+                ) : currentPosterFrameStatus === "succeeded" ? (
+                  <Check className="size-4" />
+                ) : (
+                  <ImageIcon className="size-4" />
+                )}
+                {posterFrameBusy
+                  ? workflowCopy.posterFrameCreating
+                  : workflowCopy.posterFrameCreate}
+              </button>
+            </div>
+            {currentPosterFrameStatus ? (
+              <p
+                role={
+                  currentPosterFrameStatus === "failed" ? "alert" : "status"
+                }
+                aria-live="polite"
+                className={`text-xs font-semibold ${
+                  currentPosterFrameStatus === "failed"
+                    ? "text-[#a94339]"
+                    : currentPosterFrameStatus === "succeeded"
+                      ? "text-[#167e74]"
+                      : "text-[#66727f]"
+                }`}
+              >
+                {currentPosterFrameStatus === "pending"
+                  ? workflowCopy.posterFramePending
+                  : currentPosterFrameStatus === "processing"
+                    ? workflowCopy.posterFrameProcessing
+                    : currentPosterFrameStatus === "succeeded"
+                      ? workflowCopy.posterFrameSucceeded
+                      : workflowCopy.posterFrameFailed}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+        {posterMode === "upload" ? (
+          <CourseMediaSourceField
+            locale={locale}
+            courseId={courseId}
+            kind="image"
+            label={workflowCopy.posterUploadLabel}
+            defaultAssetId={posterUpload?.mediaAssetId}
+            defaultFileName={posterUpload?.mediaAssetName}
+            mediaAssetIdName="videoPosterAssetId"
+            urlName="videoPosterUrl"
+            allowExternalUrl={false}
+            preferredMode="upload"
+            onSourceChange={(source) =>
+              setPosterUpload(
+                (source.mode === "upload" || source.mode === "library") &&
+                  source.selection
+                  ? {
+                      version: 1,
+                      source: "upload",
+                      mediaAssetId: source.selection.id,
+                      mediaAssetName: source.selection.originalFileName,
+                    }
+                  : undefined,
+              )
+            }
+          />
+        ) : null}
+      </fieldset>
       <fieldset className="space-y-3 rounded-md border border-[#dce3e8] bg-[#f8fafb] p-3">
         <legend className="px-1 text-xs font-bold text-[#354555]">
           {cutsCopy.title}
@@ -1031,7 +1536,9 @@ export function VideoTranscriptEditor({
         <button
           type="button"
           onClick={() => void queueVideoVariants()}
-          disabled={variantsPending}
+          disabled={
+            variantsPending || !sourceAssetId || !serverProcessingEnabled
+          }
           title={copy.variantsTitle}
           className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-md border border-[#b8c7d2] bg-white px-3 text-xs font-bold text-[#365f8d] hover:bg-[#f3f7fa] disabled:opacity-60 sm:col-span-2 sm:justify-self-start"
         >
@@ -1112,6 +1619,81 @@ export function VideoTranscriptEditor({
           {copy.endCard.ctaHint}
         </p>
       </fieldset>
+      <fieldset className="space-y-3 rounded-md border border-[#dce3e8] bg-[#f8fafb] p-3">
+        <legend className="px-1 text-xs font-bold text-[#354555]">
+          {workflowCopy.descriptionTitle}
+        </legend>
+        <input
+          type="hidden"
+          name="videoDescriptionIntent"
+          value={descriptionTouched ? "touched" : "automatic"}
+        />
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold text-[#52606d]">
+            {workflowCopy.descriptionLabel}
+          </span>
+          <textarea
+            name="caption"
+            maxLength={5_000}
+            value={descriptionValue}
+            onChange={(event) => {
+              setDescriptionTouched(true);
+              setDescriptionValue(event.target.value);
+            }}
+            className="focus-ring min-h-28 w-full rounded-md border border-[#d5dde3] bg-white p-3 text-sm leading-6"
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => void generateDescription()}
+          disabled={
+            descriptionPending ||
+            !parsed ||
+            !sourceAssetId ||
+            !serverProcessingEnabled
+          }
+          className="focus-ring inline-flex h-9 items-center gap-2 rounded-md border border-[#b8c7d2] bg-white px-3 text-xs font-bold text-[#365f8d] hover:bg-[#f3f7fa] disabled:opacity-45"
+        >
+          {descriptionPending ? (
+            <LoaderCircle className="size-4 animate-spin" />
+          ) : (
+            <Sparkles className="size-4" />
+          )}
+          {descriptionPending
+            ? workflowCopy.descriptionGenerating
+            : descriptionSuggestion
+              ? workflowCopy.descriptionRegenerate
+              : workflowCopy.descriptionGenerate}
+        </button>
+        {descriptionSuggestion ? (
+          <div className="space-y-2 rounded-md border border-[#b9ddd8] bg-white p-3">
+            <p className="text-[11px] font-bold uppercase text-[#52606d]">
+              {workflowCopy.descriptionSuggestion}
+            </p>
+            <p className="whitespace-pre-wrap [overflow-wrap:anywhere] text-sm leading-6 text-[#354555]">
+              {descriptionSuggestion}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedAssetId() !== descriptionSuggestionAssetId) {
+                  setDescriptionSuggestion("");
+                  setDescriptionSuggestionAssetId("");
+                  toast.error(copy.errors.assetRequired);
+                  return;
+                }
+                setDescriptionTouched(true);
+                setDescriptionValue(descriptionSuggestion);
+                toast.success(workflowCopy.descriptionAccepted);
+              }}
+              className="focus-ring inline-flex h-9 items-center gap-2 rounded-md bg-[#176f68] px-3 text-xs font-bold text-white hover:bg-[#125e58]"
+            >
+              <Check className="size-4" />
+              {workflowCopy.descriptionAccept}
+            </button>
+          </div>
+        ) : null}
+      </fieldset>
       <div className="flex flex-wrap items-end gap-3">
         <label className="block w-28">
           <span className="mb-1.5 block text-xs font-semibold text-[#52606d]">
@@ -1119,8 +1701,11 @@ export function VideoTranscriptEditor({
           </span>
           <input
             name="transcriptLanguage"
-            value={language}
-            onChange={(event) => setLanguage(event.target.value)}
+              value={language}
+              onChange={(event) => {
+                transcriptEditVersionRef.current += 1;
+                setLanguage(event.target.value);
+              }}
             maxLength={35}
             pattern="[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*"
             className={inputClass}
@@ -1129,7 +1714,7 @@ export function VideoTranscriptEditor({
         <button
           type="button"
           onClick={() => void generateTranscript()}
-          disabled={generating}
+          disabled={generating || !sourceAssetId || !serverProcessingEnabled}
           className="focus-ring mb-0 inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#b8c7d2] bg-white px-3 text-xs font-bold text-[#365f8d] hover:bg-[#f3f7fa] disabled:opacity-60"
         >
           {generating ? (
@@ -1185,9 +1770,12 @@ export function VideoTranscriptEditor({
           {copy.transcriptLabel}
         </span>
         <textarea
-          name="transcriptVtt"
-          value={webVtt}
-          onChange={(event) => setWebVtt(event.target.value)}
+              name="transcriptVtt"
+              value={webVtt}
+              onChange={(event) => {
+                transcriptEditVersionRef.current += 1;
+                setWebVtt(event.target.value);
+              }}
           maxLength={600_000}
           spellCheck={false}
           className={textareaClass}

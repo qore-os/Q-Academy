@@ -760,6 +760,23 @@ async function sessionUploadIntentResponse(asset: MediaAsset) {
       completeUrl: `/api/media-assets/${asset.id}/complete`,
     };
   }
+  const configuration = getMediaStorageConfiguration();
+  if (
+    asset.storageDriver === "s3" &&
+    configuration.driver === "s3" &&
+    configuration.compatibilityMode === "strato-hidrive"
+  ) {
+    return {
+      ...sessionAssetDto(asset),
+      upload: null,
+      completeUrl: `/api/media-assets/${asset.id}/complete`,
+      completionTransport: "direct-post" as const,
+      directPostClaimUrl: `/api/media-assets/${asset.id}/direct-upload-claim`,
+      directPostClaimState: asset.directUploadClaimToken
+        ? ("claimed" as const)
+        : ("available" as const),
+    };
+  }
   const authorization = await createMediaUploadAuthorization({
     ...mediaAssetIdentity(asset, "staging"),
     mimeType: asset.declaredMimeType,
@@ -925,6 +942,96 @@ export async function getSessionMediaAsset(user: User, id: string) {
     throw new ApiError(404, "not_found", "Media-Asset nicht gefunden.");
   }
   return asset;
+}
+
+export async function claimSessionDirectPostUpload(
+  user: User,
+  id: string,
+  claimToken: string,
+) {
+  const configuration = getMediaStorageConfiguration();
+  if (
+    configuration.driver !== "s3" ||
+    configuration.compatibilityMode !== "strato-hidrive"
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Ein direkter POST-Upload ist fuer diesen Speicher nicht verfuegbar.",
+    );
+  }
+  const result = await db.transaction(async (tx) => {
+    const now = new Date();
+    const [asset] = await tx
+      .select()
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, id),
+          eq(mediaAssets.organizationId, user.organizationId),
+          sessionMediaAssetManageVisibility(user),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!asset) {
+      throw new ApiError(404, "not_found", "Media-Asset nicht gefunden.");
+    }
+    assertUploadedBy(user, asset);
+    if (
+      asset.storageDriver !== "s3" ||
+      asset.status !== "pending" ||
+      asset.uploadExpiresAt.getTime() <= now.getTime() ||
+      usesSessionMultipartUpload(asset)
+    ) {
+      throw new ApiError(409, "conflict", "Der Upload ist nicht mehr aktiv.");
+    }
+    if (asset.directUploadClaimToken) {
+      return {
+        state:
+          asset.directUploadClaimToken === claimToken
+            ? ("send_authorized" as const)
+            : ("completion_pending" as const),
+        asset,
+      };
+    }
+    const [claimed] = await tx
+      .update(mediaAssets)
+      .set({
+        directUploadClaimToken: claimToken,
+        directUploadClaimedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(mediaAssets.id, asset.id),
+          eq(mediaAssets.organizationId, asset.organizationId),
+          isNull(mediaAssets.directUploadClaimToken),
+          isNull(mediaAssets.directUploadClaimedAt),
+        ),
+      )
+      .returning({ id: mediaAssets.id });
+    if (!claimed) {
+      return { state: "completion_pending" as const, asset };
+    }
+    return { state: "send_authorized" as const, asset };
+  });
+  if (result.state === "completion_pending") {
+    return { state: result.state };
+  }
+  const authorization = await createMediaUploadAuthorization({
+    ...mediaAssetIdentity(result.asset, "staging"),
+    mimeType: result.asset.declaredMimeType,
+    sizeBytes: result.asset.declaredSizeBytes,
+  });
+  if (authorization.transport !== "s3" || authorization.method !== "POST") {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Der direkte POST-Upload ist nicht mehr verfuegbar.",
+    );
+  }
+  return { state: result.state, upload: authorization };
 }
 
 export async function listSessionCourseMediaAssets(
@@ -1698,8 +1805,16 @@ export async function completeSessionMediaAsset(user: User, id: string) {
     } catch (error) {
       if (error instanceof MediaStorageError) {
         throw new ApiError(
-          error.code === "object_missing" ? 409 : 422,
-          error.code === "object_missing" ? "conflict" : "validation_error",
+          error.code === "object_missing"
+            ? 409
+            : error.code === "storage_unavailable"
+              ? 503
+              : 422,
+          error.code === "object_missing"
+            ? "conflict"
+            : error.code === "storage_unavailable"
+              ? "internal_error"
+              : "validation_error",
           error.message,
           { reason: error.code },
         );
@@ -1790,6 +1905,8 @@ export async function completeSessionMediaAsset(user: User, id: string) {
           actualSizeBytes: stored.sizeBytes,
           etag: stored.etag,
           stagingStorageVersionId: stored.versionId,
+          directUploadClaimToken: null,
+          directUploadClaimedAt: null,
           uploadedAt: now,
           scanNextRetryAt: now,
           updatedAt: now,
@@ -2021,6 +2138,8 @@ export async function deleteSessionMediaAsset(user: User, id: string) {
       .set({
         status: "deleted",
         deletedAt: now,
+        directUploadClaimToken: null,
+        directUploadClaimedAt: null,
         scanClaimToken: null,
         scanClaimedAt: null,
         scanLeaseExpiresAt: null,

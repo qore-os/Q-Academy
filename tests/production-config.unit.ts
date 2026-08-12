@@ -67,6 +67,17 @@ const databasePermissionsEntrypoint = readFileSync(
   new URL("../scripts/ops/database-permissions-entrypoint.sh", import.meta.url),
   "utf8",
 );
+const releaseCommon = readFileSync(
+  new URL("../scripts/ops/release-common.sh", import.meta.url),
+  "utf8",
+);
+const productionReleasePaths = [
+  "deploy-release.sh",
+  "reconcile-production.sh",
+  "rollback-release.sh",
+].map((name) =>
+  readFileSync(new URL(`../scripts/ops/${name}`, import.meta.url), "utf8"),
+);
 const productionVapidKeys = webPush.generateVAPIDKeys();
 
 function composeServiceBlock(serviceName: string) {
@@ -195,6 +206,44 @@ test("production environment accepts explicit secure and distinct values", () =>
     result.caddyTlsAskSecret,
     "C4ddyAsk-3TyU9iO5pA1sD7fG2hJ8kL4zX0cVbNmQ",
   );
+});
+
+test("production accepts only the fixed file-backed AI credential contract", () => {
+  const configured = {
+    ...validProductionEnvironment(),
+    AI_API_KEY_FILE: "/run/secrets/q-academy-ai-api-key",
+  };
+  assert.ok(validateProductionServerEnvironment(configured));
+  assert.throws(
+    () =>
+      validateProductionServerEnvironment({
+        ...configured,
+        AI_API_KEY: "inline-secret",
+      }),
+    /AI_API_KEY must be unset in production/,
+  );
+  assert.throws(
+    () =>
+      validateProductionServerEnvironment({
+        ...validProductionEnvironment(),
+        AI_API_KEY_FILE: "/tmp/ai-key",
+      }),
+    /AI_API_KEY_FILE must be '\/run\/secrets\/q-academy-ai-api-key'/,
+  );
+});
+
+test("every production release path validates the file-backed AI credential", () => {
+  for (const releasePath of productionReleasePaths) {
+    assert.match(
+      releasePath,
+      /verify_ai_api_key_file "\$env_file" \|\| fail "AI API key file is invalid"/,
+    );
+  }
+
+  assert.match(releaseCommon, /-f "\$configured" && ! -L "\$configured"/);
+  assert.match(releaseCommon, /"\$owner" == "1001:1001" && "\$mode" == "400"/);
+  assert.match(releaseCommon, /size <= 16384/);
+  assert.match(releaseCommon, /AI_API_KEY must be removed from production/);
 });
 
 test("canonical production tenant configuration is explicit and fail-closed", () => {
@@ -737,6 +786,10 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(app, /MFA_RECOVERY_PREVIOUS_PEPPERS:/);
   assert.match(app, /PRIVACY_SUBJECT_HMAC_SECRET/);
   assert.match(app, /EXAM_SELECTION_SECRET/);
+  assert.match(app, /AI_API_KEY_FILE: \/run\/secrets\/q-academy-ai-api-key/);
+  assert.match(app, /target: \/run\/secrets\/q-academy-ai-api-key/);
+  assert.match(app, /AI_API_KEY_SOURCE_FILE:-\/etc\/q-academy\/ai-api-key/);
+  assert.doesNotMatch(app, /^\s+AI_API_KEY:/m);
   assert.doesNotMatch(app, /^      - media$/m);
   assert.match(app, /cpus: "2\.0"/);
   assert.match(app, /memory: 2G/);
@@ -754,6 +807,7 @@ test("production isolates media scans from the public app runtime", () => {
   assert.doesNotMatch(mediaRunner, /EXAM_SELECTION_SECRET/);
   assert.doesNotMatch(mediaRunner, /EMAIL_DELIVERY_WEBHOOK/);
   assert.doesNotMatch(mediaRunner, /AI_API_KEY/);
+  assert.doesNotMatch(mediaRunner, /q-academy-ai-api-key/);
   assert.match(mediaRunner, /CRON_SECRET: \$\{MEDIA_CRON_SECRET:/);
   assert.match(mediaRunner, /METRICS_SECRET: \$\{MEDIA_METRICS_SECRET:/);
   assert.match(mediaRunner, /^      - media-database$/m);

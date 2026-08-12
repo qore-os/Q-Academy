@@ -1217,8 +1217,10 @@ export async function promoteS3Object(
     expectedSha256: string;
     expectedSizeBytes: number;
     mimeType: string;
+    signal?: AbortSignal;
   },
 ) {
+  input.signal?.throwIfAborted();
   assertObjectIdentity(input.source);
   assertObjectIdentity(input.target);
   if (
@@ -1236,6 +1238,10 @@ export async function promoteS3Object(
     return await withS3OperationDeadline(
       S3_COPY_DEADLINE_MS,
       async (abortSignal) => {
+        const operationSignal = input.signal
+          ? combinedAbortSignal(abortSignal, input.signal)
+          : abortSignal;
+        operationSignal.throwIfAborted();
         const targetMetadata = {
           "asset-id": input.target.assetId,
           "organization-id": input.target.organizationId,
@@ -1252,7 +1258,7 @@ export async function promoteS3Object(
             sha256: input.expectedSha256,
             metadata: targetMetadata,
           },
-          abortSignal,
+          operationSignal,
         );
         if (existing) {
           return {
@@ -1280,7 +1286,7 @@ export async function promoteS3Object(
             MetadataDirective: "REPLACE",
             Metadata: targetMetadata,
           }),
-          { abortSignal },
+          { abortSignal: operationSignal },
         );
         const etag = normalizeS3Etag(copied.CopyObjectResult?.ETag);
         const versionId = objectRevision(
@@ -1304,7 +1310,7 @@ export async function promoteS3Object(
               }),
               {
                 abortSignal: combinedAbortSignal(
-                  abortSignal,
+                  operationSignal,
                   metadataAbortSignal,
                 ),
               },
@@ -1327,7 +1333,7 @@ export async function promoteS3Object(
             sizeBytes: verified.sizeBytes,
             sha256: input.expectedSha256,
           },
-          abortSignal,
+          operationSignal,
         );
 
         return {
@@ -1369,8 +1375,10 @@ export async function copyS3MediaObject(
     expectedSha256: string;
     expectedSizeBytes: number;
     mimeType: string;
+    signal?: AbortSignal;
   },
 ) {
+  input.signal?.throwIfAborted();
   assertObjectIdentity(input.source);
   assertObjectIdentity(input.target);
   if (
@@ -1387,6 +1395,10 @@ export async function copyS3MediaObject(
     return await withS3OperationDeadline(
       S3_COPY_DEADLINE_MS,
       async (abortSignal) => {
+        const operationSignal = input.signal
+          ? combinedAbortSignal(abortSignal, input.signal)
+          : abortSignal;
+        operationSignal.throwIfAborted();
         const targetMetadata = {
           "asset-id": input.target.assetId,
           "organization-id": input.target.organizationId,
@@ -1401,7 +1413,7 @@ export async function copyS3MediaObject(
             sha256: input.expectedSha256,
             metadata: targetMetadata,
           },
-          abortSignal,
+          operationSignal,
         );
         if (existing) {
           return {
@@ -1428,7 +1440,7 @@ export async function copyS3MediaObject(
             MetadataDirective: "REPLACE",
             Metadata: targetMetadata,
           }),
-          { abortSignal },
+          { abortSignal: operationSignal },
         );
         const etag = normalizeS3Etag(copied.CopyObjectResult?.ETag);
         const versionId = objectRevision(
@@ -1452,7 +1464,7 @@ export async function copyS3MediaObject(
               }),
               {
                 abortSignal: combinedAbortSignal(
-                  abortSignal,
+                  operationSignal,
                   metadataAbortSignal,
                 ),
               },
@@ -1475,7 +1487,7 @@ export async function copyS3MediaObject(
             sizeBytes: verified.sizeBytes,
             sha256: input.expectedSha256,
           },
-          abortSignal,
+          operationSignal,
         );
         return {
           etag: verified.etag,

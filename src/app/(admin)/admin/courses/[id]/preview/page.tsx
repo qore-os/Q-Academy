@@ -140,6 +140,7 @@ function PreviewBlock({
         endCard={data.videoEndCard}
         playbackPolicy={data.videoPlayback}
         mediaAssetId={data.mediaAssetId}
+        poster={data.videoPoster}
         locale={locale}
       />
     );

@@ -35,7 +35,7 @@ type DrizzleJournal = {
 
 const snapshot = JSON.parse(
   readFileSync(
-    path.resolve(process.cwd(), "drizzle/meta/0080_snapshot.json"),
+    path.resolve(process.cwd(), "drizzle/meta/0081_snapshot.json"),
     "utf8",
   ),
 ) as DrizzleSnapshot;
@@ -56,7 +56,7 @@ function unique(values: readonly string[]) {
   return [...new Set(values)];
 }
 
-test("privacy inventory covers the current 171-table schema and 0080 migration history", () => {
+test("privacy inventory covers the current 172-table schema and 0081 migration history", () => {
   const inventoryNames = Object.keys(PRIVACY_DATA_INVENTORY).sort();
   const missing = publicTableNames.filter(
     (name) => !(name in PRIVACY_DATA_INVENTORY),
@@ -67,14 +67,14 @@ test("privacy inventory covers the current 171-table schema and 0080 migration h
 
   assert.equal(
     publicTables.length,
-    171,
-    "Snapshot 0080 table count changed; update the explicit privacy inventory.",
+    172,
+    "Snapshot 0081 table count changed; update the explicit privacy inventory.",
   );
-  assert.equal(journal.entries.length, 81, "Expected 81 versioned migrations.");
-  assert.equal(journal.entries.at(-1)?.idx, 80);
+  assert.equal(journal.entries.length, 82, "Expected 82 versioned migrations.");
+  assert.equal(journal.entries.at(-1)?.idx, 81);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0080_closed_catseye",
+    "0081_great_lila_cheney",
   );
   assert.deepEqual(
     missing,

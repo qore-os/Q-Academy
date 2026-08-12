@@ -14,6 +14,7 @@ import type { ApiTransaction } from "@/lib/api/handler";
 import { sanitizeGalleryDocument } from "@/lib/content-blocks/interactive-documents";
 import { courseCoverMediaAssetId } from "@/lib/course-cover";
 import { sanitizeVideoComposition } from "@/lib/media/video-composition";
+import { sanitizeVideoPoster } from "@/lib/media/video-poster";
 import {
   canManageCourseMedia,
   canReadCourseMedia,
@@ -85,6 +86,19 @@ export function courseSnapshotMediaAssets(snapshot: CourseVersionSnapshot) {
             block.type === "video"
           ? block.type
           : null;
+    if (block.type === "video" && block.data.videoPoster) {
+      const poster = sanitizeVideoPoster(block.data.videoPoster);
+      if (!poster) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "Ein Videoblock enthaelt eine ungueltige Vorschaubild-Auswahl.",
+        );
+      }
+      if (poster.source === "upload") {
+        registerAsset(poster.mediaAssetId, "image");
+      }
+    }
     if (!mediaAssetId || !expectedKind) continue;
     registerAsset(mediaAssetId, expectedKind);
     if (block.type === "video" && block.data.videoComposition) {
@@ -118,6 +132,13 @@ export function courseSnapshotHasVideoComposition(
     (block) =>
       block.type === "video" && Boolean(block.data.videoComposition),
   );
+}
+
+export function courseSnapshotHasFramePoster(snapshot: CourseVersionSnapshot) {
+  return snapshotBlocks(snapshot).some((block) => {
+    if (block.type !== "video" || !block.data.videoPoster) return false;
+    return sanitizeVideoPoster(block.data.videoPoster)?.source === "frame";
+  });
 }
 
 export function courseSnapshotWidgetsReferenceMediaAsset(

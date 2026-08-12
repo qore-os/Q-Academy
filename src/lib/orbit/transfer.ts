@@ -2,7 +2,7 @@ import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
 
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
@@ -37,6 +37,7 @@ import { ApiError } from "@/lib/api/errors";
 import type { ApiTransaction } from "@/lib/api/handler";
 import { isValidPublishedCourseSnapshot } from "@/lib/course-snapshot-validation";
 import {
+  courseSnapshotHasFramePoster,
   courseSnapshotHasVideoComposition,
   courseSnapshotMediaAssets,
 } from "@/lib/media/course-assets";
@@ -46,6 +47,8 @@ import {
   mediaStorageLimits,
   promoteStoredMediaObject,
 } from "@/lib/media/storage";
+import { enqueueReadyVideoThumbnailInTransaction } from "@/lib/media/processing-worker";
+import { mediaTenantQuotaLockQuery } from "@/lib/media/quota-lock";
 import {
   createMediaObjectKey,
   createMediaStagingObjectKey,
@@ -77,6 +80,11 @@ import {
   remapPublishedCourseSnapshot,
 } from "@/lib/orbit/transfer-policy";
 import { createOrbitTransferPreflightToken } from "@/lib/orbit/transfer-preflight";
+import {
+  OrbitTransferClaimLostError,
+  orbitTransferLeaseDeadline,
+  startOrbitTransferLeaseHeartbeat,
+} from "@/lib/orbit/transfer-lease";
 import { getMediaStorageConfiguration } from "@/lib/server-environment";
 import { slugify } from "@/lib/utils";
 
@@ -282,6 +290,13 @@ async function loadPreflight(
         409,
         "conflict",
         "Video-Mehrspur-Kompositionen muessen vor einem Orbit-Transfer als eigenstaendiges Video exportiert werden.",
+      );
+    }
+    if (courseSnapshotHasFramePoster(row.version.snapshot)) {
+      throw new ApiError(
+        409,
+        "conflict",
+        "Aus Video-Frames gewaehlte Vorschaubilder koennen nicht uebertragen werden. Stelle sie vor dem Orbit-Transfer auf Automatisch oder ein eigenes Bild um.",
       );
     }
   }
@@ -591,7 +606,9 @@ async function copyTransferMedia(input: {
   source: SourceMedia;
   targetId: string;
   targetOrganizationId: string;
+  signal: AbortSignal;
 }): Promise<CopiedMedia> {
+  input.signal.throwIfAborted();
   const storageKey = createMediaObjectKey({
     organizationId: input.targetOrganizationId,
     assetId: input.targetId,
@@ -623,7 +640,9 @@ async function copyTransferMedia(input: {
       expectedSha256: input.source.contentSha256,
       expectedSizeBytes: actualSize(input.source),
       mimeType: sourceMimeType(input.source),
+      signal: input.signal,
     });
+    input.signal.throwIfAborted();
     const promoted = await promoteStoredMediaObject({
       source: targetStaging,
       target: {
@@ -636,7 +655,9 @@ async function copyTransferMedia(input: {
       expectedSha256: input.source.contentSha256,
       expectedSizeBytes: actualSize(input.source),
       mimeType: sourceMimeType(input.source),
+      signal: input.signal,
     });
+    input.signal.throwIfAborted();
     let stagingDeletedAt: Date | null = null;
     try {
       await deleteStoredMediaObject(targetStaging);
@@ -656,33 +677,10 @@ async function copyTransferMedia(input: {
       stagingDeletedAt,
     };
   } catch (error) {
-    await Promise.allSettled([
-      deleteStoredMediaObject(targetStaging),
-      deleteStoredMediaObject({
-        organizationId: input.targetOrganizationId,
-        assetId: input.targetId,
-        key: storageKey,
-      }),
-    ]);
+    // The pending reservation is the durable cleanup record. A provider copy may
+    // complete after a client-side abort, so immediate deletion is not final proof.
     throw error;
   }
-}
-
-async function cleanupCopiedMedia(media: readonly CopiedMedia[]) {
-  await Promise.allSettled(
-    media.flatMap((asset) => [
-      deleteStoredMediaObject({
-        organizationId: asset.targetOrganizationId,
-        assetId: asset.targetId,
-        key: asset.storageKey,
-      }),
-      deleteStoredMediaObject({
-        organizationId: asset.targetOrganizationId,
-        assetId: asset.targetId,
-        key: asset.stagingStorageKey,
-      }),
-    ]),
-  );
 }
 
 function targetSlug(source: SourceCourse, targetId: string, used: Set<string>) {
@@ -704,6 +702,12 @@ async function insertSnapshotGraph(
   courseId: string,
   snapshot: CourseVersionSnapshot,
 ) {
+  const targetBlockData = (
+    block: CourseVersionSnapshot["modules"][number]["lessons"][number]["blocks"][number],
+  ) =>
+    block.type === "video"
+      ? { ...block.data, videoDescriptionIntent: "touched" as const }
+      : block.data;
   if (snapshot.learningGoals?.length) {
     await tx.insert(courseLearningGoals).values(
       snapshot.learningGoals.map((goal) => ({
@@ -829,7 +833,7 @@ async function insertSnapshotGraph(
             title: block.title,
             sortOrder: block.sortOrder,
             required: block.required,
-            data: block.data,
+            data: targetBlockData(block),
             style: block.style,
             revision: block.revision ?? 1,
           })),
@@ -859,7 +863,7 @@ async function insertSnapshotGraph(
               title: block.title,
               sortOrder: block.sortOrder,
               required: block.required,
-              data: block.data,
+              data: targetBlockData(block),
               style: block.style,
               revision: block.revision ?? 1,
             })),
@@ -941,6 +945,7 @@ export async function createOrbitTransfer(input: {
   const courseIdMap = new Map(preflight.courses.map((row) => [row.course.id, randomUUID()]));
   const versionIdMap = new Map(preflight.courses.map((row) => [row.version.id, randomUUID()]));
   const mediaIdMap = new Map(preflight.media.map((asset) => [asset.id, randomUUID()]));
+  const transferClaimToken = randomUUID();
   const claim = await db.transaction(async (tx) => {
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`orbit-transfer:${input.workspaceId}:${input.idempotencyKey}`}, 0))`,
@@ -972,7 +977,43 @@ export async function createOrbitTransfer(input: {
       }
       return { existing } as const;
     }
-    const now = new Date();
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${`orbit-target:${input.request.targetOrganizationId}`}, 0))`,
+    );
+    await tx.execute(
+      mediaTenantQuotaLockQuery(input.request.targetOrganizationId),
+    );
+    const [mediaUsage] = await tx
+      .select({
+        databaseNow: sql<string>`clock_timestamp()::text`,
+        bytes: sql<number>`(
+          coalesce((select sum(${mediaAssets.quotaBytes}) from ${mediaAssets} where ${mediaAssets.organizationId} = ${input.request.targetOrganizationId}), 0) +
+          coalesce((select sum(${mediaAssetDerivatives.sizeBytes}) from ${mediaAssetDerivatives} where ${mediaAssetDerivatives.organizationId} = ${input.request.targetOrganizationId}), 0)
+        )::bigint`,
+      })
+      .from(orbitInstances)
+      .where(
+        and(
+          eq(orbitInstances.workspaceId, input.workspaceId),
+          eq(orbitInstances.organizationId, input.request.targetOrganizationId),
+        ),
+      )
+      .limit(1);
+    if (
+      Number(mediaUsage?.bytes ?? 0) + preflight.result.mediaBytes >
+      mediaStorageLimits().tenantQuotaBytes
+    ) {
+      throw new ApiError(
+        409,
+        "conflict",
+        "Das Medienkontingent der Zielinstanz wurde zwischenzeitlich erreicht.",
+      );
+    }
+    const now = new Date(mediaUsage?.databaseNow ?? "");
+    if (!Number.isFinite(now.getTime())) {
+      throw new Error("The Orbit transfer database clock is unavailable.");
+    }
+    const leaseExpiresAt = orbitTransferLeaseDeadline(now);
     const [job] = await tx
       .insert(orbitTransferJobs)
       .values({
@@ -984,6 +1025,8 @@ export async function createOrbitTransfer(input: {
         idempotencyKey: input.idempotencyKey,
         requestHash,
         status: "processing",
+        claimToken: transferClaimToken,
+        leaseExpiresAt,
         preflight: preflight.result,
         startedAt: now,
         updatedAt: now,
@@ -1017,23 +1060,81 @@ export async function createOrbitTransfer(input: {
         checksum: asset.contentSha256!,
       })),
     ]);
+    if (preflight.media.length) {
+      await tx.insert(mediaAssets).values(
+        preflight.media.map((source) => {
+          const targetId = mediaIdMap.get(source.id)!;
+          const size = actualSize(source);
+          const storageKey = createMediaObjectKey({
+            organizationId: input.request.targetOrganizationId,
+            assetId: targetId,
+            safeFileName: objectName(source.storageKey),
+          });
+          const stagingStorageKey = createMediaStagingObjectKey({
+            organizationId: input.request.targetOrganizationId,
+            assetId: targetId,
+            safeFileName: objectName(source.stagingStorageKey),
+          });
+          if (!storageKey || !stagingStorageKey) {
+            throw new ApiError(
+              409,
+              "conflict",
+              "Der Zielschluessel fuer ein Kursmedium ist ungueltig.",
+            );
+          }
+          return {
+            id: targetId,
+            organizationId: input.request.targetOrganizationId,
+            uploadedById: preflight.targetOwnerId,
+            ownerUserId: null,
+            purpose: "course_content" as const,
+            kind: source.kind,
+            status: "pending" as const,
+            storageDriver: source.storageDriver,
+            storageKey,
+            stagingStorageKey,
+            originalFileName: source.originalFileName.replace(
+              UUID_IN_TEXT,
+              "copied",
+            ),
+            safeFileName: source.safeFileName,
+            declaredMimeType: source.declaredMimeType,
+            declaredSizeBytes: size,
+            quotaBytes: size,
+            uploadExpiresAt: leaseExpiresAt,
+            createdAt: now,
+            updatedAt: now,
+          };
+        }),
+      );
+    }
     return { job } as const;
   });
   if ("existing" in claim && claim.existing) {
     return { job: publicOrbitTransferJob(claim.existing), created: false };
   }
 
+  const heartbeat = startOrbitTransferLeaseHeartbeat({
+    jobId: claim.job.id,
+    claimToken: transferClaimToken,
+    targetOrganizationId: input.request.targetOrganizationId,
+    targetMediaIds: [...mediaIdMap.values()],
+    initialLeaseExpiresAt: claim.job.leaseExpiresAt!,
+  });
   const copiedMedia: CopiedMedia[] = [];
   try {
     for (const source of preflight.media) {
+      await heartbeat.assertActive();
       copiedMedia.push(
         await copyTransferMedia({
           source,
           targetId: mediaIdMap.get(source.id)!,
           targetOrganizationId: input.request.targetOrganizationId,
+          signal: heartbeat.signal,
         }),
       );
     }
+    await heartbeat.assertActive();
     const finalAccess = await requireOrbitAccess({
       user: input.user,
       workspaceId: input.workspaceId,
@@ -1046,7 +1147,24 @@ export async function createOrbitTransfer(input: {
     if (finalAccess.actor.accountId !== preflight.actorAccountId) {
       throw new ApiError(403, "forbidden", "Die Orbit-Identitaet hat sich geaendert.");
     }
+    await heartbeat.assertActive();
+    await heartbeat.stop();
     const completed = await db.transaction(async (tx) => {
+      const claimCheckedAt = new Date();
+      const [ownedJob] = await tx
+        .select({ id: orbitTransferJobs.id })
+        .from(orbitTransferJobs)
+        .where(
+          and(
+            eq(orbitTransferJobs.id, claim.job.id),
+            eq(orbitTransferJobs.status, "processing"),
+            eq(orbitTransferJobs.claimToken, transferClaimToken),
+            gt(orbitTransferJobs.leaseExpiresAt, claimCheckedAt),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!ownedJob) throw new OrbitTransferClaimLostError();
       const currentRole = await lockAndAssertTransferAuthorization({
         tx,
         accountId: finalAccess.actor.accountId,
@@ -1054,6 +1172,9 @@ export async function createOrbitTransfer(input: {
       });
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`orbit-target:${input.request.targetOrganizationId}`}, 0))`,
+      );
+      await tx.execute(
+        mediaTenantQuotaLockQuery(input.request.targetOrganizationId),
       );
       const currentInstances = await tx
         .select()
@@ -1147,10 +1268,7 @@ export async function createOrbitTransfer(input: {
           ),
         )
         .limit(1);
-      if (
-        Number(mediaUsage?.bytes ?? 0) + preflight.result.mediaBytes >
-        mediaStorageLimits().tenantQuotaBytes
-      ) {
+      if (Number(mediaUsage?.bytes ?? 0) > mediaStorageLimits().tenantQuotaBytes) {
         throw new ApiError(409, "conflict", "Das Medienkontingent der Zielinstanz wurde zwischenzeitlich erreicht.");
       }
       const mappedTargetUserIds = [
@@ -1257,49 +1375,45 @@ export async function createOrbitTransfer(input: {
         if (!isValidPublishedCourseSnapshot(remapped.snapshot, targetCourseId, input.request.targetOrganizationId)) {
           throw new ApiError(409, "conflict", "Der isolierte Ziel-Snapshot ist ungueltig.");
         }
-        return { source, targetCourseId, targetVersionId, slug, snapshot: remapped.snapshot };
+        return {
+          source,
+          targetCourseId,
+          targetVersionId,
+          slug,
+          snapshot: remapped.snapshot,
+        };
       });
 
-      if (copiedMedia.length) {
-        await tx.insert(mediaAssets).values(
-          copiedMedia.map((asset) => {
-            const now = new Date();
-            const size = actualSize(asset.source);
-            return {
-              id: asset.targetId,
-              organizationId: input.request.targetOrganizationId,
-              uploadedById: preflight.targetOwnerId,
-              ownerUserId: null,
-              purpose: "course_content" as const,
-              kind: asset.source.kind,
-              status: "ready" as const,
-              storageDriver: asset.source.storageDriver,
-              storageKey: asset.storageKey,
-              stagingStorageKey: asset.stagingStorageKey,
-              originalFileName: asset.source.originalFileName.replace(
-                UUID_IN_TEXT,
-                "copied",
-              ),
-              safeFileName: asset.source.safeFileName,
-              declaredMimeType: asset.source.declaredMimeType,
-              detectedMimeType: asset.source.detectedMimeType,
-              declaredSizeBytes: size,
-              actualSizeBytes: size,
-              durationMilliseconds: asset.source.durationMilliseconds,
-              quotaBytes: size,
-              etag: asset.etag,
-              stagingStorageVersionId: asset.stagingVersionId,
-              storageVersionId: asset.storageVersionId,
-              contentSha256: asset.source.contentSha256,
-              uploadExpiresAt: now,
-              uploadedAt: now,
-              scanCompletedAt: now,
-              stagingDeletedAt: asset.stagingDeletedAt,
-              createdAt: now,
-              updatedAt: now,
-            };
-          }),
-        );
+      for (const asset of copiedMedia) {
+        const size = actualSize(asset.source);
+        const [promoted] = await tx
+          .update(mediaAssets)
+          .set({
+            status: "ready",
+            detectedMimeType: asset.source.detectedMimeType,
+            actualSizeBytes: size,
+            durationMilliseconds: asset.source.durationMilliseconds,
+            etag: asset.etag,
+            stagingStorageVersionId: asset.stagingVersionId,
+            storageVersionId: asset.storageVersionId,
+            contentSha256: asset.source.contentSha256,
+            uploadExpiresAt: new Date(),
+            uploadedAt: new Date(),
+            scanCompletedAt: new Date(),
+            stagingDeletedAt: asset.stagingDeletedAt,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(mediaAssets.id, asset.targetId),
+              eq(mediaAssets.organizationId, input.request.targetOrganizationId),
+              eq(mediaAssets.status, "pending"),
+            ),
+          )
+          .returning({ id: mediaAssets.id });
+        if (!promoted) {
+          throw new ApiError(409, "conflict", "Eine Medienreservierung ist nicht mehr verfuegbar.");
+        }
       }
       await tx.insert(courses).values(
         prepared.map(({ targetCourseId, slug, snapshot }) => ({
@@ -1379,18 +1493,38 @@ export async function createOrbitTransfer(input: {
           );
         }
       }
-      const now = new Date();
       const targetCourseIds = prepared.map((course) => course.targetCourseId);
+      for (const asset of copiedMedia) {
+        if (asset.source.kind !== "video" || !asset.source.contentSha256) {
+          continue;
+        }
+        await enqueueReadyVideoThumbnailInTransaction(tx, {
+          organizationId: input.request.targetOrganizationId,
+          sourceAssetId: asset.targetId,
+          sourceContentSha256: asset.source.contentSha256,
+          requestedById: preflight.targetOwnerId,
+          atMilliseconds: 0,
+        });
+      }
       const [job] = await tx
         .update(orbitTransferJobs)
         .set({
           status: "completed",
           targetCourseIds,
-          completedAt: now,
-          updatedAt: now,
+          claimToken: null,
+          leaseExpiresAt: null,
+          completedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
         })
-        .where(eq(orbitTransferJobs.id, claim.job.id))
+        .where(
+          and(
+            eq(orbitTransferJobs.id, claim.job.id),
+            eq(orbitTransferJobs.status, "processing"),
+            eq(orbitTransferJobs.claimToken, transferClaimToken),
+          ),
+        )
         .returning();
+      if (!job) throw new ApiError(409, "conflict", "Der Transfer-Claim wurde verloren.");
       await tx.insert(orbitAuditEvents).values({
         workspaceId: input.workspaceId,
         actorAccountId: claim.job.requestedByAccountId,
@@ -1411,14 +1545,60 @@ export async function createOrbitTransfer(input: {
     });
     return { job: publicOrbitTransferJob(completed), created: true };
   } catch (error) {
-    await cleanupCopiedMedia(copiedMedia);
+    await heartbeat.stop();
     const failureCode = error instanceof ApiError ? error.code : "transfer_execution_failed";
     const now = new Date();
-    await db.transaction(async (tx) => {
-      await tx
+    const recovery = await db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(orbitTransferJobs)
+        .where(eq(orbitTransferJobs.id, claim.job.id))
+        .limit(1)
+        .for("update");
+      if (current?.status === "completed") {
+        return { completed: current, failed: false } as const;
+      }
+      if (
+        !current ||
+        current.status !== "processing" ||
+        current.claimToken !== transferClaimToken ||
+        !current.leaseExpiresAt ||
+        current.leaseExpiresAt <= now
+      ) {
+        return { completed: null, failed: false } as const;
+      }
+      const [failed] = await tx
         .update(orbitTransferJobs)
-        .set({ status: "failed", failureCode, completedAt: now, updatedAt: now })
-        .where(eq(orbitTransferJobs.id, claim.job.id));
+        .set({
+          status: "failed",
+          failureCode,
+          claimToken: null,
+          leaseExpiresAt: null,
+          completedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(
+          and(
+            eq(orbitTransferJobs.id, claim.job.id),
+            eq(orbitTransferJobs.status, "processing"),
+            eq(orbitTransferJobs.claimToken, transferClaimToken),
+          ),
+        )
+        .returning({ id: orbitTransferJobs.id });
+      if (!failed) return { completed: null, failed: false } as const;
+      if (mediaIdMap.size) {
+        const cleanupAfter = orbitTransferLeaseDeadline(now);
+        await tx
+          .update(mediaAssets)
+          .set({ uploadExpiresAt: cleanupAfter, updatedAt: now })
+          .where(
+            and(
+              eq(mediaAssets.organizationId, input.request.targetOrganizationId),
+              eq(mediaAssets.status, "pending"),
+              inArray(mediaAssets.id, [...mediaIdMap.values()]),
+            ),
+          );
+      }
       await tx.insert(orbitAuditEvents).values({
         workspaceId: input.workspaceId,
         actorAccountId: claim.job.requestedByAccountId,
@@ -1433,7 +1613,22 @@ export async function createOrbitTransfer(input: {
           authorMappingCount: preflight.authorMappings.length,
         },
       });
-    }).catch(() => undefined);
+      return { completed: null, failed: true } as const;
+    }).catch(() => null);
+    if (recovery?.completed) {
+      return { job: publicOrbitTransferJob(recovery.completed), created: true };
+    }
+    if (!recovery?.failed) {
+      const [completedAfterCas] = await db
+        .select()
+        .from(orbitTransferJobs)
+        .where(eq(orbitTransferJobs.id, claim.job.id))
+        .limit(1)
+        .catch(() => []);
+      if (completedAfterCas?.status === "completed") {
+        return { job: publicOrbitTransferJob(completedAfterCas), created: true };
+      }
+    }
     throw error;
   }
 }

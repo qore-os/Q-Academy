@@ -121,7 +121,6 @@ test("all shared builder content mutations use the central permission", () => {
   }
 
   for (const action of [
-    "attachReusableModuleAction",
     "updateCourseModuleOutlineAction",
     "detachCourseModuleAction",
     "updateCourseModuleAccessAction",
@@ -132,6 +131,12 @@ test("all shared builder content mutations use the central permission", () => {
       `${action} is course-local and must not require every module reference`,
     );
   }
+
+  assert.match(
+    actionSource(builder, "attachReusableModuleAction"),
+    /requireSharedModuleContentPermission\(/,
+    "attachReusableModuleAction must validate every reference before binding shared media",
+  );
 });
 
 test("link target and secondary content actions use their central guards", () => {

@@ -276,7 +276,9 @@ Die Direktzugaenge werden nur in der lokalen Entwicklungsumgebung gerendert. `EN
 Anwendung zeigen. `APP_DOMAIN` muss exakt deren Hostname sein und
 `DEFAULT_ORGANIZATION_SLUG` einen bestehenden aktiven Tenant benennen; eine
 Abweichung macht die Anwendung nicht readiness-faehig. Optional kann
-`AI_API_KEY` fuer einen OpenAI-kompatiblen Provider gesetzt werden. Ohne
+Lokal kann `AI_API_KEY`, bevorzugt aber `AI_API_KEY_FILE`, fuer einen
+OpenAI-kompatiblen Provider gesetzt werden. Produktion mountet den Schluessel
+ausschliesslich als App-lesbare Datei. Ohne
 Schluessel arbeiten der Q-Coach und der KI-Kursassistent mit deterministischen
 Fallbacks. Der Vertrag fuer den zwingenden Transaktionsmail-Dienst steht in
 [MAIL_GATEWAY_CONTRACT.md](./docs/MAIL_GATEWAY_CONTRACT.md).

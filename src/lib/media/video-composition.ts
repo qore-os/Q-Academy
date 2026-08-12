@@ -72,11 +72,12 @@ export function canUseVideoCompositionSource(input: {
 
 export function publishedSnapshotReferencesVideoComposition(
   snapshot: unknown,
-  input: { renderJobId: string; primaryAssetId: string },
+  input: { renderJobId: string; primaryAssetId: string; blockId?: string },
 ) {
   if (
     !UUID_PATTERN.test(input.renderJobId) ||
     !UUID_PATTERN.test(input.primaryAssetId) ||
+    (input.blockId !== undefined && !UUID_PATTERN.test(input.blockId)) ||
     !isRecord(snapshot) ||
     !Array.isArray(snapshot.modules)
   ) {
@@ -108,6 +109,7 @@ export function publishedSnapshotReferencesVideoComposition(
         if (
           !isRecord(block) ||
           block.type !== "video" ||
+          (input.blockId !== undefined && block.id !== input.blockId) ||
           !isRecord(block.data) ||
           block.data.mediaAssetId !== input.primaryAssetId
         ) {

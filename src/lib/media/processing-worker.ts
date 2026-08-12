@@ -117,10 +117,148 @@ function providerFor(type: JobType, options: MediaProcessingOptions) {
 
 type MediaProcessingRequestOptions = Omit<
   MediaProcessingOptions,
-  "videoComposition" | "videoCompositionCourseId"
+  | "videoComposition"
+  | "videoCompositionCourseId"
+  | "videoCompositionBlockId"
 > & {
   videoComposition?: VideoCompositionDocument;
 };
+
+type MediaProcessingTransaction = Parameters<
+  Parameters<typeof db.transaction>[0]
+>[0];
+
+export async function enqueueReadyVideoThumbnailInTransaction(
+  transaction: MediaProcessingTransaction,
+  input: {
+    organizationId: string;
+    sourceAssetId: string;
+    sourceContentSha256: string;
+    requestedById?: string | null;
+    atMilliseconds?: number;
+  },
+) {
+  if (!/^[0-9a-f]{64}$/.test(input.sourceContentSha256)) {
+    throw new Error("Only immutable ready media can be processed.");
+  }
+  const options: MediaProcessingOptions = {
+    atMilliseconds: input.atMilliseconds ?? 0,
+  };
+  const key = requestKey({
+    sourceAssetId: input.sourceAssetId,
+    sourceContentSha256: input.sourceContentSha256,
+    type: "thumbnail",
+    options,
+  });
+  await transaction
+    .insert(mediaProcessingJobs)
+    .values({
+      organizationId: input.organizationId,
+      sourceAssetId: input.sourceAssetId,
+      requestedById: input.requestedById ?? null,
+      type: "thumbnail",
+      requestKey: key,
+      sourceContentSha256: input.sourceContentSha256,
+      provider: providerFor("thumbnail", options),
+      options,
+    })
+    .onConflictDoNothing({ target: mediaProcessingJobs.requestKey });
+  await transaction
+    .update(mediaProcessingJobs)
+    .set({
+      status: "queued",
+      attempt: 0,
+      claimToken: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      nextRetryAt: null,
+      completedAt: null,
+      failureCode: null,
+      failureDetail: null,
+      result: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mediaProcessingJobs.requestKey, key),
+        inArray(mediaProcessingJobs.status, ["failed", "cancelled"]),
+        isNull(mediaProcessingJobs.claimToken),
+      ),
+    );
+  const [job] = await transaction
+    .select()
+    .from(mediaProcessingJobs)
+    .where(eq(mediaProcessingJobs.requestKey, key))
+    .limit(1);
+  if (!job) throw new Error("Media processing job could not be queued.");
+  return job;
+}
+
+export async function enqueueReadyTranscriptInTransaction(
+  transaction: MediaProcessingTransaction,
+  input: {
+    organizationId: string;
+    sourceAssetId: string;
+    sourceContentSha256: string;
+    requestedById?: string | null;
+    language: string;
+  },
+) {
+  if (!/^[0-9a-f]{64}$/.test(input.sourceContentSha256)) {
+    throw new Error("Only immutable ready media can be transcribed.");
+  }
+  const options: MediaProcessingOptions = {
+    language: input.language.toLowerCase(),
+  };
+  const key = requestKey({
+    sourceAssetId: input.sourceAssetId,
+    sourceContentSha256: input.sourceContentSha256,
+    type: "transcript",
+    options,
+  });
+  await transaction
+    .insert(mediaProcessingJobs)
+    .values({
+      organizationId: input.organizationId,
+      sourceAssetId: input.sourceAssetId,
+      requestedById: input.requestedById ?? null,
+      type: "transcript",
+      requestKey: key,
+      sourceContentSha256: input.sourceContentSha256,
+      provider: providerFor("transcript", options),
+      options,
+    })
+    .onConflictDoNothing({ target: mediaProcessingJobs.requestKey });
+  await transaction
+    .update(mediaProcessingJobs)
+    .set({
+      status: "queued",
+      attempt: 0,
+      claimToken: null,
+      claimedAt: null,
+      leaseExpiresAt: null,
+      nextRetryAt: null,
+      completedAt: null,
+      failureCode: null,
+      failureDetail: null,
+      result: null,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(mediaProcessingJobs.requestKey, key),
+        inArray(mediaProcessingJobs.status, ["failed", "cancelled"]),
+        isNull(mediaProcessingJobs.claimToken),
+      ),
+    );
+  const [job] = await transaction
+    .select()
+    .from(mediaProcessingJobs)
+    .where(eq(mediaProcessingJobs.requestKey, key))
+    .limit(1);
+  if (!job) throw new Error("Transcript processing job could not be queued.");
+  return job;
+}
 
 export async function enqueueMediaProcessingJob(input: {
   organizationId: string;
@@ -129,6 +267,7 @@ export async function enqueueMediaProcessingJob(input: {
   type: JobType;
   options?: MediaProcessingRequestOptions;
   compositionCourseId?: string;
+  compositionBlockId?: string;
 }) {
   const options = input.options ?? {};
   const [asset] = await db
@@ -175,9 +314,11 @@ export async function enqueueMediaProcessingJob(input: {
   }
   if (
     Boolean(options.videoComposition) !== Boolean(input.compositionCourseId) ||
-    (input.compositionCourseId && !UUID_PATTERN.test(input.compositionCourseId))
+    Boolean(options.videoComposition) !== Boolean(input.compositionBlockId) ||
+    (input.compositionCourseId && !UUID_PATTERN.test(input.compositionCourseId)) ||
+    (input.compositionBlockId && !UUID_PATTERN.test(input.compositionBlockId))
   ) {
-    throw new Error("Video compositions require an explicit course binding.");
+    throw new Error("Video compositions require an explicit block binding.");
   }
   const videoEdit = options.videoEdit
     ? sanitizeVideoEditPlan(options.videoEdit, asset.durationMilliseconds)
@@ -253,6 +394,9 @@ export async function enqueueMediaProcessingJob(input: {
     ...(boundComposition ? { videoComposition: boundComposition } : {}),
     ...(boundComposition && input.compositionCourseId
       ? { videoCompositionCourseId: input.compositionCourseId.toLowerCase() }
+      : {}),
+    ...(boundComposition && input.compositionBlockId
+      ? { videoCompositionBlockId: input.compositionBlockId.toLowerCase() }
       : {}),
   };
   const key = requestKey({

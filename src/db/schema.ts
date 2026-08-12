@@ -2164,9 +2164,12 @@ export type ContentBlockData = {
   items?: string[];
   videoUrl?: string;
   transcript?: VideoTranscriptDocument;
+  transcriptLanguage?: string;
   videoEndCard?: import("@/lib/media/video-end-card").VideoEndCard;
   videoPlayback?: import("@/lib/media/video-playback-policy").VideoPlaybackPolicy;
   videoComposition?: import("@/lib/media/video-composition").VideoCompositionDocument;
+  videoPoster?: import("@/lib/media/video-poster").VideoPoster;
+  videoDescriptionIntent?: "automatic" | "touched";
   formId?: string;
   imageUrl?: string;
   audioUrl?: string;
@@ -3408,6 +3411,10 @@ export const mediaAssets = pgTable(
     uploadExpiresAt: timestamp("upload_expires_at", {
       withTimezone: true,
     }).notNull(),
+    directUploadClaimToken: uuid("direct_upload_claim_token"),
+    directUploadClaimedAt: timestamp("direct_upload_claimed_at", {
+      withTimezone: true,
+    }),
     uploadedAt: timestamp("uploaded_at", { withTimezone: true }),
     scanAttempt: integer("scan_attempt").default(0).notNull(),
     scanClaimToken: uuid("scan_claim_token"),
@@ -3515,6 +3522,10 @@ export const mediaAssets = pgTable(
     check(
       "media_assets_upload_state_check",
       sql`${table.status} = 'deleted' or (${table.status} = 'pending' and ${table.actualSizeBytes} is null and ${table.uploadedAt} is null) or (${table.status} in ('uploaded', 'scanning', 'ready', 'quarantined', 'failed') and ${table.actualSizeBytes} is not null and ${table.uploadedAt} is not null)`,
+    ),
+    check(
+      "media_assets_direct_upload_claim_check",
+      sql`(${table.directUploadClaimToken} is null and ${table.directUploadClaimedAt} is null) or (${table.directUploadClaimToken} is not null and ${table.directUploadClaimedAt} is not null and ${table.storageDriver} = 's3' and ${table.status} = 'pending')`,
     ),
     check(
       "media_assets_scan_lease_state_check",
@@ -3722,6 +3733,7 @@ export type MediaProcessingOptions = {
   videoEdit?: import("@/lib/media/video-edit-plan").VideoEditPlan;
   videoComposition?: import("@/lib/media/video-composition").BoundVideoComposition;
   videoCompositionCourseId?: string;
+  videoCompositionBlockId?: string;
 };
 
 export type MediaProcessingResult = {
@@ -3896,6 +3908,116 @@ export const mediaAssetTranscripts = pgTable(
     check(
       "media_asset_transcripts_language_check",
       sql`${table.language} ~ '^[a-z]{2,3}(-[a-z0-9]{2,8})*$'`,
+    ),
+  ],
+);
+
+export type VideoDescriptionJobStatus =
+  | "queued"
+  | "processing"
+  | "succeeded"
+  | "failed"
+  | "superseded";
+
+export const videoDescriptionJobs = pgTable(
+  "video_description_jobs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    originCourseId: uuid("origin_course_id"),
+    liveBlockId: uuid("live_block_id"),
+    blockReferenceId: uuid("block_reference_id").notNull(),
+    liveSourceAssetId: uuid("live_source_asset_id"),
+    sourceAssetReferenceId: uuid("source_asset_reference_id").notNull(),
+    requestedById: uuid("requested_by_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    requesterSubjectReference: varchar("requester_subject_reference", {
+      length: 64,
+    }),
+    sourceContentSha256: varchar("source_content_sha256", {
+      length: 64,
+    }).notNull(),
+    locale: varchar("locale", { length: 5 }).notNull(),
+    transcriptLanguage: varchar("transcript_language", {
+      length: 35,
+    }).notNull(),
+    expectedBlockRevision: integer("expected_block_revision").notNull(),
+    requestKey: varchar("request_key", { length: 64 }).notNull(),
+    status: varchar("status", { length: 24 })
+      .$type<VideoDescriptionJobStatus>()
+      .default("queued")
+      .notNull(),
+    attempt: integer("attempt").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(6).notNull(),
+    claimToken: uuid("claim_token"),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    generatedDescription: varchar("generated_description", { length: 900 }),
+    failureCode: varchar("failure_code", { length: 80 }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "video_description_jobs_requester_tenant_fk",
+      columns: [table.requestedById, table.organizationId],
+      foreignColumns: [users.id, users.organizationId],
+    }),
+    uniqueIndex("video_description_jobs_request_key_idx").on(table.requestKey),
+    index("video_description_jobs_queue_idx").on(
+      table.status,
+      table.nextRetryAt,
+      table.createdAt,
+    ),
+    check(
+      "video_description_jobs_digest_check",
+      sql`${table.sourceContentSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "video_description_jobs_requester_reference_check",
+      sql`(${table.requesterSubjectReference} is null or ${table.requesterSubjectReference} ~ '^[0-9a-f]{64}$') and (${table.requestedById} is null or ${table.requesterSubjectReference} is not null)`,
+    ),
+    check(
+      "video_description_jobs_locale_check",
+      sql`${table.locale} in ('de','en','it','es','fr')`,
+    ),
+    check(
+      "video_description_jobs_transcript_language_check",
+      sql`${table.transcriptLanguage} ~ '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$'`,
+    ),
+    check(
+      "video_description_jobs_attempt_check",
+      sql`${table.attempt} >= 0 and ${table.maxAttempts} between 1 and 10 and ${table.attempt} <= ${table.maxAttempts}`,
+    ),
+    check(
+      "video_description_jobs_revision_check",
+      sql`${table.expectedBlockRevision} > 0`,
+    ),
+    check(
+      "video_description_jobs_deadline_check",
+      sql`${table.deadlineAt} > ${table.createdAt}`,
+    ),
+    check(
+      "video_description_jobs_lease_check",
+      sql`(${table.status} = 'processing' and ${table.claimToken} is not null and ${table.claimedAt} is not null and ${table.leaseExpiresAt} is not null) or (${table.status} <> 'processing' and ${table.claimToken} is null and ${table.claimedAt} is null and ${table.leaseExpiresAt} is null)`,
+    ),
+    check(
+      "video_description_jobs_completion_check",
+      sql`(${table.status} in ('succeeded','failed','superseded') and ${table.completedAt} is not null) or (${table.status} in ('queued','processing') and ${table.completedAt} is null)`,
+    ),
+    check(
+      "video_description_jobs_generated_description_check",
+      sql`(${table.generatedDescription} is null or length(btrim(${table.generatedDescription})) between 1 and 900) and (${table.status} not in ('succeeded','failed','superseded') or ${table.generatedDescription} is null)`,
     ),
   ],
 );
@@ -10422,6 +10544,8 @@ export const orbitTransferJobs = pgTable(
     preflight: jsonb("preflight").$type<OrbitTransferPreflight>().notNull(),
     failureCode: varchar("failure_code", { length: 80 }),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -10449,6 +10573,10 @@ export const orbitTransferJobs = pgTable(
       table.workspaceId,
       table.createdAt,
     ),
+    index("orbit_transfer_jobs_lease_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+    ),
     check("orbit_transfer_jobs_request_hash_check", sql`${table.requestHash} ~ '^[0-9a-f]{64}$'`),
     check("orbit_transfer_jobs_courses_check", sql`cardinality(${table.sourceCourseIds}) between 1 and 25`),
     check("orbit_transfer_jobs_distinct_tenants_check", sql`${table.sourceOrganizationId} <> ${table.targetOrganizationId}`),
@@ -10458,7 +10586,7 @@ export const orbitTransferJobs = pgTable(
     ),
     check(
       "orbit_transfer_jobs_state_check",
-      sql`(${table.status} = 'planned' and ${table.startedAt} is null and ${table.completedAt} is null and ${table.failureCode} is null and cardinality(${table.targetCourseIds}) = 0) or (${table.status} = 'processing' and ${table.startedAt} is not null and ${table.completedAt} is null and ${table.failureCode} is null) or (${table.status} = 'completed' and ${table.startedAt} is not null and ${table.completedAt} is not null and ${table.failureCode} is null and cardinality(${table.targetCourseIds}) = cardinality(${table.sourceCourseIds})) or (${table.status} = 'failed' and ${table.startedAt} is not null and ${table.completedAt} is not null and ${table.failureCode} is not null)`,
+      sql`(${table.status} = 'planned' and ${table.startedAt} is null and ${table.claimToken} is null and ${table.leaseExpiresAt} is null and ${table.completedAt} is null and ${table.failureCode} is null and cardinality(${table.targetCourseIds}) = 0) or (${table.status} = 'processing' and ${table.startedAt} is not null and ${table.claimToken} is not null and ${table.leaseExpiresAt} is not null and ${table.completedAt} is null and ${table.failureCode} is null) or (${table.status} = 'completed' and ${table.startedAt} is not null and ${table.claimToken} is null and ${table.leaseExpiresAt} is null and ${table.completedAt} is not null and ${table.failureCode} is null and cardinality(${table.targetCourseIds}) = cardinality(${table.sourceCourseIds})) or (${table.status} = 'failed' and ${table.startedAt} is not null and ${table.claimToken} is null and ${table.leaseExpiresAt} is null and ${table.completedAt} is not null and ${table.failureCode} is not null)`,
     ),
     check("orbit_transfer_jobs_timeline_check", sql`${table.updatedAt} >= ${table.createdAt}`),
   ],

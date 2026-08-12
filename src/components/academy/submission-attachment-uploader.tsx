@@ -16,15 +16,22 @@ import {
 import {
   deleteBrowserSessionMediaAsset,
   discardBrowserSessionMediaAsset,
+  isTerminalSessionMediaUploadError,
   uploadBrowserSessionMedia,
+  type DirectPostUploadResume,
+  type BrowserSessionTransferStatus,
 } from "@/lib/media/browser-session-upload";
+import { UploadTransferIndicator } from "@/components/media/upload-transfer-indicator";
 import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { SubmissionRecorder } from "@/components/academy/submission-recorder";
 import {
   formatLearningFileSize,
   getLearningUiCopy,
 } from "@/lib/i18n/learning";
+import { getMediaUploadCopy } from "@/lib/i18n/media-upload";
 import type { AppLocale } from "@/lib/i18n/model";
+import { useFileDrop } from "@/lib/use-file-drop";
+import { cn } from "@/lib/utils";
 
 const MAX_ATTACHMENTS = 10;
 const ACCEPTED_TYPES = [
@@ -56,8 +63,11 @@ type UploadEntry = {
   name: string;
   sizeBytes: number;
   progress: number;
+  transferStatus: BrowserSessionTransferStatus | null;
   status: "preparing" | "uploading" | "processing" | "ready" | "error";
   error: string | null;
+  retryable: boolean;
+  directPostResume: DirectPostUploadResume | null;
 };
 
 export type SubmissionAttachmentView = {
@@ -116,10 +126,14 @@ export function SubmissionAttachmentUploader({
   resetKey?: string;
 }) {
   const copy = getLearningUiCopy(locale);
+  const uploadCopy = getMediaUploadCopy(locale);
   const [entries, setEntries] = useState<UploadEntry[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [recorderBlocking, setRecorderBlocking] = useState(false);
   const controllers = useRef(new Map<string, AbortController>());
+  const directPostResumeRef = useRef(
+    new Map<string, DirectPostUploadResume | null>(),
+  );
   const entriesRef = useRef(entries);
   const inputRef = useRef<HTMLInputElement>(null);
   const previousResetKey = useRef(resetKey);
@@ -146,6 +160,7 @@ export function SubmissionAttachmentUploader({
     if (resetKey && resetKey !== previousResetKey.current) {
       for (const controller of controllers.current.values()) controller.abort();
       controllers.current.clear();
+      directPostResumeRef.current.clear();
       for (const entry of entriesRef.current) {
         if (entry.assetId) discardBrowserSessionMediaAsset(entry.assetId);
       }
@@ -160,6 +175,7 @@ export function SubmissionAttachmentUploader({
   useEffect(
     () => () => {
       for (const controller of controllers.current.values()) controller.abort();
+      directPostResumeRef.current.clear();
       for (const entry of entriesRef.current) {
         if (entry.assetId) discardBrowserSessionMediaAsset(entry.assetId);
       }
@@ -176,12 +192,19 @@ export function SubmissionAttachmentUploader({
         file,
         purpose: "submission",
         clientUploadId: clientId,
+        directPostResume: directPostResumeRef.current.get(clientId) ?? null,
+        onDirectPostResumeChange: (directPostResume) => {
+          directPostResumeRef.current.set(clientId, directPostResume);
+          updateEntry(clientId, { directPostResume });
+        },
         signal: controller.signal,
         onAssetCreated: (asset) => {
           assetId = asset.id;
           updateEntry(clientId, { assetId: asset.id });
         },
         onProgress: (progress) => updateEntry(clientId, { progress }),
+        onTransferStatus: (transferStatus) =>
+          updateEntry(clientId, { transferStatus }),
         onStage: (stage) =>
           updateEntry(clientId, {
             status:
@@ -193,12 +216,14 @@ export function SubmissionAttachmentUploader({
             ...(stage === "processing" ? { progress: 100 } : {}),
           }),
       });
-      updateEntry(clientId, { status: "ready", error: null });
+      updateEntry(clientId, { status: "ready", error: null, retryable: false });
+      directPostResumeRef.current.delete(clientId);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       updateEntry(clientId, {
         assetId,
         status: "error",
+        retryable: !isTerminalSessionMediaUploadError(error),
         error: browserUploadErrorMessage(
           error,
           copy("attachments.uploadError"),
@@ -230,8 +255,11 @@ export function SubmissionAttachmentUploader({
             name: file.name,
             sizeBytes: file.size,
             progress: 0,
+            transferStatus: null,
             status: "error",
             error: copy("attachments.invalidFile"),
+            retryable: false,
+            directPostResume: null,
           },
         ]);
         continue;
@@ -245,8 +273,11 @@ export function SubmissionAttachmentUploader({
           name: file.name,
           sizeBytes: file.size,
           progress: 0,
+          transferStatus: null,
           status: "preparing",
           error: null,
+          retryable: true,
+          directPostResume: null,
         },
       ]);
       void runUpload(file, clientId);
@@ -263,6 +294,7 @@ export function SubmissionAttachmentUploader({
   const removeEntry = async (entry: UploadEntry) => {
     const controller = controllers.current.get(entry.clientId);
     controller?.abort();
+    directPostResumeRef.current.delete(entry.clientId);
     if (entry.assetId) {
       try {
         await deleteBrowserSessionMediaAsset(entry.assetId);
@@ -281,18 +313,32 @@ export function SubmissionAttachmentUploader({
     if (controllers.current.has(entry.clientId)) return;
     updateEntry(entry.clientId, {
       progress: 0,
+      transferStatus: null,
       status: "preparing",
       error: null,
+      retryable: true,
     });
     void runUpload(entry.file, entry.clientId);
   };
 
+  const { isDraggingFiles, fileDropProps } = useFileDrop({
+    disabled: Boolean(disabled) || recorderBlocking || entries.length >= MAX_ATTACHMENTS,
+    multiple: true,
+    onFiles: enqueueFiles,
+  });
+
   return (
-    <div className="border-y border-[#e3cbc7] py-3">
+    <div
+      {...fileDropProps}
+      className={cn(
+        "border-y border-[#e3cbc7] py-3 transition-colors",
+        isDraggingFiles && "border-[#2b9188] bg-[#edf9f7]",
+      )}
+    >
       <div className="flex min-h-9 flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-[var(--theme-strong-text)]">
           <Paperclip className="size-4" />
-          {copy("attachments.title")}
+          {isDraggingFiles ? uploadCopy.dropActiveMultiple : copy("attachments.title")}
           <span className="text-[10px] font-medium text-[var(--theme-coral-text)]">
             {entries.length}/{MAX_ATTACHMENTS}
           </span>
@@ -349,9 +395,11 @@ export function SubmissionAttachmentUploader({
                   {entry.status === "preparing"
                     ? copy("attachments.preparing")
                     : entry.status === "uploading"
-                      ? copy("attachments.uploading", {
-                          progress: entry.progress,
-                        })
+                      ? entry.transferStatus?.kind === "determinate"
+                        ? copy("attachments.uploading", {
+                            progress: entry.transferStatus.progress,
+                          })
+                        : uploadCopy.transferring
                       : entry.status === "processing"
                         ? copy("attachments.securityCheck")
                         : entry.status === "ready"
@@ -363,16 +411,21 @@ export function SubmissionAttachmentUploader({
                             })
                           : entry.error}
                 </span>
-                {entry.status === "uploading" ? (
-                  <span className="mt-1 block h-1 overflow-hidden rounded bg-[#f0dfdc]">
-                    <span
-                      className="block h-full bg-[#2b9188] transition-[width]"
-                      style={{ width: `${entry.progress}%` }}
-                    />
-                  </span>
+                {entry.status === "uploading" && entry.transferStatus ? (
+                  <UploadTransferIndicator
+                    status={entry.transferStatus}
+                    label={
+                      entry.transferStatus.kind === "determinate"
+                        ? copy("attachments.uploading", {
+                            progress: entry.transferStatus.progress,
+                          })
+                        : uploadCopy.transferring
+                    }
+                    className="mt-1 bg-[#f0dfdc]"
+                  />
                 ) : null}
               </span>
-              {entry.status === "error" && entry.file.type && entry.file.size > 0 ? (
+              {entry.status === "error" && entry.retryable && entry.file.type && entry.file.size > 0 ? (
                 <button
                   type="button"
                   onClick={() => retryEntry(entry)}

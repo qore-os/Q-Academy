@@ -56,6 +56,7 @@ import {
   MediaStorageError,
 } from "@/lib/media/s3-storage";
 import { logServerError } from "@/lib/server-error-logging";
+import { reconcileStaleOrbitTransfers } from "@/lib/orbit/transfer-reconciliation";
 import {
   cancelUnavailableMediaProcessingJobs,
   cleanupMediaProcessingArtifacts,
@@ -568,6 +569,8 @@ async function expirePendingUploadsWithoutSessions(limit: number, now: Date) {
       .set({
         status: "deleted",
         deletedAt: now,
+        directUploadClaimToken: null,
+        directUploadClaimedAt: null,
         scanFailureCode: "upload_expired",
         updatedAt: now,
       })
@@ -857,6 +860,8 @@ async function finalizeMultipartCleanupClaim(
       .set({
         status: "deleted",
         deletedAt: now,
+        directUploadClaimToken: null,
+        directUploadClaimedAt: null,
         scanFailureCode: "upload_expired",
         updatedAt: now,
       })
@@ -1755,6 +1760,7 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
         skipped: true as const,
         cleanedMultipartSessions: 0,
         cancelledProcessingJobs: 0,
+        reconciledOrbitTransfers: 0,
         releasedQuotaAssets: 0,
         removedProcessingArtifacts: 0,
         expired: 0,
@@ -1774,6 +1780,7 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
       skipped: false as const,
       cleanedMultipartSessions: 0,
       cancelledProcessingJobs: 0,
+      reconciledOrbitTransfers: 0,
       releasedQuotaAssets: 0,
       removedProcessingArtifacts: 0,
       expired: 0,
@@ -1804,6 +1811,10 @@ export async function processMediaMaintenanceQueues(maintenanceLimit = 5) {
               await cancelUnavailableMediaProcessingJobs();
           }
           const now = new Date();
+          if (budget.canStartPhase()) {
+            result.reconciledOrbitTransfers =
+              await reconcileStaleOrbitTransfers(limit, now);
+          }
           if (budget.canStartPhase()) {
             result.expired = await expirePendingUploadsWithoutSessions(
               limit,

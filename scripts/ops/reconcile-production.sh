@@ -87,6 +87,7 @@ configured_project="$(production_env_value "$env_file" COMPOSE_PROJECT_NAME)" ||
 
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
+verify_ai_api_key_file "$env_file" || fail "AI API key file is invalid"
 verify_caddy_sites_directory "$env_file" || fail "external Caddy sites directory is invalid"
 configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 

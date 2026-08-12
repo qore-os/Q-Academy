@@ -9,6 +9,7 @@ import {
   nativePushDeliveries,
   pushNotificationDeliveries,
   webhookDeliveries,
+  videoDescriptionJobs,
 } from "@/db/schema";
 import { buildQueueHealthMetrics } from "@/lib/queue-health-metrics";
 
@@ -70,7 +71,7 @@ export async function readJobQueueMetrics(now = new Date()) {
     ),
   );
 
-  const [emailRows, webhookRows, pushRows, nativePushRows, examRows] = await Promise.all([
+  const [emailRows, webhookRows, pushRows, nativePushRows, examRows, videoDescriptionRows] = await Promise.all([
     db
       .select({
         depth: sql<number>`count(*) filter (where ${emailQueued})::int`,
@@ -110,6 +111,14 @@ export async function readJobQueueMetrics(now = new Date()) {
       })
       .from(assessmentAttempts)
       .where(examDue),
+    db
+      .select({
+        depth: sql<number>`count(*) filter (where ${videoDescriptionJobs.status} in ('queued','processing'))::int`,
+        failed: sql<number>`count(*) filter (where ${videoDescriptionJobs.status} = 'failed')::int`,
+        oldestAt: sql<unknown>`min(${videoDescriptionJobs.createdAt}) filter (where ${videoDescriptionJobs.status} in ('queued','processing'))`,
+      })
+      .from(videoDescriptionJobs)
+      .where(inArray(videoDescriptionJobs.status, ["queued", "processing", "failed"])),
   ]);
   const nowMilliseconds = now.getTime();
   const email = emailRows[0];
@@ -117,6 +126,7 @@ export async function readJobQueueMetrics(now = new Date()) {
   const push = pushRows[0];
   const nativePush = nativePushRows[0];
   const exams = examRows[0];
+  const videoDescriptions = videoDescriptionRows[0];
 
   return {
     email: buildQueueHealthMetrics({
@@ -147,6 +157,12 @@ export async function readJobQueueMetrics(now = new Date()) {
       depth: Number(exams?.depth ?? 0),
       failed: 0,
       oldestAt: exams?.oldestAt ?? null,
+      nowMilliseconds,
+    }),
+    videoDescriptions: buildQueueHealthMetrics({
+      depth: Number(videoDescriptions?.depth ?? 0),
+      failed: Number(videoDescriptions?.failed ?? 0),
+      oldestAt: videoDescriptions?.oldestAt ?? null,
       nowMilliseconds,
     }),
   };

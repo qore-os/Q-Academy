@@ -1215,6 +1215,7 @@ export function LessonContent({
                     transcript={block.data.transcript}
                     endCard={block.data.videoEndCard}
                     playbackPolicy={block.data.videoPlayback}
+                    poster={block.data.videoPoster}
                     mediaAssetId={
                       typeof block.data.mediaAssetId === "string"
                         ? block.data.mediaAssetId

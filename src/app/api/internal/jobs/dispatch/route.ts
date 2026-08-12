@@ -20,6 +20,10 @@ import {
   parseInternalJobQuery,
 } from "@/lib/internal-job-request";
 import { logServerError } from "@/lib/server-error-logging";
+import {
+  cleanupTerminalVideoDescriptionJobs,
+  processVideoDescriptionJobs,
+} from "@/lib/ai/video-description-jobs";
 
 export const dynamic = "force-dynamic";
 
@@ -44,13 +48,14 @@ export async function POST(request: Request) {
   } = query.value;
   const dryRun = cleanupMode === "dry-run";
   const skipCleanup = cleanupMode === null;
-  const [emails, webhooks, pushDeliveries, nativePushDeliveries, examAttempts, actionRequestsExpired, commerce, cleanup, privacyExports, authoringCleanup, customDomainCleanup] = await Promise.all([
+  const [emails, webhooks, pushDeliveries, nativePushDeliveries, examAttempts, actionRequestsExpired, videoDescriptions, commerce, cleanup, privacyExports, authoringCleanup, customDomainCleanup, videoDescriptionCleanup] = await Promise.all([
     dryRun ? Promise.resolve([]) : processEmailQueue(limit),
     dryRun ? Promise.resolve([]) : processWebhookQueue(limit),
     dryRun ? Promise.resolve([]) : processPushQueue(limit),
     dryRun ? Promise.resolve([]) : processNativePushQueue(limit),
     dryRun ? Promise.resolve([]) : processExamLifecycleDeadlines(limit),
     dryRun ? Promise.resolve(0) : expireDueAiAgentActionRequests(limit),
+    dryRun ? Promise.resolve([]) : processVideoDescriptionJobs(limit),
     dryRun
       ? Promise.resolve({ reconciled: 0, tenantCount: 0 })
       : reconcileAllExpiredCommerceEntitlements(),
@@ -78,6 +83,9 @@ export async function POST(request: Request) {
           batchSize: cleanupLimit,
           dryRun,
         }),
+    skipCleanup || dryRun
+      ? Promise.resolve(0)
+      : cleanupTerminalVideoDescriptionJobs(cleanupLimit),
   ]);
   const queues = await readJobQueueMetrics();
   const privacyCleanupNeedsRetry = privacyRetentionNeedsRetry(privacyExports);
@@ -99,6 +107,7 @@ export async function POST(request: Request) {
           nativePushDeliveries.length +
           examAttempts.length +
           actionRequestsExpired +
+          videoDescriptions.length +
           commerce.reconciled,
           commerceEntitlementsReconciled: commerce.reconciled,
           commerceTenantsReconciled: commerce.tenantCount,
@@ -108,6 +117,8 @@ export async function POST(request: Request) {
         nativePushDeliveries: nativePushDeliveries.length,
         examAttempts: examAttempts.length,
         actionRequestsExpired,
+        videoDescriptions: videoDescriptions.length,
+        videoDescriptionJobsCleaned: videoDescriptionCleanup,
         queues,
         cleanup,
         privacyExports,

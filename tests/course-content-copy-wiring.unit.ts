@@ -16,6 +16,10 @@ const cloneRoute = readFileSync(
   path.join(root, "src/app/api/v1/courses/[id]/clone/route.ts"),
   "utf8",
 );
+const descriptionJobs = readFileSync(
+  path.join(root, "src/lib/ai/video-description-jobs.ts"),
+  "utf8",
+);
 
 test("copy actions recheck both courses in one transaction and write audit events", () => {
   for (const action of ["copyCourseLessonAction", "copyCourseSectionAction"]) {
@@ -28,6 +32,7 @@ test("copy actions recheck both courses in one transaction and write audit event
     assert.match(body, /db\.transaction\(async \(tx\)/);
     assert.match(body, /requireSharedModuleContentPermission\(/);
     assert.match(body, /sourceCourseId[\s\S]*required: "edit"/);
+    assert.match(body, /targetCourseIds: shared\.referencedCourseIds/);
     assert.match(body, /tx\.insert\(activityEvents\)/);
   }
   assert.match(actions, /type: "course\.lesson\.copied"/);
@@ -46,7 +51,9 @@ test("copy service enforces tenant, target status, media source binding and orde
   );
   assert.match(service, /eq\(mediaAssets\.purpose, "course_content"\)/);
   assert.match(service, /eq\(mediaAssets\.status, "ready"\)/);
+  assert.match(service, /isNull\(mediaAssets\.deletedAt\)/);
   assert.match(service, /insert\(courseMediaAssets\)/);
+  assert.match(service, /targetCourseIds\.flatMap\(\(courseId\)/);
   assert.match(service, /pg_advisory_xact_lock/);
   assert.match(service, /initialLessonSortOrder \+ index/);
 });
@@ -61,9 +68,52 @@ test("copy service rejects dangling page and assessment references", () => {
 });
 
 test("course clone and lesson or section copy strip source-course render jobs", () => {
-  assert.match(service, /data: courseContentDataForCopy\(block\.data\)/);
-  assert.match(cloneRoute, /courseContentDataForCopy\(block\.data\)/);
+  assert.match(
+    service,
+    /data: courseContentDataForCopy\(block\.type, block\.data\)/,
+  );
+  assert.match(
+    cloneRoute,
+    /courseContentDataForCopy\(block\.type, block\.data\)/,
+  );
   assert.match(cloneRoute, /data: copiedBlockData\.get\(block\.id\)!/);
+  const pageCommandStart = actions.indexOf(
+    "export async function commandLessonPageAction",
+  );
+  const pageCommand = actions.slice(
+    pageCommandStart,
+    actions.indexOf("\nexport async function", pageCommandStart + 1),
+  );
+  assert.match(
+    pageCommand,
+    /data: courseContentDataForCopy\(block\.type, block\.data\)/,
+  );
+  assert.match(pageCommand, /\.returning\(\{[\s\S]*revision: contentBlocks\.revision/);
+  assert.match(
+    pageCommand,
+    /enqueueCopiedVideoDescriptionJobsInTransaction\(tx, \{[\s\S]*blocks: copiedBlocks/,
+  );
+});
+
+test("saved and copied videos retain the normalized transcript language", () => {
+  assert.match(
+    actions,
+    /const data: ContentBlockData = \{[\s\S]*?transcriptLanguage: transcriptLanguage\.success[\s\S]*?transcriptLanguage\.data\.toLowerCase\(\)/,
+  );
+  assert.match(
+    descriptionJobs,
+    /data\.transcriptLanguage \?\? data\.transcript\?\.language \?\? fallback/,
+  );
+  assert.match(
+    descriptionJobs,
+    /TRANSCRIPT_LANGUAGE_PATTERN\.test\(normalized\) \? normalized : fallback/,
+  );
+  for (const implementation of [actions, service, cloneRoute]) {
+    assert.match(
+      implementation,
+      /enqueueCopiedVideoDescriptionJobsInTransaction\(/,
+    );
+  }
 });
 
 test("course clone remaps its lesson graph and preserves presentation metadata", () => {

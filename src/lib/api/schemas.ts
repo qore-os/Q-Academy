@@ -24,6 +24,7 @@ import { sanitizeVideoTranscriptDocument } from "@/lib/content-blocks/video-tran
 import { sanitizeVideoEndCard } from "@/lib/media/video-end-card";
 import { parseVideoPlaybackPolicy } from "@/lib/media/video-playback-policy";
 import { sanitizeVideoComposition } from "@/lib/media/video-composition";
+import { sanitizeVideoPoster } from "@/lib/media/video-poster";
 import {
   DEFAULT_EVENT_TIME_ZONE,
   isValidEventTimeZone,
@@ -803,6 +804,18 @@ const videoCompositionSchema = z.unknown().transform((input, context) => {
   return composition;
 });
 
+const videoPosterSchema = z.unknown().transform((input, context) => {
+  const poster = sanitizeVideoPoster(input);
+  if (!poster) {
+    context.addIssue({
+      code: "custom",
+      message: "Die Video-Vorschaubild-Auswahl ist ungueltig.",
+    });
+    return z.NEVER;
+  }
+  return poster;
+});
+
 function structuredDocumentSchema<T>(
   sanitizer: (input: unknown) => T | null,
   message: string,
@@ -849,6 +862,7 @@ const contentBlockDataSchema = z
     videoEndCard: videoEndCardSchema.optional(),
     videoPlayback: videoPlaybackPolicySchema.optional(),
     videoComposition: videoCompositionSchema.optional(),
+    videoPoster: videoPosterSchema.optional(),
     formId: z.string().uuid().optional(),
     imageUrl: httpUrl.optional(),
     audioUrl: httpUrl.optional(),
@@ -1015,6 +1029,21 @@ function validateAssessmentBlock(
       code: "custom",
       path: ["data", "videoComposition"],
       message: "Mehrspur-Kompositionen sind nur fuer Videobloecke erlaubt.",
+    });
+  }
+  if (block.type !== "video" && block.data?.videoPoster) {
+    context.addIssue({
+      code: "custom",
+      path: ["data", "videoPoster"],
+      message: "Vorschaubilder sind nur fuer Videobloecke erlaubt.",
+    });
+  }
+  if (block.type === "video" && block.data?.videoPoster) {
+    context.addIssue({
+      code: "custom",
+      path: ["data", "videoPoster"],
+      message:
+        "Video-Vorschaubilder koennen nur im Kurseditor an gepruefte Assets gebunden werden.",
     });
   }
   if (block.type === "video" && block.data?.videoComposition) {

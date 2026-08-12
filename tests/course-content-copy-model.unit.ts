@@ -13,6 +13,7 @@ const IMAGE_ID = "11111111-1111-4111-8111-111111111111";
 const FILE_ID = "22222222-2222-4222-8222-222222222222";
 const AUDIO_ID = "33333333-3333-4333-8333-333333333333";
 const RENDER_JOB_ID = "66666666-6666-4666-8666-666666666666";
+const POSTER_ID = "77777777-7777-4777-8777-777777777777";
 
 test("copy model discovers direct, gallery and download media bindings", () => {
   const references = collectCourseContentMediaReferences([
@@ -51,6 +52,11 @@ test("copy model discovers direct, gallery and download media bindings", () => {
       type: "video",
       data: {
         mediaAssetId: "44444444-4444-4444-8444-444444444444",
+        videoPoster: {
+          version: 1,
+          source: "upload",
+          mediaAssetId: POSTER_ID,
+        },
         videoComposition: {
           version: 1,
           audioTracks: [
@@ -73,6 +79,7 @@ test("copy model discovers direct, gallery and download media bindings", () => {
       [IMAGE_ID, "image"],
       [FILE_ID, "document"],
       ["44444444-4444-4444-8444-444444444444", "video"],
+      [POSTER_ID, "image"],
       [AUDIO_ID, "audio"],
     ],
   );
@@ -100,7 +107,7 @@ test("copy model remaps every exam pool block reference", () => {
 });
 
 test("copied compositions retain tracks but require a target-course render", () => {
-  const data = courseContentDataForCopy({
+  const data = courseContentDataForCopy("video", {
     mediaAssetId: "44444444-4444-4444-8444-444444444444",
     videoComposition: {
       version: 1,

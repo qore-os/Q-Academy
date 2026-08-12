@@ -50,6 +50,7 @@ import {
   storePrivacyExport,
 } from "@/lib/privacy/export-storage";
 import type { PrivacyRequestCreateInput } from "@/lib/privacy/request-schemas";
+import { lockPrivacyLegalHoldSubjects } from "@/lib/privacy/legal-hold-lock";
 
 type PrivacyActor = {
   kind: "user" | "api_key" | "system";
@@ -666,6 +667,9 @@ export async function createPrivacyLegalHold(
   }
   return db.transaction(async (tx) => {
     const request = await lockRequest(tx, organizationId, requestId);
+    await lockPrivacyLegalHoldSubjects(tx, [
+      { organizationId, subjectReference: request.subjectReference },
+    ]);
     if (
       request.status === "processing" ||
       ["completed", "rejected", "cancelled"].includes(request.status)
@@ -721,6 +725,21 @@ export async function releasePrivacyLegalHold(
   }
   return db.transaction(async (tx) => {
     await lockRequest(tx, organizationId, requestId);
+    const [subject] = await tx
+      .select({ subjectReference: privacyLegalHolds.subjectReference })
+      .from(privacyLegalHolds)
+      .where(
+        and(
+          eq(privacyLegalHolds.id, holdId),
+          eq(privacyLegalHolds.requestId, requestId),
+          eq(privacyLegalHolds.organizationId, organizationId),
+        ),
+      )
+      .limit(1);
+    if (!subject) throw new PrivacyRequestServiceError(404, "not_found", "Die Aufbewahrungssperre wurde nicht gefunden.");
+    await lockPrivacyLegalHoldSubjects(tx, [
+      { organizationId, subjectReference: subject.subjectReference },
+    ]);
     const [current] = await tx
       .select()
       .from(privacyLegalHolds)

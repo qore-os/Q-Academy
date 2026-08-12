@@ -4,6 +4,7 @@ import test from "node:test";
 import type { CourseVersionSnapshot } from "@/db/schema";
 import {
   accessibleLessonsReferenceMediaAsset,
+  accessibleLessonsReferenceVideoComposition,
   lessonReferencesMediaAsset,
 } from "@/lib/media/course-media-access-policy";
 
@@ -109,6 +110,38 @@ test("lesson media references include direct blocks and page galleries", () => {
   );
 });
 
+test("lesson media references include a custom uploaded video poster", () => {
+  const videoAssetId = "90000000-0000-4000-8000-000000000009";
+  assert.equal(
+    lessonReferencesMediaAsset(
+      lesson({
+        blocks: [
+          {
+            id: "30000000-0000-4000-8000-000000000003",
+            lessonId: "20000000-0000-4000-8000-000000000002",
+            pageId: null,
+            type: "video",
+            title: "Video mit Poster",
+            sortOrder: 0,
+            required: false,
+            style: { width: "content", alignment: "left", surface: "plain" },
+            data: {
+              mediaAssetId: videoAssetId,
+              videoPoster: {
+                version: 1,
+                source: "upload",
+                mediaAssetId,
+              },
+            },
+          },
+        ],
+      }),
+      mediaAssetId,
+    ),
+    true,
+  );
+});
+
 test("locked lesson media cannot be downloaded through course access", () => {
   const locked = { lesson: lesson(), access: { accessible: false } };
   assert.equal(
@@ -169,5 +202,129 @@ test("read-only lesson media remains readable while draft-page media stays hidde
       mediaAssetId,
     ),
     false,
+  );
+});
+
+test("composition derivatives require the exact job inside an accessible lesson", () => {
+  const videoId = "90000000-0000-4000-8000-000000000009";
+  const blockId = "80000000-0000-4000-8000-000000000008";
+  const jobId = "70000000-0000-4000-8000-000000000007";
+  const compositionBlock = {
+    id: blockId,
+    lessonId: "20000000-0000-4000-8000-000000000002",
+    pageId: null,
+    type: "video",
+    title: "Vertrauliche Mischung",
+    sortOrder: 0,
+    required: false,
+    style: { width: "content", alignment: "left", surface: "plain" } as const,
+    data: {
+      mediaAssetId: videoId,
+      videoComposition: {
+        version: 1 as const,
+        renderJobId: jobId,
+        audioTracks: [
+          {
+            id: "60000000-0000-4000-8000-000000000006",
+            mediaAssetId: "50000000-0000-4000-8000-000000000005",
+            timelineStartMs: 0,
+            sourceStartMs: 0,
+            sourceEndMs: 1_000,
+            volume: 1,
+          },
+        ],
+      },
+    },
+  };
+  const openPrimary = {
+    lesson: lesson({
+      blocks: [{ ...compositionBlock, id: "40000000-0000-4000-8000-000000000004", data: { mediaAssetId: videoId } }],
+    }),
+    access: { accessible: true },
+  };
+  const lockedComposition = {
+    lesson: lesson({ blocks: [compositionBlock] }),
+    access: { accessible: false },
+  };
+  const input = { renderJobId: jobId, primaryAssetId: videoId, blockId };
+
+  assert.equal(
+    accessibleLessonsReferenceVideoComposition(
+      [openPrimary, lockedComposition],
+      input,
+    ),
+    false,
+  );
+  assert.equal(
+    accessibleLessonsReferenceVideoComposition(
+      [openPrimary, { ...lockedComposition, access: { accessible: true } }],
+      input,
+    ),
+    true,
+  );
+});
+
+test("composition derivatives ignore blocks on draft pages", () => {
+  const videoId = "90000000-0000-4000-8000-000000000009";
+  const blockId = "80000000-0000-4000-8000-000000000008";
+  const jobId = "70000000-0000-4000-8000-000000000007";
+  const page = {
+    id: "40000000-0000-4000-8000-000000000004",
+    lessonId: "20000000-0000-4000-8000-000000000002",
+    title: "Mischung",
+    titleSyncedWithLesson: false,
+    slug: "mischung",
+    sortOrder: 0,
+    status: "draft" as const,
+    revision: 1,
+    layoutWidth: "standard" as const,
+    backgroundTone: "plain" as const,
+    contentSpacing: "comfortable" as const,
+    createdAt: "2026-07-11T09:00:00.000Z",
+    updatedAt: "2026-07-11T09:00:00.000Z",
+    blocks: [
+      {
+        id: blockId,
+        lessonId: "20000000-0000-4000-8000-000000000002",
+        pageId: "40000000-0000-4000-8000-000000000004",
+        type: "video",
+        title: "Mischung",
+        sortOrder: 0,
+        required: false,
+        style: { width: "content", alignment: "left", surface: "plain" } as const,
+        data: {
+          mediaAssetId: videoId,
+          videoComposition: {
+            version: 1 as const,
+            renderJobId: jobId,
+            audioTracks: [
+              {
+                id: "60000000-0000-4000-8000-000000000006",
+                mediaAssetId: "50000000-0000-4000-8000-000000000005",
+                timelineStartMs: 0,
+                sourceStartMs: 0,
+                sourceEndMs: 1_000,
+                volume: 1,
+              },
+            ],
+          },
+        },
+      },
+    ],
+  };
+  const input = { renderJobId: jobId, primaryAssetId: videoId, blockId };
+  assert.equal(
+    accessibleLessonsReferenceVideoComposition(
+      [{ lesson: lesson({ blocks: [], pages: [page] }), access: { accessible: true } }],
+      input,
+    ),
+    false,
+  );
+  assert.equal(
+    accessibleLessonsReferenceVideoComposition(
+      [{ lesson: lesson({ blocks: [], pages: [{ ...page, status: "published" }] }), access: { accessible: true } }],
+      input,
+    ),
+    true,
   );
 });

@@ -8,6 +8,7 @@ import {
   sanitizeVideoPlaybackPolicy,
 } from "@/lib/media/video-playback-policy";
 import { sanitizeVideoComposition } from "@/lib/media/video-composition";
+import { sanitizeVideoPoster } from "@/lib/media/video-poster";
 
 export function contentBlockForSnapshot(
   block: typeof contentBlocks.$inferSelect,
@@ -15,6 +16,8 @@ export function contentBlockForSnapshot(
 ) {
   let snapshotBlock = block;
   if (block.type === "video") {
+    const snapshotData = { ...block.data };
+    delete snapshotData.videoDescriptionIntent;
     const policy =
       block.data.videoPlayback === undefined
         ? sanitizeVideoPlaybackPolicy(undefined)
@@ -36,12 +39,23 @@ export function contentBlockForSnapshot(
         "Das Video enthaelt eine ungueltige Mehrspur-Komposition.",
       );
     }
+    const poster = block.data.videoPoster
+      ? sanitizeVideoPoster(block.data.videoPoster)
+      : undefined;
+    if (block.data.videoPoster && !poster) {
+      throw new ApiError(
+        409,
+        "conflict",
+        "Das Video enthaelt eine ungueltige Vorschaubild-Auswahl.",
+      );
+    }
     snapshotBlock = {
       ...block,
       data: {
-        ...block.data,
+        ...snapshotData,
         videoPlayback: policy,
         ...(composition ? { videoComposition: composition } : {}),
+        ...(poster ? { videoPoster: poster } : {}),
       },
     };
   }

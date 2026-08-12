@@ -32,6 +32,9 @@ type UploadIntent = BrowserSessionMediaAsset & {
   statusUrl: string;
   completeUrl: string | null;
   completionPending?: boolean;
+  completionTransport?: "direct-post" | "multipart";
+  directPostClaimUrl?: string | null;
+  directPostClaimState?: "available" | "claimed";
   upload:
     | {
         transport: "s3" | "application";
@@ -51,6 +54,16 @@ type UploadIntent = BrowserSessionMediaAsset & {
     | null;
 };
 
+type DirectPostUploadClaim =
+  | { state: "completion_pending" }
+  | {
+      state: "send_authorized";
+      upload: Extract<
+        NonNullable<UploadIntent["upload"]>,
+        { transport: "s3" }
+      >;
+    };
+
 export class SessionMediaRequestError extends Error {
   constructor(
     message: string,
@@ -63,6 +76,29 @@ export class SessionMediaRequestError extends Error {
   }
 }
 
+export class TerminalSessionMediaUploadError extends Error {
+  constructor(error: unknown) {
+    super(
+      error instanceof Error
+        ? error.message
+        : "Der Upload-Abschluss konnte nicht bestaetigt werden.",
+      { cause: error },
+    );
+    this.name = "TerminalSessionMediaUploadError";
+  }
+}
+
+export function isTerminalSessionMediaUploadError(error: unknown) {
+  return (
+    error instanceof TerminalSessionMediaUploadError ||
+    (error instanceof SessionMediaRequestError &&
+      error.status >= 400 &&
+      error.status < 500 &&
+      !isMissingSessionMediaObject(error) &&
+      !isTransientSessionMediaCompletionFailure(error))
+  );
+}
+
 export function isMissingSessionMediaObject(error: unknown) {
   return (
     error instanceof SessionMediaRequestError &&
@@ -73,7 +109,15 @@ export function isMissingSessionMediaObject(error: unknown) {
 
 export function isTransientSessionMediaCompletionFailure(error: unknown) {
   if (error instanceof SessionMediaRequestError) {
-    return error.status === 408 || error.status === 429 || error.status >= 500;
+    return (
+      error.status === 408 ||
+      error.status === 429 ||
+      error.status >= 500 ||
+      (error.status === 409 &&
+        ["completion_in_progress", "completion_claim_lost"].includes(
+          error.reason ?? "",
+        ))
+    );
   }
   return error instanceof TypeError;
 }
@@ -94,6 +138,21 @@ type MultipartPartAuthorization = {
 
 export type BrowserSessionUploadStage =
   "preparing" | "uploading" | "processing";
+
+export type BrowserSessionTransferStatus =
+  | {
+      kind: "determinate";
+      transport: "single-put" | "multipart";
+      progress: number;
+    }
+  | {
+      kind: "indeterminate";
+      transport: "direct-post";
+    };
+
+export type DirectPostUploadResume = {
+  claimToken: string;
+};
 
 const MAX_ACTIVE_MULTIPART_PARTS = 3;
 const SINGLE_UPLOAD_TIMEOUT_MS = 6 * 60 * 60_000;
@@ -198,6 +257,8 @@ function uploadFile(
   >,
   signal: AbortSignal,
   onProgress: (progress: number) => void,
+  onBeforeSend?: () => void,
+  onSynchronousSendFailure?: () => void,
 ) {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
@@ -225,7 +286,7 @@ function uploadFile(
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && event.total > 0) {
           onProgress(
-            Math.min(100, Math.round((event.loaded / event.total) * 100)),
+            Math.min(99, Math.round((event.loaded / event.total) * 100)),
           );
         }
       };
@@ -284,7 +345,14 @@ function uploadFile(
       // Do not attach an upload-progress listener or custom request headers:
       // either would turn this multipart POST into a CORS-preflight request,
       // which STRATO HiDrive Object Storage does not answer correctly.
-      xhr.send(form);
+      onBeforeSend?.();
+      try {
+        xhr.send(form);
+      } catch (error) {
+        cleanup();
+        onSynchronousSendFailure?.();
+        reject(error);
+      }
       return;
     }
     xhr.send(file);
@@ -500,6 +568,48 @@ async function completeMultipartUploadWithRecovery(
     : new Error("Der Upload-Abschluss hat zu lange gedauert.");
 }
 
+async function completeDirectPostWithRecovery(
+  completeUrl: string,
+  signal: AbortSignal,
+) {
+  return uploadStratoSinglePostWithRecovery({
+    signal,
+    upload: async () => undefined,
+    complete: () => completeDirectPostOnce(completeUrl, signal),
+    isObjectMissing: isMissingSessionMediaObject,
+    isTransientCompletionFailure: isTransientSessionMediaCompletionFailure,
+    waitForRetry: wait,
+  });
+}
+
+function completeDirectPostOnce(completeUrl: string, signal: AbortSignal) {
+  return fetch(completeUrl, {
+    method: "POST",
+    credentials: "same-origin",
+    signal,
+  }).then((response) => responseData(response).then(() => undefined));
+}
+
+async function completeClaimedDirectPostWithoutFurtherRetry(
+  completeUrl: string,
+  signal: AbortSignal,
+) {
+  try {
+    await completeDirectPostWithRecovery(completeUrl, signal);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+    if (
+      isMissingSessionMediaObject(error) ||
+      isTransientSessionMediaCompletionFailure(error)
+    ) {
+      throw error;
+    }
+    throw new TerminalSessionMediaUploadError(error);
+  }
+}
+
 async function uploadMultipartFile(
   file: File,
   authorization: Extract<
@@ -558,7 +668,7 @@ async function uploadMultipartFile(
         (total, value) => total + value,
         0,
       );
-      onProgress(Math.min(100, Math.round((loaded / file.size) * 100)));
+      onProgress(Math.min(99, Math.round((loaded / file.size) * 100)));
     };
     reportProgress();
 
@@ -668,11 +778,16 @@ export async function uploadBrowserSessionMedia(input: {
   clientUploadId: string;
   signal: AbortSignal;
   onProgress?: (progress: number) => void;
+  onTransferStatus?: (status: BrowserSessionTransferStatus) => void;
   onStage?: (stage: BrowserSessionUploadStage) => void;
   onAssetCreated?: (asset: BrowserSessionMediaAsset) => void;
+  directPostResume?: DirectPostUploadResume | null;
+  onDirectPostResumeChange?: (resume: DirectPostUploadResume | null) => void;
   ownerUserId?: string;
 }) {
   input.onStage?.("preparing");
+  const directPostClaimToken =
+    input.directPostResume?.claimToken ?? crypto.randomUUID();
   const intent = await sessionDataWithRetry<UploadIntent>(
     "/api/media-assets",
     {
@@ -691,23 +806,104 @@ export async function uploadBrowserSessionMedia(input: {
   );
   input.onAssetCreated?.(intent);
 
-  if (intent.completionPending) {
+  if (intent.directPostClaimUrl) {
     if (!intent.completeUrl) {
       throw new Error("Der Abschluss-Endpunkt fuer den Upload fehlt.");
     }
-    await completeMultipartUploadWithRecovery(
-      intent.completeUrl,
-      intent.statusUrl,
-      input.signal,
-    );
+    input.onTransferStatus?.({
+      kind: "indeterminate",
+      transport: "direct-post",
+    });
+    if (
+      intent.directPostClaimState === "claimed" &&
+      !input.directPostResume
+    ) {
+      await completeClaimedDirectPostWithoutFurtherRetry(
+        intent.completeUrl,
+        input.signal,
+      );
+    } else {
+      const claimToken = directPostClaimToken;
+      input.onDirectPostResumeChange?.({ claimToken });
+      const claim = await sessionDataWithRetry<DirectPostUploadClaim>(
+        intent.directPostClaimUrl,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claimToken }),
+        },
+        input.signal,
+      );
+      if (claim.state === "completion_pending") {
+        input.onDirectPostResumeChange?.(null);
+        await completeClaimedDirectPostWithoutFurtherRetry(
+          intent.completeUrl,
+          input.signal,
+        );
+      } else {
+        input.onStage?.("uploading");
+        await uploadStratoSinglePostWithRecovery({
+          signal: input.signal,
+          upload: () =>
+            uploadFile(
+              input.file,
+              claim.upload,
+              input.signal,
+              (progress) => input.onProgress?.(progress),
+              () => input.onDirectPostResumeChange?.(null),
+              () =>
+                input.onDirectPostResumeChange?.({ claimToken }),
+            ),
+          complete: () =>
+            completeDirectPostOnce(intent.completeUrl!, input.signal),
+          isObjectMissing: isMissingSessionMediaObject,
+          isTransientCompletionFailure:
+            isTransientSessionMediaCompletionFailure,
+          waitForRetry: wait,
+        });
+      }
+    }
+  } else if (intent.completionPending) {
+    if (!intent.completeUrl) {
+      throw new Error("Der Abschluss-Endpunkt fuer den Upload fehlt.");
+    }
+    if (intent.completionTransport === "direct-post") {
+      input.onDirectPostResumeChange?.(null);
+      input.onTransferStatus?.({
+        kind: "indeterminate",
+        transport: "direct-post",
+      });
+      await completeClaimedDirectPostWithoutFurtherRetry(
+        intent.completeUrl,
+        input.signal,
+      );
+    } else {
+      await completeMultipartUploadWithRecovery(
+        intent.completeUrl,
+        intent.statusUrl,
+        input.signal,
+      );
+    }
   } else if (intent.upload) {
     input.onStage?.("uploading");
     if (intent.upload.transport === "s3-multipart") {
+      input.onTransferStatus?.({
+        kind: "determinate",
+        transport: "multipart",
+        progress: 0,
+      });
       await uploadMultipartFile(
         input.file,
         intent.upload,
         input.signal,
-        (progress) => input.onProgress?.(progress),
+        (progress) => {
+          input.onProgress?.(progress);
+          input.onTransferStatus?.({
+            kind: "determinate",
+            transport: "multipart",
+            progress,
+          });
+        },
       );
       if (!intent.completeUrl) {
         throw new Error("Der Abschluss-Endpunkt fuer den Upload fehlt.");
@@ -717,36 +913,25 @@ export async function uploadBrowserSessionMedia(input: {
         intent.statusUrl,
         input.signal,
       );
-    } else if (
-      intent.upload.transport === "s3" &&
-      intent.upload.method === "POST" &&
-      intent.completeUrl
-    ) {
-      const stratoUpload = intent.upload;
-      const completeUrl = intent.completeUrl;
-      await uploadStratoSinglePostWithRecovery({
-        signal: input.signal,
-        upload: () =>
-          uploadFile(input.file, stratoUpload, input.signal, (progress) =>
-            input.onProgress?.(progress),
-          ),
-        complete: () =>
-          sessionDataWithRetry(
-            completeUrl,
-            { method: "POST" },
-            input.signal,
-          ).then(() => undefined),
-        isObjectMissing: isMissingSessionMediaObject,
-        isTransientCompletionFailure:
-          isTransientSessionMediaCompletionFailure,
-        waitForRetry: wait,
-      });
     } else {
+      const determinateTransfer = intent.upload.method === "PUT";
+      input.onTransferStatus?.(
+        determinateTransfer
+          ? { kind: "determinate", transport: "single-put", progress: 0 }
+          : { kind: "indeterminate", transport: "direct-post" },
+      );
       let recovered = false;
       try {
-        await uploadFile(input.file, intent.upload, input.signal, (progress) =>
-          input.onProgress?.(progress),
-        );
+        await uploadFile(input.file, intent.upload, input.signal, (progress) => {
+          input.onProgress?.(progress);
+          if (determinateTransfer) {
+            input.onTransferStatus?.({
+              kind: "determinate",
+              transport: "single-put",
+              progress,
+            });
+          }
+        });
       } catch (uploadError) {
         if (intent.completeUrl) {
           await sessionDataWithRetry(
@@ -781,6 +966,7 @@ export async function uploadBrowserSessionMedia(input: {
   }
 
   input.onStage?.("processing");
+  input.onDirectPostResumeChange?.(null);
   input.onProgress?.(100);
   const deadline = Date.now() + 2 * 60 * 60_000;
   let pollDelay = 1_000;

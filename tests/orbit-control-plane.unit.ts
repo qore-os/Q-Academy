@@ -362,6 +362,43 @@ test("course transfer never creates an unrendered published video composition", 
   );
 });
 
+test("Orbit frame-poster preflight names the actionable source-side alternatives", () => {
+  const transferSource = readFileSync(
+    path.resolve("src/lib/orbit/transfer.ts"),
+    "utf8",
+  );
+
+  assert.match(
+    transferSource,
+    /vor dem Orbit-Transfer auf Automatisch oder ein eigenes Bild um/,
+  );
+  assert.doesNotMatch(transferSource, /nach einem Orbit-Transfer neu erzeugt/);
+});
+
+test("completed Orbit transfers atomically enqueue an automatic video poster", () => {
+  const transferSource = readFileSync(
+    path.resolve("src/lib/orbit/transfer.ts"),
+    "utf8",
+  );
+  const enqueue = transferSource.indexOf(
+    "enqueueReadyVideoThumbnailInTransaction(tx",
+  );
+  const completionCommit = transferSource.indexOf(
+    'status: "completed"',
+    enqueue,
+  );
+
+  assert.ok(enqueue >= 0 && completionCommit > enqueue);
+  assert.match(
+    transferSource.slice(enqueue, completionCommit),
+    /sourceAssetId: asset\.targetId[\s\S]*sourceContentSha256: asset\.source\.contentSha256[\s\S]*atMilliseconds: 0/,
+  );
+  assert.doesNotMatch(
+    transferSource.slice(enqueue, completionCommit),
+    /\.catch\(/,
+  );
+});
+
 test("Orbit API, schema boundaries, and pending privacy inventory are explicit", () => {
   const privacyTables = new Set(
     Object.keys(PENDING_SCHEMA_PRIVACY_DATA_INVENTORY),

@@ -1715,6 +1715,8 @@ async function finalizeMultipartUpload(input: {
         stagingStorageVersionId: input.stored.versionId,
         uploadedAt: now,
         scanNextRetryAt: now,
+        directUploadClaimToken: null,
+        directUploadClaimedAt: null,
         updatedAt: now,
       })
       .where(
@@ -1898,6 +1900,8 @@ async function completeLegacyS3Asset(
         stagingStorageVersionId: stored.versionId,
         uploadedAt: now,
         scanNextRetryAt: now,
+        directUploadClaimToken: null,
+        directUploadClaimedAt: null,
         updatedAt: now,
       })
       .where(
@@ -2059,6 +2063,8 @@ export async function abortApiMultipartUpload(
           scanClaimedAt: null,
           scanLeaseExpiresAt: null,
           scanNextRetryAt: null,
+          directUploadClaimToken: null,
+          directUploadClaimedAt: null,
           updatedAt: now,
         })
         .where(

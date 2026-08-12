@@ -1219,6 +1219,37 @@ Kostenalarmierung darf dieses Gate nicht ausgefuehrt und der Medienbetrieb
 nicht freigegeben werden. Rotation und Provider-Ausfall stehen in
 [MEDIA_PROCESSING.md](./MEDIA_PROCESSING.md).
 
+Der allgemeine KI-Provider fuer Q-Coach, Kursentwuerfe und
+Videobeschreibungen verwendet einen davon getrennten Schluessel. Compose bindet
+standardmaessig `/etc/q-academy/ai-api-key` ausschliesslich in den App-Container;
+`create_host_path: false` verlangt, dass die Datei bereits vor dem ersten Start
+existiert. Der Host-Pfad wird mit `AI_API_KEY_SOURCE_FILE` gesetzt. Er muss eine
+regulaere Nicht-Symlink-Datei mit Owner `1001:1001`, Modus `0400` und hoechstens
+16 KiB sein. Der Release-, Reconcile- und Rollback-Pfad prueft diesen Vertrag.
+Eine leere Datei deaktiviert externe KI kontrolliert; Kernfunktionen bleiben im
+Fallback verfuegbar. Ein bisheriger Inline-Wert `AI_API_KEY` muss aus der
+Produktionsumgebung entfernt werden.
+
+Erstellung oder Rotation erfolgt atomar und ohne Ausgabe des Schluessels. Die
+Quelldatei im ersten Befehl muss bereits root-only lesbar sein:
+
+```bash
+sudo install -d -o root -g root -m 0755 /etc/q-academy
+sudo install -o 1001 -g 1001 -m 0400 \
+  /geschuetzte/operatorquelle/ai-api-key \
+  /etc/q-academy/.ai-api-key.new
+sudo mv -f /etc/q-academy/.ai-api-key.new /etc/q-academy/ai-api-key
+test "$(stat -c '%u:%g:%a' /etc/q-academy/ai-api-key)" = "1001:1001:400"
+```
+
+Zum Deaktivieren wird derselbe Ablauf mit einer leeren root-only Quelldatei
+verwendet. Danach App neu deployen beziehungsweise neu starten und
+`npm run ai:course-provider:preflight` nur bei bewusst aktivierter externer KI
+ausfuehren. Ein Rollback verwendet weiterhin die aktuell montierte Datei; eine
+Schluesselrotation muss bei Bedarf separat auf die vorherige Datei
+zurueckgedreht werden. Der Transkriptionsschluessel bleibt in der oben
+beschriebenen separaten Datei und wird niemals in den App-Container gemountet.
+
 ```bash
 docker compose --env-file "$Q_ACADEMY_ENV_FILE" -f compose.production.yml \
   --profile operations run --rm --no-deps s3-app-principal-preflight \

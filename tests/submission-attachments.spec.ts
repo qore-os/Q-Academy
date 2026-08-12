@@ -5,6 +5,9 @@ import { dirname, resolve } from "node:path";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import postgres from "postgres";
 
+import { getLearningUiCopy } from "../src/lib/i18n/learning";
+import { getMediaUploadCopy } from "../src/lib/i18n/media-upload";
+import { dropFiles } from "./helpers/media-drop";
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 import { fetchMediaDownload } from "./helpers/media-download";
 
@@ -14,6 +17,12 @@ const databaseUrl =
 const apiAuthorization = {
   Authorization: `Bearer ${process.env.DEMO_API_KEY ?? "qak_demo_qacademy_2026_local_development"}`,
 };
+const mediaFilesystemRoot = resolve(
+  process.cwd(),
+  process.env.MEDIA_FILESYSTEM_ROOT?.trim() || ".data/media",
+);
+const learningCopy = getLearningUiCopy("de");
+const uploadCopy = getMediaUploadCopy("de");
 
 async function loginAsAdmin(page: Page) {
   await page.context().clearCookies();
@@ -81,6 +90,7 @@ test("ready media attachments bind atomically and remain downloadable for owner 
   let moduleId = "";
   let lessonId = "";
   let uploadedAssetId = "";
+  let extraUploadedAssetId = "";
   const blockIds: string[] = [];
   const mediaIds: string[] = [];
   const mediaStoragePaths: string[] = [];
@@ -98,9 +108,7 @@ test("ready media attachments bind atomically and remain downloadable for owner 
     const storageKey = `tenants/${input.organizationId}/assets/${id}/ready.txt`;
     if (uploaded) {
       const storagePath = resolve(
-        process.cwd(),
-        ".data",
-        "media",
+        mediaFilesystemRoot,
         ...storageKey.split("/"),
       );
       await mkdir(dirname(storagePath), { recursive: true });
@@ -410,13 +418,143 @@ test("ready media attachments bind atomically and remain downloadable for owner 
     await loginAsMember(page, memberEmail);
     await page.goto(`/academy/courses/${courseSlug}/learn/${lessonId}`);
     const uploadSection = page.getByRole("heading", { name: "UI Upload" }).locator("..");
-    await uploadSection.locator('input[type="file"]').setInputFiles({
-      name: "praxis-nachweis.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from(
-        "Nachweis fuer den sicheren Browser-Upload mit vollstaendiger Inhaltspruefung.\n",
-      ),
+    const uploadDropTarget = uploadSection
+      .getByText(learningCopy("attachments.choose"), { exact: true })
+      .locator("../..");
+    const primaryName = "praxis-nachweis.txt";
+    const extraName = "zusaetzlicher-nachweis.txt";
+    let failedCreateAttempts = 0;
+    const createRoute = "**/api/media-assets";
+    await page.route(createRoute, async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const body = route.request().postDataJSON() as {
+        originalFileName?: string;
+      };
+      if (
+        body.originalFileName === primaryName &&
+        failedCreateAttempts < 4
+      ) {
+        failedCreateAttempts += 1;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/problem+json",
+          body: JSON.stringify({
+            detail: "Der Upload-Dienst ist voruebergehend nicht verfuegbar.",
+          }),
+        });
+        return;
+      }
+      await route.continue();
     });
+    await dropFiles(page, uploadDropTarget, [
+      {
+        name: primaryName,
+        mimeType: "text/plain",
+        buffer: Buffer.from(
+          "Nachweis fuer den sicheren Browser-Upload mit vollstaendiger Inhaltspruefung.\n",
+        ),
+      },
+      {
+        name: extraName,
+        mimeType: "text/plain",
+        buffer: Buffer.from("Zusaetzlicher Nachweis fuer einen Mehrfach-Drop.\n"),
+      },
+    ]);
+    const primaryEntry = uploadSection.getByText(primaryName, { exact: true }).locator("../..");
+    const extraEntry = uploadSection.getByText(extraName, { exact: true }).locator("../..");
+    await expect(extraEntry.getByText(/Bereit \|/)).toBeVisible({ timeout: 30_000 });
+    const retryPrimary = primaryEntry.getByRole("button", {
+      name: learningCopy("attachments.retryNamed", { name: primaryName }),
+    });
+    await expect(retryPrimary).toBeVisible({ timeout: 15_000 });
+    expect(failedCreateAttempts).toBe(4);
+    await retryPrimary.click();
+    await expect(primaryEntry.getByText(/Bereit \|/)).toBeVisible({
+      timeout: 30_000,
+    });
+    const readyBrowserAssetIds = await uploadSection
+      .locator('input[name="attachmentIds"]')
+      .evaluateAll((inputs) =>
+        inputs.map((input) => (input as HTMLInputElement).value),
+    );
+    expect(readyBrowserAssetIds).toHaveLength(2);
+    uploadedAssetId = readyBrowserAssetIds[0]!;
+    extraUploadedAssetId = readyBrowserAssetIds[1]!;
+    await page.unroute(createRoute);
+    await extraEntry
+      .getByRole("button", {
+        name: learningCopy("attachments.removeNamed", { name: extraName }),
+      })
+      .click();
+    await expect(uploadSection.getByText(extraName, { exact: true })).toHaveCount(0);
+
+    const overflowFiles = Array.from({ length: 10 }, (_, index) => ({
+      name: `limit-${index + 1}.txt`,
+      mimeType: "text/plain",
+      buffer: Buffer.from(`Nichtleere Limitdatei ${index + 1}.\n`),
+    }));
+    const overflowNames = new Set(overflowFiles.map((file) => file.name));
+    const overflowRoute = "**/api/media-assets";
+    await page.route(overflowRoute, async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const body = route.request().postDataJSON() as {
+        originalFileName?: string;
+      };
+      if (!body.originalFileName || !overflowNames.has(body.originalFileName)) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 422,
+        contentType: "application/problem+json",
+        body: JSON.stringify({
+          detail: "Deterministic terminal upload rejection for the limit test.",
+        }),
+      });
+    });
+    await dropFiles(page, uploadDropTarget, overflowFiles);
+    await expect(
+      uploadSection.getByText(
+        learningCopy("attachments.maxFiles", { count: 10 }),
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(uploadDropTarget.getByText("10/10", { exact: true })).toBeVisible();
+    await expect(
+      uploadSection.getByText(overflowFiles[8]!.name, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      uploadSection.getByText(overflowFiles[9]!.name, { exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      uploadSection.getByRole("button", {
+        name: learningCopy("recorder.start"),
+      }),
+    ).toBeDisabled();
+    for (const file of overflowFiles.slice(0, 9)) {
+      await uploadSection
+        .getByRole("button", {
+          name: learningCopy("attachments.removeNamed", { name: file.name }),
+        })
+        .click();
+      await expect(
+        uploadSection.getByText(file.name, { exact: true }),
+      ).toHaveCount(0);
+    }
+    await page.unroute(overflowRoute);
+    await expect(uploadDropTarget.getByText("1/10", { exact: true })).toBeVisible();
+    await expect(
+      uploadSection.getByRole("button", {
+        name: learningCopy("recorder.start"),
+      }),
+    ).toBeEnabled();
+    await expect(uploadSection.getByText(uploadCopy.dropActiveMultiple)).toHaveCount(0);
     await expect(uploadSection.getByText(/Bereit \|/)).toBeVisible({ timeout: 30_000 });
     const readyScreenshot = `.data/submission-upload-ready-${testInfo.project.name}.png`;
     await page.screenshot({ path: readyScreenshot, fullPage: true });
@@ -456,10 +594,11 @@ test("ready media attachments bind atomically and remain downloadable for owner 
     ).toBeVisible();
     const memberLink = page.getByRole("link", { name: /praxis-nachweis\.txt/ });
     await expect(memberLink).toBeVisible();
-    uploadedAssetId = new URL(
+    const submittedAssetId = new URL(
       await memberLink.getAttribute("href") as string,
       "http://127.0.0.1:3000",
     ).pathname.split("/")[3]!;
+    expect(submittedAssetId).toBe(uploadedAssetId);
     const [fileOnlySubmission] = await sql<
       Array<{ content: string | null; attachment_count: number }>
     >`
@@ -504,10 +643,27 @@ test("ready media attachments bind atomically and remain downloadable for owner 
     for (const requestId of requestIds.filter(Boolean)) {
       await sql`delete from api_audit_logs where request_id = ${requestId}`;
     }
+    const browserAssetIds = [uploadedAssetId, extraUploadedAssetId].filter(Boolean);
+    if (browserAssetIds.length) {
+      const browserStorage = await sql<
+        Array<{ storage_key: string; staging_storage_key: string }>
+      >`
+        select storage_key, staging_storage_key
+        from media_assets
+        where id in ${sql(browserAssetIds)}
+      `;
+      mediaStoragePaths.push(
+        ...browserStorage.flatMap((row) =>
+          [row.storage_key, row.staging_storage_key].map((key) =>
+            resolve(mediaFilesystemRoot, ...key.split("/")),
+          ),
+        ),
+      );
+    }
     if (courseId) await sql`delete from courses where id = ${courseId}`;
     if (moduleId) await sql`delete from modules where id = ${moduleId}`;
-    if (mediaIds.length || uploadedAssetId) {
-      const ids = [...mediaIds, uploadedAssetId].filter(Boolean);
+    if (mediaIds.length || browserAssetIds.length) {
+      const ids = [...mediaIds, ...browserAssetIds];
       await sql`delete from activity_events where entity_id in ${sql(ids)}`;
       await sql`delete from media_assets where id in ${sql(ids)}`;
     }

@@ -14,11 +14,14 @@ import {
   getCommunityNotificationCopy,
   resolveCommunityActionMessage,
 } from "../src/lib/i18n/community-actions";
+import { getMainPageDictionary } from "../src/lib/i18n/main-pages";
 import { ensureCommunityAreaFixture } from "./helpers/community-area";
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
+import { dropFiles } from "./helpers/media-drop";
 import { fetchMediaDownload } from "./helpers/media-download";
 
 const notificationCopy = getCommunityNotificationCopy("de");
+const communityCopy = getMainPageDictionary("de").academy.communityUi;
 const publishedPostMessage = resolveCommunityActionMessage("de", {
   code: "contentCreated",
   params: { target: "post", moderationState: "published" },
@@ -322,7 +325,10 @@ test("community rich media binds atomically and follows restricted-space rights"
     await page.getByRole("button", { name: /Teile eine Frage/ }).click();
     const composer = page.getByRole("dialog", { name: "Neuer Beitrag" });
     await composer.locator('select[name="spaceId"]').selectOption(spaceId);
-    await composer.locator('input[type="file"]').setInputFiles([
+    const attachmentDropTarget = composer
+      .getByText(communityCopy.attachments.chooseFile, { exact: true })
+      .locator("../..");
+    await dropFiles(page, attachmentDropTarget, [
       { name: imageName, mimeType: "image/png", buffer: png },
       {
         name: documentName,
@@ -354,6 +360,7 @@ test("community rich media binds atomically and follows restricted-space rights"
     await expect(
       composer.getByText(publishedPostMessage, { exact: true }),
     ).toBeVisible();
+    await expect(composer.locator('input[name="attachmentIds"]')).toHaveCount(0);
     await composer.getByRole("button", { name: "Dialog schliessen" }).click();
     await expect(composer).toBeHidden();
 
@@ -1691,7 +1698,10 @@ test("community attachment composer stays inside the mobile viewport", async ({
     await page.goto("/academy/community");
     await page.getByRole("button", { name: /Teile eine Frage/ }).click();
     const dialog = page.getByRole("dialog", { name: "Neuer Beitrag" });
-    await dialog.locator('input[type="file"]').setInputFiles([
+    const attachmentDropTarget = dialog
+      .getByText(communityCopy.attachments.chooseFile, { exact: true })
+      .locator("../..");
+    await dropFiles(page, attachmentDropTarget, [
       {
         name: `${"sehr-langer-community-bildname-".repeat(4)}${suffix}.png`,
         mimeType: "image/png",

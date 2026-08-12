@@ -16,6 +16,7 @@ import {
   sourcePositionToPlaybackOffset,
 } from "@/lib/media/video-playback-policy";
 import { sanitizeVideoEndCard } from "@/lib/media/video-end-card";
+import { videoPosterUrl } from "@/lib/media/video-poster";
 import {
   parseVideoPlaybackRatePreference,
   videoPlaybackRatePreference,
@@ -43,6 +44,7 @@ export function VideoTranscriptPlayer({
   endCard,
   mediaAssetId,
   transcodeJobId,
+  poster,
   courseId,
   courseSlug,
   lessonId,
@@ -58,6 +60,7 @@ export function VideoTranscriptPlayer({
   endCard?: unknown;
   mediaAssetId?: string;
   transcodeJobId?: string;
+  poster?: unknown;
   courseId?: string;
   courseSlug?: string;
   lessonId?: string;
@@ -456,11 +459,7 @@ export function VideoTranscriptPlayer({
           controls
           preload="metadata"
           playsInline
-          poster={
-            mediaAssetId
-              ? `/api/media-assets/${mediaAssetId}/derivatives/thumbnail`
-              : undefined
-          }
+          poster={videoPosterUrl(mediaAssetId, poster)}
           onLoadedMetadata={onLoadedMetadata}
           onError={() => {
             if (!transcodeJobId) return;

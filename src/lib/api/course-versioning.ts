@@ -15,6 +15,8 @@ import {
   lessons,
   moduleSections,
   modules,
+  mediaAssetDerivatives,
+  mediaAssets,
   mediaProcessingJobs,
   users,
   type CourseVersionSnapshot,
@@ -40,6 +42,7 @@ import {
   boundVideoCompositionMatchesDocument,
   sanitizeVideoComposition,
 } from "@/lib/media/video-composition";
+import { sanitizeVideoPoster } from "@/lib/media/video-poster";
 import { fulfillLessonAvailabilitySubscriptions } from "@/lib/lesson-availability-service";
 import { isValidPublishedCourseSnapshot } from "@/lib/course-snapshot-validation";
 import {
@@ -357,7 +360,9 @@ export async function buildCourseVersionSnapshot(
           !renderJob ||
           renderJob.status !== "succeeded" ||
           renderJob.type !== "transcode" ||
-          renderJob.options.videoCompositionCourseId !== course.id ||
+          (renderJob.options.videoCompositionBlockId
+            ? renderJob.options.videoCompositionBlockId !== block.id
+            : renderJob.options.videoCompositionCourseId !== course.id) ||
           renderJob.sourceAssetId !== block.data.mediaAssetId ||
           !boundVideoCompositionMatchesDocument(
             renderJob.options.videoComposition,
@@ -371,6 +376,111 @@ export async function buildCourseVersionSnapshot(
             "Eine Video-Mehrspur-Komposition ist noch nicht erfolgreich gerendert.",
           );
         }
+      }
+    }
+
+    const framePosters = blockRows.flatMap((block) => {
+      if (block.type !== "video" || !block.data.videoPoster) return [];
+      const poster = sanitizeVideoPoster(block.data.videoPoster);
+      if (!poster) {
+        throw new ApiError(
+          422,
+          "validation_error",
+          "Ein Video besitzt eine ungueltige Vorschaubild-Auswahl.",
+        );
+      }
+      return poster.source === "frame"
+        ? [{ block, atMilliseconds: poster.atMilliseconds }]
+        : [];
+    });
+    if (framePosters.length) {
+      const sourceAssetIds = [
+        ...new Set(
+          framePosters.flatMap(({ block }) =>
+            block.data.mediaAssetId ? [block.data.mediaAssetId] : [],
+          ),
+        ),
+      ];
+      if (sourceAssetIds.length !== new Set(framePosters.map(({ block }) => block.data.mediaAssetId)).size ||
+          framePosters.some(({ block }) => !block.data.mediaAssetId)) {
+        throw new ApiError(
+          422,
+          "validation_error",
+          "Ein Frame-Vorschaubild benoetigt ein geprueftes Video-Asset.",
+        );
+      }
+      const [sourceAssets, thumbnailRows] = await Promise.all([
+        transaction
+          .select({
+            id: mediaAssets.id,
+            durationMilliseconds: mediaAssets.durationMilliseconds,
+          })
+          .from(mediaAssets)
+          .where(
+            and(
+              eq(mediaAssets.organizationId, course.organizationId),
+              eq(mediaAssets.kind, "video"),
+              eq(mediaAssets.status, "ready"),
+              inArray(mediaAssets.id, sourceAssetIds),
+            ),
+          )
+          .for("share"),
+        transaction
+          .select({
+            sourceAssetId: mediaProcessingJobs.sourceAssetId,
+            options: mediaProcessingJobs.options,
+          })
+          .from(mediaProcessingJobs)
+          .innerJoin(
+            mediaAssetDerivatives,
+            and(
+              eq(
+                mediaAssetDerivatives.processingJobId,
+                mediaProcessingJobs.id,
+              ),
+              eq(
+                mediaAssetDerivatives.organizationId,
+                mediaProcessingJobs.organizationId,
+              ),
+              eq(mediaAssetDerivatives.kind, "thumbnail"),
+            ),
+          )
+          .where(
+            and(
+              eq(mediaProcessingJobs.organizationId, course.organizationId),
+              eq(mediaProcessingJobs.type, "thumbnail"),
+              eq(mediaProcessingJobs.status, "succeeded"),
+              inArray(mediaProcessingJobs.sourceAssetId, sourceAssetIds),
+            ),
+          )
+          .for("share", { of: mediaProcessingJobs }),
+      ]);
+      const durations = new Map(
+        sourceAssets.map((asset) => [asset.id, asset.durationMilliseconds]),
+      );
+      const availableFrames = new Set(
+        thumbnailRows.flatMap((row) =>
+          Number.isSafeInteger(row.options.atMilliseconds)
+            ? [`${row.sourceAssetId}:${row.options.atMilliseconds}`]
+            : [],
+        ),
+      );
+      if (
+        framePosters.some(({ block, atMilliseconds }) => {
+          const mediaAssetId = block.data.mediaAssetId!;
+          const duration = durations.get(mediaAssetId);
+          return (
+            !duration ||
+            atMilliseconds >= duration ||
+            !availableFrames.has(`${mediaAssetId}:${atMilliseconds}`)
+          );
+        })
+      ) {
+        throw new ApiError(
+          422,
+          "validation_error",
+          "Das gewaehlte Video-Vorschaubild wurde noch nicht erfolgreich erzeugt.",
+        );
       }
     }
   }

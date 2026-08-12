@@ -465,7 +465,7 @@ services:
       MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS: ${MEDIA_SIGNED_DOWNLOAD_TTL_SECONDS:-900}
       MEDIA_CLAMAV_HOST: clamav
       MEDIA_CLAMAV_PORT: "3310"
-      AI_API_KEY: ${AI_API_KEY:-}
+      AI_API_KEY_FILE: /run/secrets/q-academy-ai-api-key
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
       AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
       STOCK_IMAGE_PROVIDER_NAME: ${STOCK_IMAGE_PROVIDER_NAME:-}
@@ -487,6 +487,12 @@ services:
           - tls-ask-app
     volumes:
       - next_cache:/app/.next/cache
+      - type: bind
+        source: ${AI_API_KEY_SOURCE_FILE:-/etc/q-academy/ai-api-key}
+        target: /run/secrets/q-academy-ai-api-key
+        read_only: true
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs:
       - /tmp:size=128m,mode=1777

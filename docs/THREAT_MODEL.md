@@ -651,7 +651,9 @@ Ausfuehrung einer Agentenaktion.
 
 Kontrollen:
 
-- Externe KI ist ohne `AI_API_KEY` deaktiviert; LMS-Kernfunktionen verwenden
+- Externe KI ist ohne gueltige `AI_API_KEY_FILE`-Datei deaktiviert;
+  Produktion mountet sie nur in den App-Container und akzeptiert keinen
+  Inline-Schluessel. LMS-Kernfunktionen verwenden
   deterministische Fallbacks.
 - Q-Coach-Inhalte werden serverseitig aus tatsaechlich freigeschalteten,
   versionierten Kursen erzeugt; interne Links werden validiert.

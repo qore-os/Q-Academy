@@ -310,6 +310,28 @@ a {
   }
 }
 
+@keyframes media-upload-indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(360%);
+  }
+}
+
+.media-upload-indeterminate {
+  width: 28%;
+  animation: media-upload-indeterminate 1.15s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-upload-indeterminate {
+    width: 100%;
+    animation: q-pulse 2.2s ease-in-out infinite;
+  }
+}
+
 .status-live-dot {
   animation: q-pulse 2.2s ease-in-out infinite;
 }

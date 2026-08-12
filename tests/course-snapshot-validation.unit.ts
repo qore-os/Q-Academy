@@ -196,6 +196,40 @@ test("published block revisions are optional for legacy data but positive when p
   );
 });
 
+test("published video poster selections are versioned and validated", () => {
+  const base = strictV4Snapshot();
+  const withPoster = (videoPoster: unknown) => ({
+    ...base,
+    modules: base.modules.map((learningModule) => ({
+      ...learningModule,
+      sections: learningModule.sections.map((section) => ({
+        ...section,
+        lessons: [
+          lesson({
+            blocks: [{ type: "video", data: { videoPoster } }],
+          }),
+        ],
+      })),
+    })),
+  });
+  assert.equal(
+    isValidPublishedCourseSnapshot(
+      withPoster({ version: 1, source: "frame", atMilliseconds: 1_000 }),
+      courseId,
+      organizationId,
+    ),
+    true,
+  );
+  assert.equal(
+    isValidPublishedCourseSnapshot(
+      withPoster({ version: 1, source: "frame", atMilliseconds: -1 }),
+      courseId,
+      organizationId,
+    ),
+    false,
+  );
+});
+
 test("unknown schema and access policy versions fail closed", () => {
   assert.equal(
     isValidPublishedCourseSnapshot(

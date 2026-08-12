@@ -8,6 +8,7 @@ import { mediaAssets } from "@/db/schema";
 import { mediaAssetIdentity, type MediaAsset } from "@/lib/media/asset-service";
 import { deleteStoredMediaObject } from "@/lib/media/storage";
 import { getMediaStorageConfiguration } from "@/lib/server-environment";
+import { lockPrivacyLegalHoldSubjects } from "@/lib/privacy/legal-hold-lock";
 
 type PrivacyTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -237,6 +238,9 @@ export async function applyMemberErasure(input: {
 }) {
   const { tx, organizationId, subjectUserId, mediaPlan, now } = input;
   const nowIso = now.toISOString();
+  await lockPrivacyLegalHoldSubjects(tx, [
+    { organizationId, subjectReference: input.subjectReference },
+  ]);
   const counts: Record<string, number> = {};
 
   counts.credentials = await mutationCount(tx, sql<{ count: number }>`
@@ -511,7 +515,8 @@ export async function applyMemberErasure(input: {
     select (
       (select count(*) from submissions_deleted) + (select count(*) from attempts) +
       (select count(*) from learning_time) + (select count(*) from media_playback) +
-      (select count(*) from processing_jobs) + (select count(*) from progress) +
+      (select count(*) from processing_jobs) +
+      (select count(*) from progress) +
       (select count(*) from subscriptions) + (select count(*) from bookmarks) +
       (select count(*) from enrollments_deleted) + (select count(*) from certificates) +
       (select count(*) from feedback_deleted) + (select count(*) from attendees) +
@@ -684,6 +689,8 @@ export async function applyMemberErasure(input: {
         scanClaimedAt: null,
         scanLeaseExpiresAt: null,
         scanNextRetryAt: null,
+        directUploadClaimToken: null,
+        directUploadClaimedAt: null,
         scanFailureCode: "privacy_erasure",
         scanFailureDetail: null,
         malwareSignature: null,
@@ -719,6 +726,33 @@ export async function applyMemberErasure(input: {
         ),
       );
   }
+
+  counts.learning += await mutationCount(tx, sql<{ count: number }>`
+    with changed as (
+      update video_description_jobs
+      set requested_by_id = null,
+          requester_subject_reference = case
+            when exists (
+              select 1 from privacy_legal_holds hold
+              where hold.organization_id = ${organizationId}
+                and hold.subject_reference = ${input.subjectReference}
+                and hold.scope in ('all', 'learning', 'audit')
+                and hold.released_at is null
+                and hold.starts_at <= ${nowIso}
+                and (hold.expires_at is null or hold.expires_at > ${nowIso})
+            ) then requester_subject_reference
+            else null
+          end,
+          updated_at = ${nowIso}
+      where organization_id = ${organizationId}
+        and (
+          requested_by_id = ${subjectUserId}
+          or requester_subject_reference = ${input.subjectReference}
+        )
+      returning 1
+    )
+    select count(*)::integer as count from changed
+  `);
 
   counts.audit = await mutationCount(tx, sql<{ count: number }>`
     with

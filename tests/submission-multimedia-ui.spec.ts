@@ -1,11 +1,73 @@
 import { expect, test, type Page } from "@playwright/test";
 import postgres from "postgres";
 
+import { getLearningUiCopy } from "../src/lib/i18n/learning";
+import { dropFiles } from "./helpers/media-drop";
 import { completeMemberWelcomeIfVisible } from "./helpers/member-welcome";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
+const learningCopy = getLearningUiCopy("de");
+
+async function installDeterministicRecorder(page: Page) {
+  await page.addInitScript(() => {
+    class FakeMediaStreamTrack {
+      onended: (() => void) | null = null;
+
+      stop() {}
+    }
+
+    class FakeMediaStream {
+      private readonly track = new FakeMediaStreamTrack();
+
+      getTracks() {
+        return [this.track];
+      }
+    }
+
+    class FakeMediaRecorder {
+      static isTypeSupported() {
+        return true;
+      }
+
+      state: "inactive" | "recording" = "inactive";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onstop: (() => void) | null = null;
+      private readonly mimeType: string;
+
+      constructor(_stream: unknown, options?: { mimeType?: string }) {
+        this.mimeType = options?.mimeType ?? "audio/webm";
+      }
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        if (this.state === "inactive") return;
+        this.state = "inactive";
+        this.ondataavailable?.({
+          data: new Blob(["recorded-media"], { type: this.mimeType }),
+        });
+        this.onstop?.();
+      }
+    }
+
+    Object.defineProperty(window, "MediaRecorder", {
+      configurable: true,
+      value: FakeMediaRecorder,
+    });
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: async () => new FakeMediaStream(),
+        getDisplayMedia: async () => new FakeMediaStream(),
+      },
+    });
+  });
+}
 
 async function loginAsMember(page: Page) {
   await page.goto("/login");
@@ -40,6 +102,7 @@ test("multimedia submission and review controls remain usable responsively", asy
   let submissionId = "";
 
   try {
+    await installDeterministicRecorder(page);
     const fixtures = await sql<
       Array<{
         organization_id: string;
@@ -139,6 +202,66 @@ test("multimedia submission and review controls remain usable responsively", asy
     await expect(
       page.getByRole("button", { name: "Bildschirm" }),
     ).toBeVisible();
+
+    const uploader = page
+      .getByText(learningCopy("attachments.choose"), { exact: true })
+      .first()
+      .locator("../..");
+    const fileInput = uploader.locator('input[type="file"][multiple]').first();
+    let blockedUploadRequests = 0;
+    const countBlockedUpload = (request: import("@playwright/test").Request) => {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/api/media-assets"
+      ) {
+        blockedUploadRequests += 1;
+      }
+    };
+    page.on("request", countBlockedUpload);
+    await uploader
+      .getByRole("button", { name: learningCopy("recorder.start") })
+      .click();
+    await expect(
+      uploader.getByRole("button", { name: learningCopy("recorder.stop") }),
+    ).toBeVisible();
+    await expect(fileInput).toBeDisabled();
+    await dropFiles(page, uploader, [
+      {
+        name: "blocked-while-recording.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("This file must not be queued while recording."),
+      },
+    ]);
+    await expect(
+      uploader.getByText("blocked-while-recording.txt", { exact: true }),
+    ).toHaveCount(0);
+    expect(blockedUploadRequests).toBe(0);
+
+    await page.waitForTimeout(50);
+    await uploader
+      .getByRole("button", { name: learningCopy("recorder.stop") })
+      .click();
+    await expect(
+      uploader.getByRole("button", { name: learningCopy("recorder.discard") }),
+    ).toBeVisible();
+    await expect(fileInput).toBeDisabled();
+    await dropFiles(page, uploader, [
+      {
+        name: "blocked-by-recording-preview.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("This file must not be queued while previewing."),
+      },
+    ]);
+    await expect(
+      uploader.getByText("blocked-by-recording-preview.txt", { exact: true }),
+    ).toHaveCount(0);
+    expect(blockedUploadRequests).toBe(0);
+    await uploader
+      .getByRole("button", { name: learningCopy("recorder.discard") })
+      .click();
+    await expect(fileInput).toBeEnabled();
+    page.off("request", countBlockedUpload);
+
     await expectNoHorizontalOverflow(page);
     await page.screenshot({
       path: `artifacts/submission-recorder-${testInfo.project.name}.png`,

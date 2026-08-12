@@ -1,16 +1,22 @@
 "use client";
 
-import { CheckCircle2, LoaderCircle, ShieldAlert, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, LoaderCircle, RefreshCw, ShieldAlert, Trash2, Upload } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import {
   deleteBrowserSessionMediaAsset,
   discardBrowserSessionMediaAsset,
+  isTerminalSessionMediaUploadError,
   uploadBrowserSessionMedia,
+  type DirectPostUploadResume,
+  type BrowserSessionTransferStatus,
 } from "@/lib/media/browser-session-upload";
+import { UploadTransferIndicator } from "@/components/media/upload-transfer-indicator";
 import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { getMemberExperienceCopy } from "@/lib/i18n/member-experience";
+import { getMediaUploadCopy } from "@/lib/i18n/media-upload";
 import type { AppLocale } from "@/lib/i18n/model";
+import { useFileDrop } from "@/lib/use-file-drop";
 import { cn } from "@/lib/utils";
 
 type ImagePurpose = "avatar" | "branding";
@@ -48,11 +54,17 @@ export function ImageAssetUploadField({
   onSourceChange?: (source: string | null) => void;
 }) {
   const copy = getMemberExperienceCopy(locale).media;
+  const uploadCopy = getMediaUploadCopy(locale);
   const inputId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const newAssetIdRef = useRef("");
+  const retryUploadRef = useRef<{
+    file: File;
+    clientUploadId: string;
+    directPostResume: DirectPostUploadResume | null;
+  } | null>(null);
   const [assetId, setAssetId] = useState(initialAssetId ?? "");
   const [newAssetId, setNewAssetId] = useState("");
   const [source, setSource] = useState(initialSource ?? null);
@@ -60,8 +72,10 @@ export function ImageAssetUploadField({
   const [state, setState] = useState<UploadState>(
     initialSource ? "ready" : "idle",
   );
-  const [progress, setProgress] = useState(0);
+  const [, setProgress] = useState(0);
+  const [transferStatus, setTransferStatus] = useState<BrowserSessionTransferStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [canRetry, setCanRetry] = useState(false);
   const [clear, setClear] = useState(false);
 
   const replaceObjectUrl = (next: string | null) => {
@@ -84,7 +98,13 @@ export function ImageAssetUploadField({
     [],
   );
 
-  const select = async (file: File | undefined) => {
+  const select = async (
+    file: File | undefined,
+    resume?: Readonly<{
+      clientUploadId: string;
+      directPostResume: DirectPostUploadResume | null;
+    }>,
+  ) => {
     if (!file) return;
     if (!file.type || file.size <= 0) {
       setState("error");
@@ -92,7 +112,7 @@ export function ImageAssetUploadField({
       return;
     }
     controllerRef.current?.abort();
-    if (newAssetId) {
+    if (!resume && newAssetId) {
       await deleteBrowserSessionMediaAsset(newAssetId).catch(() => undefined);
     }
     const controller = new AbortController();
@@ -104,17 +124,35 @@ export function ImageAssetUploadField({
     setNewAssetId("");
     setFileName(file.name);
     setProgress(0);
+    setTransferStatus(null);
     setState("preparing");
     setError(null);
     setClear(false);
+    const clientUploadId = resume?.clientUploadId ?? crypto.randomUUID();
+    retryUploadRef.current = {
+      file,
+      clientUploadId,
+      directPostResume: resume?.directPostResume ?? null,
+    };
+    setCanRetry(true);
     try {
       const ready = await uploadBrowserSessionMedia({
         file,
         purpose,
-        clientUploadId: crypto.randomUUID(),
+        clientUploadId,
+        directPostResume: resume?.directPostResume,
+        onDirectPostResumeChange: (directPostResume) => {
+          if (retryUploadRef.current?.clientUploadId === clientUploadId) {
+            retryUploadRef.current = {
+              ...retryUploadRef.current,
+              directPostResume,
+            };
+          }
+        },
         signal: controller.signal,
         onAssetCreated: (asset) => setNewAssetId(asset.id),
         onProgress: setProgress,
+        onTransferStatus: setTransferStatus,
         onStage: setState,
       });
       if (ready.kind !== "image") {
@@ -125,9 +163,15 @@ export function ImageAssetUploadField({
       setNewAssetId(ready.id);
       setFileName(ready.originalFileName);
       setState("ready");
+      retryUploadRef.current = null;
+      setCanRetry(false);
     } catch (uploadError) {
       if (uploadError instanceof DOMException && uploadError.name === "AbortError") {
         return;
+      }
+      if (isTerminalSessionMediaUploadError(uploadError)) {
+        retryUploadRef.current = null;
+        setCanRetry(false);
       }
       setState("error");
       setError(browserUploadErrorMessage(uploadError, copy.uploadFailed));
@@ -136,6 +180,8 @@ export function ImageAssetUploadField({
 
   const remove = async () => {
     controllerRef.current?.abort();
+    retryUploadRef.current = null;
+    setCanRetry(false);
     if (newAssetId) {
       try {
         await deleteBrowserSessionMediaAsset(newAssetId);
@@ -153,6 +199,7 @@ export function ImageAssetUploadField({
     setSource(null);
     setFileName("");
     setProgress(0);
+    setTransferStatus(null);
     setState("idle");
     setError(null);
     setClear(true);
@@ -160,12 +207,32 @@ export function ImageAssetUploadField({
     if (inputRef.current) inputRef.current.value = "";
   };
 
+  const retryUpload = () => {
+    const pending = retryUploadRef.current;
+    if (!pending) return;
+    void select(pending.file, {
+      clientUploadId: pending.clientUploadId,
+      directPostResume: pending.directPostResume,
+    });
+  };
+
+  const { isDraggingFiles, fileDropProps } = useFileDrop({
+    disabled: disabled || ["preparing", "uploading", "processing"].includes(state),
+    onFiles: (files) => void select(files[0]),
+  });
+
   return (
     <div className="space-y-2">
       <input type="hidden" name={name} value={assetId} />
       <input type="hidden" name={`${name}Clear`} value={clear ? "true" : "false"} />
       <span className="block text-xs font-semibold text-[#52606d]">{label}</span>
-      <div className="brand-radius flex min-h-20 min-w-0 items-center gap-3 border border-[#dce1e5] bg-[#f8fafb] p-3">
+      <div
+        {...fileDropProps}
+        className={cn(
+          "brand-radius flex min-h-20 min-w-0 items-center gap-3 border border-[#dce1e5] bg-[#f8fafb] p-3 transition-colors",
+          isDraggingFiles && "border-[#2b9188] bg-[#edf9f7]",
+        )}
+      >
         <span
           className={cn(
             "brand-radius grid size-14 shrink-0 place-items-center overflow-hidden border border-[#e3e8eb] bg-white text-[#82909b]",
@@ -190,10 +257,14 @@ export function ImageAssetUploadField({
             )}
             aria-live="polite"
           >
-            {state === "preparing"
-              ? copy.preparing
+            {isDraggingFiles
+              ? uploadCopy.dropActiveSingle
+              : state === "preparing"
+                ? copy.preparing
               : state === "uploading"
-                ? copy.uploading(progress)
+                  ? transferStatus?.kind === "determinate"
+                    ? copy.uploading(transferStatus.progress)
+                    : uploadCopy.transferring
                 : state === "processing"
                   ? copy.securityCheck
                   : state === "ready"
@@ -202,16 +273,31 @@ export function ImageAssetUploadField({
                       ? error
                       : copy.formats}
           </span>
-          {state === "uploading" ? (
-            <span className="mt-2 block h-1 overflow-hidden rounded bg-[#dfe7ed]">
-              <span
-                className="block h-full bg-[#2b9188] transition-[width]"
-                style={{ width: `${progress}%` }}
-              />
-            </span>
+          {state === "uploading" && transferStatus ? (
+            <UploadTransferIndicator
+              status={transferStatus}
+              label={
+                transferStatus.kind === "determinate"
+                  ? copy.uploading(transferStatus.progress)
+                  : uploadCopy.transferring
+              }
+              className="mt-2"
+            />
           ) : null}
         </span>
         <span className="flex shrink-0 items-center gap-1">
+          {state === "error" && canRetry ? (
+            <button
+              type="button"
+              onClick={retryUpload}
+              disabled={disabled}
+              className="focus-ring grid size-9 place-items-center rounded-md text-[#71808b] hover:bg-[#edf9f7] hover:text-[var(--theme-teal-text)] disabled:opacity-50"
+              aria-label={copy.upload(label)}
+              title={copy.upload(label)}
+            >
+              <RefreshCw className="size-4" />
+            </button>
+          ) : null}
           <label
             htmlFor={inputId}
             className={cn(

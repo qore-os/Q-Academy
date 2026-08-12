@@ -1092,6 +1092,23 @@ export async function buildUserDataExport(
           )
         order by j.created_at, j.id
       `;
+      const videoDescriptionJobs = await tx`
+        select j.id,
+               case when exists (
+                 select 1 from courses c
+                 where c.id = j.origin_course_id
+                   and c.organization_id = j.organization_id
+               ) then j.origin_course_id end as "originCourseId",
+               j.block_reference_id as "blockReferenceId",
+               j.source_asset_reference_id as "sourceAssetReferenceId", j.status,
+               j.created_at as "createdAt", j.updated_at as "updatedAt",
+               j.completed_at as "completedAt",
+               'requestedBySubject' as relationship
+        from video_description_jobs j
+        where j.organization_id = ${organizationId}
+          and j.requested_by_id = ${userId}
+        order by j.created_at, j.id
+      `;
       const submissionAttachments = await tx`
         select a.id, a.submission_id as "submissionId",
                a.media_asset_id as "mediaAssetId", a.sort_order as "sortOrder",
@@ -2203,6 +2220,7 @@ export async function buildUserDataExport(
             submissionAttachments,
             mediaAssets,
             mediaProcessingJobs,
+            videoDescriptionJobs,
             courseMediaBindings,
             certificates,
           },

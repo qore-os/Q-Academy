@@ -722,6 +722,38 @@ verify_media_work_mount() {
   }
 }
 
+verify_ai_api_key_file() {
+  local env_file="$1"
+  local configured resolved owner mode size inline_value
+
+  configured="$(production_env_value "$env_file" AI_API_KEY_SOURCE_FILE)" || return 1
+  [[ "$configured" == /* && -f "$configured" && ! -L "$configured" ]] || {
+    printf 'AI_API_KEY_SOURCE_FILE must be an existing regular non-symlink file.\n' >&2
+    return 1
+  }
+  resolved="$(readlink -f -- "$configured")" || return 1
+  [[ "$resolved" == "$configured" ]] || {
+    printf 'AI_API_KEY_SOURCE_FILE must resolve to its exact configured path.\n' >&2
+    return 1
+  }
+  owner="$(stat -c '%u:%g' "$configured")" || return 1
+  mode="$(stat -c '%a' "$configured")" || return 1
+  size="$(stat -c '%s' "$configured")" || return 1
+  [[ "$owner" == "1001:1001" && "$mode" == "400" ]] || {
+    printf 'AI_API_KEY_SOURCE_FILE must be owned by 1001:1001 with mode 0400.\n' >&2
+    return 1
+  }
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= 16384 )) || {
+    printf 'AI_API_KEY_SOURCE_FILE must not exceed 16384 bytes.\n' >&2
+    return 1
+  }
+  inline_value="$(awk -F= '$1 == "AI_API_KEY" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")" || return 1
+  [[ -z "$inline_value" ]] || {
+    printf 'AI_API_KEY must be removed from production; use AI_API_KEY_SOURCE_FILE.\n' >&2
+    return 1
+  }
+}
+
 verify_release_environment_security() {
   local env_file="$1"
   local directory directory_mode directory_mode_value resolved_directory

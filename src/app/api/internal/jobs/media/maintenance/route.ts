@@ -34,6 +34,7 @@ export async function POST(request: Request) {
         processed:
           result.cleanedMultipartSessions +
           result.cancelledProcessingJobs +
+          result.reconciledOrbitTransfers +
           result.releasedQuotaAssets +
           result.expired +
           result.expiredUnattachedSubmissionAssets +
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
         timedOut: result.timedOut,
         cleanedMultipartSessions: result.cleanedMultipartSessions,
         cancelledProcessingJobs: result.cancelledProcessingJobs,
+        reconciledOrbitTransfers: result.reconciledOrbitTransfers,
         releasedQuotaAssets: result.releasedQuotaAssets,
         expiredUploads: result.expired,
         expiredUnattachedSubmissionAssets:

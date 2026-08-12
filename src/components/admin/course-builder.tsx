@@ -107,7 +107,10 @@ import {
 import { cn, formatDate, formatDuration } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonClassName } from "@/components/ui/button";
-import { CourseMediaSourceField } from "@/components/admin/course-media-source-field";
+import {
+  CourseMediaSourceField,
+  type CourseMediaSourceSelection,
+} from "@/components/admin/course-media-source-field";
 import { CourseCoverEditor } from "@/components/admin/course-cover-editor";
 import { ReusableModulePicker } from "@/components/admin/reusable-module-picker";
 import { GalleryBlockEditor } from "@/components/admin/gallery-block-editor";
@@ -134,6 +137,10 @@ import type { VideoTranscriptDocument } from "@/lib/content-blocks/video-transcr
 import type { VideoPlaybackPolicy } from "@/lib/media/video-playback-policy";
 import type { VideoEndCard } from "@/lib/media/video-end-card";
 import type { VideoCompositionDocument } from "@/lib/media/video-composition";
+import {
+  videoPosterUrl,
+  type VideoPoster,
+} from "@/lib/media/video-poster";
 import type {
   AccordionDocument,
   CalloutDocument,
@@ -183,9 +190,12 @@ type BlockData = {
   imageUrl?: string;
   videoUrl?: string;
   transcript?: VideoTranscriptDocument;
+  transcriptLanguage?: string;
   videoEndCard?: VideoEndCard;
   videoPlayback?: VideoPlaybackPolicy;
   videoComposition?: VideoCompositionDocument;
+  videoPoster?: VideoPoster;
+  videoDescriptionIntent?: "automatic" | "touched";
   formId?: string;
   audioUrl?: string;
   fileUrl?: string;
@@ -618,6 +628,7 @@ function FormDialog({
 }) {
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending || submitDisabled) return;
     onSubmit(new FormData(event.currentTarget));
   };
   return (
@@ -845,6 +856,8 @@ function BlockEditorFields({
   aiAgents,
   stockImagesEnabled,
   locale,
+  onDescriptionPendingChange,
+  onPosterPendingChange,
 }: {
   block: Block;
   courseId: string;
@@ -852,6 +865,8 @@ function BlockEditorFields({
   aiAgents: CourseBuilderAiAgentOption[];
   stockImagesEnabled: boolean;
   locale: AppLocale;
+  onDescriptionPendingChange?: (pending: boolean) => void;
+  onPosterPendingChange?: (pending: boolean) => void;
 }) {
   const copy = getMainPageDictionary(locale).admin.courseEditor;
   const integrationCopy = getCourseIntegrationCopy(locale);
@@ -874,6 +889,38 @@ function BlockEditorFields({
   const [options, setOptions] = useState(
     data.options ?? [copy.block.optionA, copy.block.optionB],
   );
+  const [videoSourceSelection, setVideoSourceSelection] =
+    useState<CourseMediaSourceSelection>();
+  const activeVideoAssetId =
+    videoSourceSelection === undefined
+      ? data.mediaAssetId
+      : videoSourceSelection.mode === "upload" ||
+          videoSourceSelection.mode === "library"
+        ? videoSourceSelection.selection?.id
+        : undefined;
+  const activeVideoSourceUrl =
+    videoSourceSelection === undefined
+      ? data.videoUrl
+      : videoSourceSelection.mode === "upload" ||
+          videoSourceSelection.mode === "library"
+        ? videoSourceSelection.selection
+          ? `/api/media-assets/${encodeURIComponent(videoSourceSelection.selection.id)}/download`
+          : undefined
+        : videoSourceSelection.url.trim() || undefined;
+  const videoSourceChanged =
+    videoSourceSelection !== undefined &&
+    (activeVideoAssetId !== data.mediaAssetId ||
+      (!activeVideoAssetId && activeVideoSourceUrl !== data.videoUrl));
+  const activeVideoDurationMilliseconds =
+    videoSourceSelection?.mode === "upload" ||
+    videoSourceSelection?.mode === "library"
+      ? videoSourceSelection.selection?.durationMilliseconds
+      : undefined;
+  const videoEditorKey = activeVideoAssetId
+    ? `asset:${activeVideoAssetId}`
+    : activeVideoSourceUrl
+      ? `url:${activeVideoSourceUrl}`
+      : "empty";
   if (block.type === "ai_agent") {
     const currentIsAvailable = aiAgents.some(
       (agent) => agent.id === data.agentId,
@@ -1244,6 +1291,9 @@ function BlockEditorFields({
               defaultUrl={url}
               defaultStockAttribution={data.stockImage?.attribution}
               stockImagesEnabled={stockImagesEnabled}
+              onSourceChange={
+                block.type === "video" ? setVideoSourceSelection : undefined
+              }
             />
           </Field>
         )}
@@ -1259,36 +1309,67 @@ function BlockEditorFields({
         ) : (
           <input type="hidden" name="fileName" value="" />
         )}
-        <Field
-          label={
-            block.type === "image"
-              ? copy.block.imageCaption
-              : copy.block.description
-          }
-        >
-          <textarea
-            name="caption"
-            maxLength={5000}
-            defaultValue={data.caption ?? ""}
-            className={textareaClass}
-          />
-        </Field>
+        {block.type !== "video" ? (
+          <Field
+            label={
+              block.type === "image"
+                ? copy.block.imageCaption
+                : copy.block.description
+            }
+          >
+            <textarea
+              name="caption"
+              maxLength={5000}
+              defaultValue={data.caption ?? ""}
+              className={textareaClass}
+            />
+          </Field>
+        ) : null}
         {block.type === "video" ? (
           <>
             <VideoTranscriptEditor
-              transcript={data.transcript}
-              endCard={data.videoEndCard}
-              playbackPolicy={data.videoPlayback}
-              composition={data.videoComposition}
-              sourceUrl={data.videoUrl}
-              courseId={courseId}
-              locale={locale}
-            />
-            <TranscriptWizardControls
+              key={videoEditorKey}
+              transcript={videoSourceChanged ? undefined : data.transcript}
+              transcriptLanguage={
+                videoSourceChanged ? locale : data.transcriptLanguage
+              }
+              endCard={videoSourceChanged ? undefined : data.videoEndCard}
+              playbackPolicy={
+                videoSourceChanged ? undefined : data.videoPlayback
+              }
+              composition={
+                videoSourceChanged ? undefined : data.videoComposition
+              }
+              poster={videoSourceChanged ? undefined : data.videoPoster}
+              description={videoSourceChanged ? undefined : data.caption}
+              descriptionIntent={
+                videoSourceChanged
+                  ? videoSourceSelection?.mode === "upload"
+                    ? "automatic"
+                    : "touched"
+                  : (data.videoDescriptionIntent ?? "touched")
+              }
+              sourceUrl={activeVideoSourceUrl}
+              sourceAssetId={activeVideoAssetId}
+              sourceDurationMilliseconds={activeVideoDurationMilliseconds}
+              automaticallyLoadTranscript={
+                !videoSourceChanged &&
+                Boolean(activeVideoAssetId)
+              }
+              serverProcessingEnabled={!videoSourceChanged}
               courseId={courseId}
               blockId={block.id}
               locale={locale}
+              onDescriptionPendingChange={onDescriptionPendingChange}
+              onPosterPendingChange={onPosterPendingChange}
             />
+            {!videoSourceChanged && activeVideoAssetId ? (
+              <TranscriptWizardControls
+                courseId={courseId}
+                blockId={block.id}
+                locale={locale}
+              />
+            ) : null}
           </>
         ) : null}
       </>
@@ -1661,6 +1742,7 @@ function BlockPreview({
     return data.videoUrl ? (
       <video
         src={data.videoUrl}
+        poster={videoPosterUrl(data.mediaAssetId, data.videoPoster)}
         controls
         preload="metadata"
         className="aspect-video w-full rounded-md bg-black"
@@ -2269,6 +2351,8 @@ export function CourseBuilder({
     preferredPageId(firstLesson),
   );
   const [dialog, setDialog] = useState<DialogState>(null);
+  const [descriptionPending, setDescriptionPending] = useState(false);
+  const [posterPending, setPosterPending] = useState(false);
   const [aiAgents, setAiAgents] = useState<CourseBuilderAiAgentOption[]>([]);
   const [aiAgentsLoading, setAiAgentsLoading] = useState(true);
   const [aiAgentsError, setAiAgentsError] = useState<string | null>(null);
@@ -4905,8 +4989,10 @@ export function CourseBuilder({
           }
           pending={pending}
           submitDisabled={
-            dialog.block.type === "ai_agent" &&
-            (aiAgentsLoading || aiAgents.length === 0)
+            descriptionPending ||
+            posterPending ||
+            (dialog.block.type === "ai_agent" &&
+              (aiAgentsLoading || aiAgents.length === 0))
           }
           onClose={() => setDialog(null)}
           submitLabel={copy.dialogs.saveChanges}
@@ -4947,6 +5033,8 @@ export function CourseBuilder({
             aiAgents={aiAgents}
             stockImagesEnabled={stockImagesEnabled}
             locale={locale}
+            onDescriptionPendingChange={setDescriptionPending}
+            onPosterPendingChange={setPosterPending}
           />
           <div className="grid gap-3 border-t border-[#e4e8eb] pt-4 sm:grid-cols-3">
             <Field label={copy.dialogs.blockWidth}>

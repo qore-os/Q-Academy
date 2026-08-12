@@ -255,9 +255,9 @@ test("audio multitrack jobs freeze tenant sources and use an explicit derivative
   assert.match(worker, /digest !== identity\.contentSha256/);
   assert.match(worker, /"ffmpeg-multitrack-v1"/);
   assert.match(worker, /"-filter_complex",\s*compositionGraph\.filterComplex/);
-  assert.match(processingRoute, /coursePermissionAllows\(permission, "edit"\)/);
-  assert.match(processingRoute, /canUseVideoCompositionSource/);
-  assert.match(processingRoute, /boundAnywhere/);
+  assert.match(processingRoute, /requireSharedModuleContentPermission/);
+  assert.match(processingRoute, /assertManageableSharedCourseMedia/);
+  assert.match(processingRoute, /blockId: z\.string\(\)\.uuid\(\)/);
   assert.match(actions, /boundVideoCompositionMatchesDocument/);
   assert.match(actions, /renderJob\.options\.videoEdit !== undefined/);
   assert.match(versioning, /renderJob\.options\.videoEdit !== undefined/);
@@ -267,8 +267,14 @@ test("audio multitrack jobs freeze tenant sources and use an explicit derivative
   assert.match(player, /transcodeJobId/);
   assert.match(player, /\?job=\$\{encodeURIComponent\(transcodeJobId\)\}/);
   assert.match(worker, /videoCompositionCourseId/);
+  assert.match(worker, /videoCompositionBlockId/);
+  assert.match(versioning, /videoCompositionBlockId !== block\.id/);
   assert.match(derivativeRoute, /getCourseLearningAccess/);
-  assert.match(derivativeRoute, /publishedSnapshotReferencesVideoComposition/);
+  assert.match(
+    derivativeRoute,
+    /accessibleLessonsReferenceVideoComposition/,
+  );
+  assert.match(derivativeRoute, /access\.lessons\.values\(\)/);
   assert.match(derivativeRoute, /coursePermissionForUser/);
   assert.match(derivativeRoute, /canDownloadVideoCompositionDerivative/);
 });

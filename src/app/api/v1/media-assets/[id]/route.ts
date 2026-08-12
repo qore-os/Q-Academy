@@ -155,6 +155,8 @@ export async function DELETE(request: Request, { params }: Context) {
             scanClaimedAt: null,
             scanLeaseExpiresAt: null,
             scanNextRetryAt: null,
+            directUploadClaimToken: null,
+            directUploadClaimedAt: null,
             updatedAt: now,
           })
           .where(eq(mediaAssets.id, asset.id));

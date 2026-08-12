@@ -59,13 +59,16 @@ import {
 } from "@/lib/media/video-playback-policy";
 import {
   boundVideoCompositionMatchesDocument,
-  canUseVideoCompositionSource,
   sanitizeVideoComposition,
 } from "@/lib/media/video-composition";
 import { videoEndCardFromForm } from "@/lib/media/video-end-card";
 import { getCourseParityCopy } from "@/lib/i18n/course-parity";
 import { getCourseContentDefaults } from "@/lib/i18n/course-content-defaults";
 import { normalizeLocale, type AppLocale } from "@/lib/i18n/model";
+import {
+  enqueueCopiedVideoDescriptionJobsInTransaction,
+  enqueueVideoDescriptionJobInTransaction,
+} from "@/lib/ai/video-description-jobs";
 import { resolveUserLocale } from "@/lib/i18n/server";
 import {
   lockActiveCourseDataForms,
@@ -98,6 +101,21 @@ import {
 import { createModuleWithStructure } from "@/lib/module-creation-service";
 import { assertLearningModuleStructureMutation } from "@/lib/module-structure-service";
 import { canReadCourseMedia } from "@/lib/media/access-policy";
+import {
+  assertManageableSharedCourseMedia,
+  bindSharedCourseMedia,
+  type SharedCourseMediaKind,
+} from "@/lib/media/shared-course-media";
+import { enqueueReadyTranscriptInTransaction } from "@/lib/media/processing-worker";
+import {
+  parseVideoPosterJson,
+  type VideoPoster,
+} from "@/lib/media/video-poster";
+import {
+  collectCourseContentMediaReferences,
+  courseContentDataForCopy,
+  CourseContentCopyReferenceError,
+} from "@/lib/course-content-copy-model";
 import { consumeStockImageSelection } from "@/lib/stock-image-service";
 import { deriveAdminExamQuestionPools } from "@/lib/exam-admin-policy";
 import { examLifecycleConfigurationErrors } from "@/lib/exam-lifecycle-policy";
@@ -1059,6 +1077,11 @@ function parseBlockForm(
       type === "video" ? value(formData, "transcriptVtt") : "";
     const rawVideoComposition =
       type === "video" ? value(formData, "videoComposition") : "";
+    const rawVideoPoster =
+      type === "video" ? value(formData, "videoPoster") : "";
+    const videoPoster = rawVideoPoster
+      ? parseVideoPosterJson(rawVideoPoster)
+      : null;
     let videoComposition: ReturnType<typeof sanitizeVideoComposition>;
     try {
       videoComposition = rawVideoComposition
@@ -1121,7 +1144,8 @@ function parseBlockForm(
           !videoEndCard?.success ||
           !transcriptLanguage.success ||
           (Boolean(rawTranscript) && !transcript) ||
-          (Boolean(rawVideoComposition) && !videoComposition)))
+          (Boolean(rawVideoComposition) && !videoComposition) ||
+          (Boolean(rawVideoPoster) && !videoPoster)))
     ) {
       return {
         error:
@@ -1130,7 +1154,8 @@ function parseBlockForm(
             !videoEndCard?.success ||
             !transcriptLanguage.success ||
             (Boolean(rawTranscript) && !transcript) ||
-            (Boolean(rawVideoComposition) && !videoComposition))
+            (Boolean(rawVideoComposition) && !videoComposition) ||
+            (Boolean(rawVideoPoster) && !videoPoster))
             ? !videoEndCard?.success
               ? getCourseParityCopy(locale).video.endCard.unsafeUrl
               : "Bitte Wiedergaberegeln, WebVTT-Transkript und Sprache pruefen."
@@ -1148,6 +1173,18 @@ function parseBlockForm(
         : {}),
       ...(videoPlayback ? { videoPlayback } : {}),
       ...(videoComposition ? { videoComposition } : {}),
+      ...(videoPoster ? { videoPoster } : {}),
+      ...(type === "video"
+        ? {
+            transcriptLanguage: transcriptLanguage.success
+              ? transcriptLanguage.data.toLowerCase()
+              : locale,
+            videoDescriptionIntent:
+              value(formData, "videoDescriptionIntent") === "automatic"
+                ? ("automatic" as const)
+                : ("touched" as const),
+          }
+        : {}),
     };
     if (mediaUrl?.success) {
       if (type === "image") data.imageUrl = mediaUrl.data;
@@ -1164,6 +1201,17 @@ function parseBlockForm(
       data,
       ...(stockImageSelectionId?.success
         ? { stockImageSelectionId: stockImageSelectionId.data }
+        : {}),
+      ...(type === "video"
+        ? {
+            videoDescriptionIntent:
+              value(formData, "videoDescriptionIntent") === "automatic"
+                ? ("automatic" as const)
+                : ("touched" as const),
+            transcriptLanguage: transcriptLanguage.success
+              ? transcriptLanguage.data.toLowerCase()
+              : locale,
+          }
         : {}),
     };
   }
@@ -1626,6 +1674,51 @@ export async function attachReusableModuleAction(
         dripDays: 0,
         isRequired: module.kind !== "link",
       });
+      if (module.kind !== "link") {
+        const shared = await requireSharedModuleContentPermission(
+          tx,
+          user,
+          course.id,
+          { type: "module", id: module.id },
+        );
+        const moduleBlocks = await tx
+          .select({
+            id: contentBlocks.id,
+            type: contentBlocks.type,
+            data: contentBlocks.data,
+          })
+          .from(contentBlocks)
+          .innerJoin(lessons, eq(lessons.id, contentBlocks.lessonId))
+          .where(
+            and(
+              eq(lessons.organizationId, user.organizationId),
+              eq(lessons.moduleId, module.id),
+            ),
+          )
+          .orderBy(contentBlocks.id)
+          .for("share", { of: contentBlocks });
+        let references;
+        try {
+          references = collectCourseContentMediaReferences(moduleBlocks);
+        } catch (error) {
+          if (error instanceof CourseContentCopyReferenceError) {
+            throw new ApiError(
+              422,
+              "validation_error",
+              "Das wiederverwendbare Modul enthaelt ungueltige Medienverweise.",
+            );
+          }
+          throw error;
+        }
+        await assertManageableSharedCourseMedia(tx, user, {
+          referencedCourseIds: shared.referencedCourseIds,
+          references,
+        });
+        await bindSharedCourseMedia(tx, user, {
+          referencedCourseIds: shared.referencedCourseIds,
+          mediaAssetIds: [...references.keys()],
+        });
+      }
       await tx.insert(activityEvents).values({
         organizationId: user.organizationId,
         userId: user.id,
@@ -2050,6 +2143,7 @@ export async function copyCourseLessonAction(
   formData: FormData,
 ): Promise<CourseBuilderActionResult> {
   const { user } = await requireCoursePermission(sourceCourseId, "edit");
+  const locale = normalizeLocale(await resolveUserLocale(user));
   const parsed = z
     .object({
       sourceCourseId: idSchema,
@@ -2071,7 +2165,7 @@ export async function copyCourseLessonAction(
 
   try {
     const copied = await db.transaction(async (tx) => {
-      await requireSharedModuleContentPermission(
+      const shared = await requireSharedModuleContentPermission(
         tx,
         user,
         parsed.data.targetCourseId,
@@ -2081,9 +2175,11 @@ export async function copyCourseLessonAction(
       const result = await copyLessonToCourseTarget(tx, {
         organizationId: user.organizationId,
         attachedById: user.id,
+        locale,
         sourceCourseId: parsed.data.sourceCourseId,
         sourceLessonId: parsed.data.sourceLessonId,
         targetCourseId: parsed.data.targetCourseId,
+        targetCourseIds: shared.referencedCourseIds,
         targetModuleId: parsed.data.targetModuleId,
         targetSectionId: parsed.data.targetSectionId,
       });
@@ -2097,16 +2193,19 @@ export async function copyCourseLessonAction(
           sourceCourseId: parsed.data.sourceCourseId,
           sourceLessonId: parsed.data.sourceLessonId,
           targetCourseId: parsed.data.targetCourseId,
+          targetCourseIds: shared.referencedCourseIds,
           targetModuleId: parsed.data.targetModuleId,
           targetSectionId: parsed.data.targetSectionId,
           pageCount: result.pageCount,
           blockCount: result.blockCount,
         },
       });
-      return result;
+      return { ...result, targetCourseIds: shared.referencedCourseIds };
     });
     revalidateCourse(parsed.data.sourceCourseId);
-    revalidateCourse(parsed.data.targetCourseId);
+    for (const targetCourseId of copied.targetCourseIds) {
+      revalidateCourse(targetCourseId);
+    }
     const code = "course_content_copy.lesson_copied" as const;
     return {
       ok: true,
@@ -2126,6 +2225,7 @@ export async function copyCourseSectionAction(
   formData: FormData,
 ): Promise<CourseBuilderActionResult> {
   const { user } = await requireCoursePermission(sourceCourseId, "edit");
+  const locale = normalizeLocale(await resolveUserLocale(user));
   const parsed = z
     .object({
       sourceCourseId: idSchema,
@@ -2145,7 +2245,7 @@ export async function copyCourseSectionAction(
 
   try {
     const copied = await db.transaction(async (tx) => {
-      await requireSharedModuleContentPermission(
+      const shared = await requireSharedModuleContentPermission(
         tx,
         user,
         parsed.data.targetCourseId,
@@ -2155,9 +2255,11 @@ export async function copyCourseSectionAction(
       const result = await copySectionToCourseTarget(tx, {
         organizationId: user.organizationId,
         attachedById: user.id,
+        locale,
         sourceCourseId: parsed.data.sourceCourseId,
         sourceSectionId: parsed.data.sourceSectionId,
         targetCourseId: parsed.data.targetCourseId,
+        targetCourseIds: shared.referencedCourseIds,
         targetModuleId: parsed.data.targetModuleId,
       });
       await tx.insert(activityEvents).values({
@@ -2170,16 +2272,19 @@ export async function copyCourseSectionAction(
           sourceCourseId: parsed.data.sourceCourseId,
           sourceSectionId: parsed.data.sourceSectionId,
           targetCourseId: parsed.data.targetCourseId,
+          targetCourseIds: shared.referencedCourseIds,
           targetModuleId: parsed.data.targetModuleId,
           lessonCount: result.lessonCount,
           pageCount: result.pageCount,
           blockCount: result.blockCount,
         },
       });
-      return result;
+      return { ...result, targetCourseIds: shared.referencedCourseIds };
     });
     revalidateCourse(parsed.data.sourceCourseId);
-    revalidateCourse(parsed.data.targetCourseId);
+    for (const targetCourseId of copied.targetCourseIds) {
+      revalidateCourse(targetCourseId);
+    }
     const code = "course_content_copy.section_copied" as const;
     return {
       ok: true,
@@ -2498,18 +2603,33 @@ export async function commandLessonPageAction(
           .where(eq(contentBlocks.pageId, current.id))
           .orderBy(asc(contentBlocks.sortOrder), asc(contentBlocks.id));
         if (sourceBlocks.length) {
-          await tx.insert(contentBlocks).values(
-            sourceBlocks.map((block) => ({
-              lessonId: block.lessonId,
-              pageId: created.id,
-              type: block.type,
-              title: block.title,
-              sortOrder: block.sortOrder,
-              required: block.required,
-              data: block.data,
-              style: block.style,
-            })),
-          );
+          const copiedBlocks = await tx
+            .insert(contentBlocks)
+            .values(
+              sourceBlocks.map((block) => ({
+                lessonId: block.lessonId,
+                pageId: created.id,
+                type: block.type,
+                title: block.title,
+                sortOrder: block.sortOrder,
+                required: block.required,
+                data: courseContentDataForCopy(block.type, block.data),
+                style: block.style,
+              })),
+            )
+            .returning({
+              id: contentBlocks.id,
+              type: contentBlocks.type,
+              data: contentBlocks.data,
+              revision: contentBlocks.revision,
+            });
+          await enqueueCopiedVideoDescriptionJobsInTransaction(tx, {
+            organizationId: user.organizationId,
+            originCourseId: ids.data.courseId,
+            requestedById: user.id,
+            blocks: copiedBlocks,
+            locale: normalizeLocale(await resolveUserLocale(user, tx)),
+          });
         }
         await tx.insert(activityEvents).values({
           organizationId: user.organizationId,
@@ -3020,11 +3140,30 @@ export async function updateCourseContentBlockAction(
   if (!style.success) return failure("course_builder.invalid_input");
   const savedMutation = await runCourseBuilderMutation(() =>
     db.transaction(async (tx) => {
-      await requireSharedModuleContentPermission(tx, user, courseId, {
+      const shared = await requireSharedModuleContentPermission(tx, user, courseId, {
         type: "block",
         id: block.id,
       });
+      const referencedCourseIds = shared.referencedCourseIds;
+      const [lockedBlock] = await tx
+        .select({ revision: contentBlocks.revision })
+        .from(contentBlocks)
+        .where(
+          and(
+            eq(contentBlocks.id, block.id),
+            eq(contentBlocks.lessonId, block.lessonId),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!lockedBlock || lockedBlock.revision !== ids.data.expectedRevision) {
+        return "conflict" as const;
+      }
       let data: ContentBlockData = parsed.data;
+      let videoDescriptionAsset: {
+        id: string;
+        contentSha256: string;
+      } | null = null;
       const stockImageSelectionId =
         "stockImageSelectionId" in parsed
           ? parsed.stockImageSelectionId
@@ -3079,31 +3218,12 @@ export async function updateCourseContentBlockAction(
         );
         if (new Set(assetIds).size !== assetIds.length)
           return "invalid" as const;
-        const assets = assetIds.length
-          ? await tx
-              .select({
-                id: mediaAssets.id,
-                kind: mediaAssets.kind,
-                originalFileName: mediaAssets.originalFileName,
-              })
-              .from(mediaAssets)
-              .where(
-                and(
-                  inArray(mediaAssets.id, assetIds),
-                  eq(mediaAssets.organizationId, user.organizationId),
-                  eq(mediaAssets.purpose, "course_content"),
-                  eq(mediaAssets.status, "ready"),
-                ),
-              )
-              .for("update")
-          : [];
-        if (
-          assets.length !== assetIds.length ||
-          assets.some((asset) => asset.kind !== "image")
-        ) {
-          return "invalid" as const;
-        }
-        const assetsById = new Map(assets.map((asset) => [asset.id, asset]));
+        const assetsById = await assertManageableSharedCourseMedia(tx, user, {
+          referencedCourseIds,
+          references: new Map(
+            assetIds.map((assetId) => [assetId, "image"] as const),
+          ),
+        });
         const gallery = sanitizeGalleryDocument({
           version: 1,
           layout: galleryDraft.layout,
@@ -3133,51 +3253,103 @@ export async function updateCourseContentBlockAction(
           return "invalid" as const;
         }
         data = { gallery };
-        if (assets.length) {
-          await tx
-            .insert(courseMediaAssets)
-            .values(
-              assets.map((asset) => ({
-                organizationId: user.organizationId,
-                courseId: ids.data.courseId,
-                mediaAssetId: asset.id,
-                attachedById: user.id,
-              })),
-            )
-            .onConflictDoNothing();
-        }
+        await bindSharedCourseMedia(tx, user, {
+          referencedCourseIds,
+          mediaAssetIds: assetIds,
+        });
       } else {
         const mediaAssetId = data.mediaAssetId ?? data.download?.mediaAssetId;
         if (mediaAssetId) {
-          const [asset] = await tx
-            .select({
-              id: mediaAssets.id,
-              kind: mediaAssets.kind,
-              uploadedById: mediaAssets.uploadedById,
-              originalFileName: mediaAssets.originalFileName,
-              durationMilliseconds: mediaAssets.durationMilliseconds,
-            })
-            .from(mediaAssets)
-            .where(
-              and(
-                eq(mediaAssets.id, mediaAssetId),
-                eq(mediaAssets.organizationId, user.organizationId),
-                eq(mediaAssets.purpose, "course_content"),
-                eq(mediaAssets.status, "ready"),
-              ),
-            )
-            .limit(1)
-            .for("update");
-          const expectedKind =
+          const expectedKind: SharedCourseMediaKind | null =
             block.type === "file" || block.type === "download"
               ? "document"
-              : block.type;
-          if (!asset || asset.kind !== expectedKind) return "invalid" as const;
+              : block.type === "image" ||
+                  block.type === "video" ||
+                  block.type === "audio"
+                ? block.type
+                : null;
+          if (!expectedKind) return "invalid" as const;
+          const poster =
+            block.type === "video" && data.videoPoster
+              ? (data.videoPoster as VideoPoster)
+              : null;
+          const compositionAssetIds =
+            block.type === "video" && data.videoComposition
+              ? [
+                  ...new Set(
+                    data.videoComposition.audioTracks.map(
+                      (track) => track.mediaAssetId,
+                    ),
+                  ),
+                ]
+              : [];
+          const mediaReferences = new Map<string, SharedCourseMediaKind>([
+            [mediaAssetId, expectedKind],
+            ...compositionAssetIds.map(
+              (compositionAssetId) =>
+                [compositionAssetId, "audio"] as const,
+            ),
+            ...(poster?.source === "upload"
+              ? ([[poster.mediaAssetId, "image"]] as const)
+              : []),
+          ]);
+          const manageableAssets = await assertManageableSharedCourseMedia(
+            tx,
+            user,
+            { referencedCourseIds, references: mediaReferences },
+          );
+          const asset = manageableAssets.get(mediaAssetId);
+          if (!asset) return "invalid" as const;
+          if (
+            block.type === "video" &&
+            asset.contentSha256 &&
+            /^[0-9a-f]{64}$/.test(asset.contentSha256)
+          ) {
+            videoDescriptionAsset = {
+              id: asset.id,
+              contentSha256: asset.contentSha256,
+            };
+          }
+          if (
+            block.type === "video" &&
+            data.transcript &&
+            (!asset.durationMilliseconds ||
+              data.transcript.segments.some(
+                (segment) => segment.endMs > asset.durationMilliseconds!,
+              ))
+          ) {
+            return "invalid" as const;
+          }
           if (block.type === "video" && data.videoPlayback) {
             const policy = data.videoPlayback;
             const duration = asset.durationMilliseconds;
             if (!duration || !playbackWindowMilliseconds(policy, duration)) {
               return "invalid" as const;
+            }
+          }
+          let posterAsset: {
+            id: string;
+            originalFileName: string;
+          } | null = null;
+          if (poster) {
+            if (poster.source === "frame") {
+              if (
+                !asset.durationMilliseconds ||
+                poster.atMilliseconds >= asset.durationMilliseconds
+              ) {
+                return "invalid" as const;
+              }
+            } else {
+              const candidate = manageableAssets.get(poster.mediaAssetId);
+              if (!candidate) return "invalid" as const;
+              posterAsset = candidate;
+              data = {
+                ...data,
+                videoPoster: {
+                  ...poster,
+                  mediaAssetName: candidate.originalFileName,
+                },
+              };
             }
           }
           const compositionAssets: Array<{
@@ -3186,92 +3358,12 @@ export async function updateCourseContentBlockAction(
             durationMilliseconds: number | null;
           }> = [];
           if (block.type === "video" && data.videoComposition) {
-            const primaryBindings = await tx
-              .select({ courseId: courseMediaAssets.courseId })
-              .from(courseMediaAssets)
-              .where(
-                and(
-                  eq(courseMediaAssets.organizationId, user.organizationId),
-                  eq(courseMediaAssets.mediaAssetId, asset.id),
-                ),
-              );
-            if (
-              !canUseVideoCompositionSource({
-                role: user.role,
-                uploadedByActor: asset.uploadedById === user.id,
-                boundToCurrentCourse: primaryBindings.some(
-                  (binding) => binding.courseId === ids.data.courseId,
-                ),
-                boundAnywhere: primaryBindings.length > 0,
-              })
-            ) {
+            const audioAssets = compositionAssetIds.flatMap((assetId) => {
+              const audioAsset = manageableAssets.get(assetId);
+              return audioAsset ? [audioAsset] : [];
+            });
+            if (audioAssets.length !== compositionAssetIds.length)
               return "invalid" as const;
-            }
-            const compositionAssetIds = [
-              ...new Set(
-                data.videoComposition.audioTracks.map(
-                  (track) => track.mediaAssetId,
-                ),
-              ),
-            ];
-            const audioAssets = await tx
-              .select({
-                id: mediaAssets.id,
-                uploadedById: mediaAssets.uploadedById,
-                originalFileName: mediaAssets.originalFileName,
-                durationMilliseconds: mediaAssets.durationMilliseconds,
-              })
-              .from(mediaAssets)
-              .where(
-                and(
-                  eq(mediaAssets.organizationId, user.organizationId),
-                  eq(mediaAssets.purpose, "course_content"),
-                  eq(mediaAssets.kind, "audio"),
-                  eq(mediaAssets.status, "ready"),
-                  isNull(mediaAssets.deletedAt),
-                  inArray(mediaAssets.id, compositionAssetIds),
-                ),
-              )
-              .for("update");
-            const bindings = await tx
-              .select({ mediaAssetId: courseMediaAssets.mediaAssetId })
-              .from(courseMediaAssets)
-              .where(
-                and(
-                  eq(courseMediaAssets.organizationId, user.organizationId),
-                  eq(courseMediaAssets.courseId, ids.data.courseId),
-                  inArray(courseMediaAssets.mediaAssetId, compositionAssetIds),
-                ),
-              );
-            const allBindings = await tx
-              .select({ mediaAssetId: courseMediaAssets.mediaAssetId })
-              .from(courseMediaAssets)
-              .where(
-                and(
-                  eq(courseMediaAssets.organizationId, user.organizationId),
-                  inArray(courseMediaAssets.mediaAssetId, compositionAssetIds),
-                ),
-              );
-            const boundIds = new Set(
-              bindings.map((binding) => binding.mediaAssetId),
-            );
-            const boundAnywhere = new Set(
-              allBindings.map((binding) => binding.mediaAssetId),
-            );
-            if (
-              audioAssets.length !== compositionAssetIds.length ||
-              audioAssets.some(
-                (audioAsset) =>
-                  !canUseVideoCompositionSource({
-                    role: user.role,
-                    uploadedByActor: audioAsset.uploadedById === user.id,
-                    boundToCurrentCourse: boundIds.has(audioAsset.id),
-                    boundAnywhere: boundAnywhere.has(audioAsset.id),
-                  }),
-              )
-            ) {
-              return "invalid" as const;
-            }
             const audioAssetsById = new Map(
               audioAssets.map((audioAsset) => [audioAsset.id, audioAsset]),
             );
@@ -3323,8 +3415,11 @@ export async function updateCourseContentBlockAction(
                 !renderJob ||
                 renderJob.sourceAssetId !== asset.id ||
                 renderJob.type !== "transcode" ||
-                renderJob.options.videoCompositionCourseId !==
-                  ids.data.courseId ||
+                (renderJob.options.videoCompositionBlockId
+                  ? renderJob.options.videoCompositionBlockId !== block.id
+                  : !referencedCourseIds.includes(
+                      renderJob.options.videoCompositionCourseId ?? "",
+                    )) ||
                 !["queued", "processing", "succeeded"].includes(
                   renderJob.status,
                 ) ||
@@ -3359,23 +3454,21 @@ export async function updateCourseContentBlockAction(
                 }
               : {}),
           };
-          await tx
-            .insert(courseMediaAssets)
-            .values(
-              [asset, ...compositionAssets].map((mediaAsset) => ({
-                organizationId: user.organizationId,
-                courseId: ids.data.courseId,
-                mediaAssetId: mediaAsset.id,
-                attachedById: user.id,
-              })),
-            )
-            .onConflictDoNothing();
+          await bindSharedCourseMedia(tx, user, {
+            referencedCourseIds,
+            mediaAssetIds: [
+              asset.id,
+              ...compositionAssets.map((mediaAsset) => mediaAsset.id),
+              ...(posterAsset ? [posterAsset.id] : []),
+            ],
+          });
         }
         if (
           block.type === "video" &&
           !mediaAssetId &&
           (data.videoPlayback?.completionMode === "required" ||
-            Boolean(data.videoComposition))
+            Boolean(data.videoComposition) ||
+            Boolean(data.videoPoster))
         ) {
           return "invalid" as const;
         }
@@ -3396,7 +3489,36 @@ export async function updateCourseContentBlockAction(
             eq(contentBlocks.revision, ids.data.expectedRevision),
           ),
         )
-        .returning({ id: contentBlocks.id });
+        .returning({ id: contentBlocks.id, revision: contentBlocks.revision });
+      if (
+        updated &&
+        block.type === "video" &&
+        videoDescriptionAsset &&
+        !data.caption?.trim() &&
+        "videoDescriptionIntent" in parsed &&
+        parsed.videoDescriptionIntent === "automatic" &&
+        "transcriptLanguage" in parsed &&
+        typeof parsed.transcriptLanguage === "string"
+      ) {
+        await enqueueReadyTranscriptInTransaction(tx, {
+          organizationId: user.organizationId,
+          sourceAssetId: videoDescriptionAsset.id,
+          sourceContentSha256: videoDescriptionAsset.contentSha256,
+          requestedById: user.id,
+          language: parsed.transcriptLanguage,
+        });
+        await enqueueVideoDescriptionJobInTransaction(tx, {
+          organizationId: user.organizationId,
+          originCourseId: ids.data.courseId,
+          blockId: block.id,
+          sourceAssetId: videoDescriptionAsset.id,
+          sourceContentSha256: videoDescriptionAsset.contentSha256,
+          expectedBlockRevision: updated.revision,
+          locale,
+          transcriptLanguage: parsed.transcriptLanguage,
+          requestedById: user.id,
+        });
+      }
       return updated ? ("saved" as const) : ("conflict" as const);
     }),
   );
@@ -3538,11 +3660,25 @@ export async function duplicateCourseContentBlockAction(
               ? `${source.title} (Kopie)`
               : null,
           required: source.required,
-          data: source.data,
+          data: courseContentDataForCopy(source.type, source.data),
           style: source.style,
           sortOrder: (last?.sortOrder ?? -1) + 1,
         })
-        .returning({ id: contentBlocks.id });
+        .returning({
+          id: contentBlocks.id,
+          type: contentBlocks.type,
+          data: contentBlocks.data,
+          revision: contentBlocks.revision,
+        });
+      if (copy) {
+        await enqueueCopiedVideoDescriptionJobsInTransaction(tx, {
+          organizationId: user.organizationId,
+          originCourseId: ids.data.courseId,
+          requestedById: user.id,
+          blocks: [copy],
+          locale: normalizeLocale(await resolveUserLocale(user, tx)),
+        });
+      }
       return copy;
     }),
   );

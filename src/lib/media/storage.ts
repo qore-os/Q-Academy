@@ -226,6 +226,7 @@ export async function promoteStoredMediaObject(input: {
   expectedSha256: string;
   expectedSizeBytes: number;
   mimeType: string;
+  signal?: AbortSignal;
 }) {
   const configuration = getMediaStorageConfiguration();
   if (configuration.driver === "s3") {
@@ -242,12 +243,14 @@ export async function promoteStoredMediaObject(input: {
       expectedSha256: input.expectedSha256,
       expectedSizeBytes: input.expectedSizeBytes,
       mimeType: input.mimeType,
+      signal: input.signal,
     });
   }
   const promoted = await promoteFilesystemMediaObject(configuration, {
     source: input.source,
     target: input.target,
     expectedSha256: input.expectedSha256,
+    signal: input.signal,
   });
   return {
     ...promoted,
@@ -265,6 +268,7 @@ export async function copyStoredMediaObject(input: {
   expectedSha256: string;
   expectedSizeBytes: number;
   mimeType: string;
+  signal?: AbortSignal;
 }) {
   const configuration = getMediaStorageConfiguration();
   if (configuration.driver === "s3") {

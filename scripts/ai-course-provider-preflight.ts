@@ -1,10 +1,11 @@
 import { generateCourseDraft } from "../src/lib/ai/course-draft";
+import { loadAiApiKey } from "../src/lib/ai/api-key-credential-core";
 import { loadProjectEnvironment } from "./load-environment";
 
 async function main() {
   loadProjectEnvironment();
-  if (!process.env.AI_API_KEY?.trim()) {
-    throw new Error("AI_API_KEY is required for the provider preflight.");
+  if (!loadAiApiKey()) {
+    throw new Error("An AI provider credential is required for the preflight.");
   }
   const result = await generateCourseDraft(
     {
@@ -42,4 +43,3 @@ await main().catch(() => {
   );
   process.exitCode = 1;
 });
-

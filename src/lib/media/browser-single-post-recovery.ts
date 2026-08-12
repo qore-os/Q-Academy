@@ -37,11 +37,6 @@ export async function uploadStratoSinglePostWithRecovery(input: {
     uploadError = error;
   }
 
-  if (!uploadError) {
-    await input.complete();
-    return { completionAttempts: 1, recovered: false as const };
-  }
-
   const maximumCompletionAttempts = STRATO_COMPLETION_PROBE_DELAYS_MS.length + 1;
   for (
     let completionAttempt = 1;
@@ -50,7 +45,10 @@ export async function uploadStratoSinglePostWithRecovery(input: {
   ) {
     try {
       await input.complete();
-      return { completionAttempts: completionAttempt, recovered: true as const };
+      return {
+        completionAttempts: completionAttempt,
+        recovered: Boolean(uploadError) || completionAttempt > 1,
+      };
     } catch (completionError) {
       if (isAbortError(completionError)) throw completionError;
       input.signal.throwIfAborted();
@@ -60,7 +58,9 @@ export async function uploadStratoSinglePostWithRecovery(input: {
       ) {
         throw completionError;
       }
-      if (completionAttempt === maximumCompletionAttempts) throw uploadError;
+      if (completionAttempt === maximumCompletionAttempts) {
+        throw uploadError ?? completionError;
+      }
     }
 
     await input.waitForRetry(
@@ -68,5 +68,5 @@ export async function uploadStratoSinglePostWithRecovery(input: {
       input.signal,
     );
   }
-  throw uploadError;
+  throw uploadError ?? new Error("STRATO completion retry exhausted.");
 }

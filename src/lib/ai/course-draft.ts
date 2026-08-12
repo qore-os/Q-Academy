@@ -1,6 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
+import { loadAiApiKey } from "@/lib/ai/api-key-credential";
 import {
   generatedCourseDraftSchema,
   type GeneratedCourseBlock,
@@ -360,7 +361,18 @@ export async function generateCourseDraft(
   brief: AiCourseBrief,
   locale: AppLocale = "de",
 ): Promise<GeneratedCourseDraftResult> {
-  const apiKey = process.env.AI_API_KEY?.trim();
+  let apiKey: string | null;
+  try {
+    apiKey = loadAiApiKey();
+  } catch (error) {
+    logServerError(error, { action: "ai.course-draft.credential" });
+    return {
+      draft: fallbackCourseDraft(brief, locale),
+      provider: "q-academy-fallback",
+      model: "deterministic-course-draft-v2",
+      fallbackReason: "provider_error",
+    };
+  }
   if (!apiKey) {
     return {
       draft: fallbackCourseDraft(brief, locale),

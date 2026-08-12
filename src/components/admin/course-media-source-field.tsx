@@ -16,13 +16,19 @@ import {
 
 import {
   deleteBrowserSessionMediaAsset,
+  isTerminalSessionMediaUploadError,
   uploadBrowserSessionMedia,
+  type DirectPostUploadResume,
+  type BrowserSessionTransferStatus,
 } from "@/lib/media/browser-session-upload";
+import { UploadTransferIndicator } from "@/components/media/upload-transfer-indicator";
 import { browserUploadErrorMessage } from "@/lib/media/browser-upload";
 import { SubmissionRecorder } from "@/components/academy/submission-recorder";
 import { cn } from "@/lib/utils";
 import { getCourseSupportCopy } from "@/lib/i18n/course-support";
 import { intlLocale, type AppLocale } from "@/lib/i18n/model";
+import { getMediaUploadCopy } from "@/lib/i18n/media-upload";
+import { useFileDrop } from "@/lib/use-file-drop";
 
 type CourseMediaKind = "image" | "video" | "audio" | "file";
 export type CourseMediaSelection = {
@@ -30,6 +36,11 @@ export type CourseMediaSelection = {
   originalFileName: string;
   durationMilliseconds: number | null;
 };
+export type CourseMediaSourceSelection =
+  | { mode: "upload"; selection: CourseMediaSelection | null }
+  | { mode: "library"; selection: CourseMediaSelection | null }
+  | { mode: "url"; url: string }
+  | { mode: "stock"; url: string };
 type UploadState = "idle" | "preparing" | "uploading" | "processing" | "ready" | "error";
 
 const ACCEPTED_TYPES: Record<CourseMediaKind, string> = {
@@ -76,6 +87,7 @@ function CourseMediaUpload({
   onAssetSelection?: (selection: CourseMediaSelection | null) => void;
 }) {
   const copy = getCourseSupportCopy(locale).media;
+  const uploadCopy = getMediaUploadCopy(locale);
   const numberFormatter = new Intl.NumberFormat(intlLocale(locale), {
     maximumFractionDigits: 0,
   });
@@ -85,13 +97,15 @@ function CourseMediaUpload({
   const retryUploadRef = useRef<{
     file: File;
     clientUploadId: string;
+    directPostResume: DirectPostUploadResume | null;
   } | null>(null);
   const newAssetIdRef = useRef("");
   const uploadedExternalFileRef = useRef<File | undefined>(undefined);
   const [assetId, setAssetId] = useState(initialAssetId ?? "");
   const [newAssetId, setNewAssetId] = useState("");
   const [fileName, setFileName] = useState(initialFileName ?? "");
-  const [progress, setProgress] = useState(0);
+  const [, setProgress] = useState(0);
+  const [transferStatus, setTransferStatus] = useState<BrowserSessionTransferStatus | null>(null);
   const [canRetry, setCanRetry] = useState(false);
   const [state, setState] = useState<UploadState>(initialAssetId ? "ready" : "idle");
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +137,7 @@ function CourseMediaUpload({
         setNewAssetId((current) => (current === cleanupId ? "" : current));
         setFileName("");
         setProgress(0);
+        setTransferStatus(null);
         setState("idle");
         setError(null);
       });
@@ -144,6 +159,7 @@ function CourseMediaUpload({
     setNewAssetId("");
     setFileName("");
     setProgress(0);
+    setTransferStatus(null);
     setState("idle");
     setError(null);
     onAssetChange?.(null);
@@ -153,7 +169,10 @@ function CourseMediaUpload({
 
   const select = useCallback(async (
     file: File | undefined,
-    resume?: Readonly<{ clientUploadId: string }>,
+    resume?: Readonly<{
+      clientUploadId: string;
+      directPostResume: DirectPostUploadResume | null;
+    }>,
   ) => {
     if (!file) return;
     if (!file.type || file.size <= 0) {
@@ -171,7 +190,11 @@ function CourseMediaUpload({
     const controller = new AbortController();
     controllerRef.current = controller;
     const clientUploadId = resume?.clientUploadId ?? crypto.randomUUID();
-    retryUploadRef.current = { file, clientUploadId };
+    retryUploadRef.current = {
+      file,
+      clientUploadId,
+      directPostResume: resume?.directPostResume ?? null,
+    };
     setCanRetry(true);
     if (!resume) {
       setAssetId("");
@@ -179,6 +202,7 @@ function CourseMediaUpload({
     }
     setFileName(file.name);
     setProgress(0);
+    setTransferStatus(null);
     setState("preparing");
     setError(null);
     onAssetChange?.(null);
@@ -188,12 +212,22 @@ function CourseMediaUpload({
         file,
         purpose: "course_content",
         clientUploadId,
+        directPostResume: resume?.directPostResume,
+        onDirectPostResumeChange: (directPostResume) => {
+          if (retryUploadRef.current?.clientUploadId === clientUploadId) {
+            retryUploadRef.current = {
+              ...retryUploadRef.current,
+              directPostResume,
+            };
+          }
+        },
         signal: controller.signal,
         onAssetCreated: (created) => {
           setAssetId(created.id);
           setNewAssetId(created.id);
         },
         onProgress: setProgress,
+        onTransferStatus: setTransferStatus,
         onStage: (stage) => setState(stage),
       });
       const expectedKind = kind === "file" ? "document" : kind;
@@ -222,6 +256,10 @@ function CourseMediaUpload({
       onAssetSelection?.(selection);
     } catch (uploadError) {
       if (uploadError instanceof DOMException && uploadError.name === "AbortError") return;
+      if (isTerminalSessionMediaUploadError(uploadError)) {
+        retryUploadRef.current = null;
+        setCanRetry(false);
+      }
       setState("error");
       setError(browserUploadErrorMessage(uploadError, copy.errors.upload));
       onAssetChange?.(null);
@@ -229,10 +267,22 @@ function CourseMediaUpload({
     }
   }, [copy.errors.invalidFile, copy.errors.upload, copy.errors.wrongKind, kind, newAssetId, onAssetChange, onAssetSelection]);
 
+  const selectDroppedFiles = useCallback(
+    (files: readonly File[]) => void select(files[0]),
+    [select],
+  );
+  const { isDraggingFiles, fileDropProps } = useFileDrop({
+    disabled: !active || recorderBlocking || state !== "idle",
+    onFiles: selectDroppedFiles,
+  });
+
   const retryUpload = () => {
     const pending = retryUploadRef.current;
     if (!pending) return;
-    void select(pending.file, { clientUploadId: pending.clientUploadId });
+    void select(pending.file, {
+      clientUploadId: pending.clientUploadId,
+      directPostResume: pending.directPostResume,
+    });
   };
 
   useEffect(() => {
@@ -253,15 +303,19 @@ function CourseMediaUpload({
         <>
           <label
             htmlFor={inputId}
+            {...fileDropProps}
             className={cn(
               "focus-within:ring-2 focus-within:ring-[#2b9188] focus-within:ring-offset-2 flex min-h-24 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-[#b8c3cb] bg-[#f8fafb] px-4 text-center",
               recorderBlocking
                 ? "cursor-not-allowed opacity-45"
                 : "cursor-pointer hover:border-[#6b8ead] hover:bg-[#f3f7fa]",
+              isDraggingFiles && "border-[#2b9188] bg-[#edf9f7]",
             )}
           >
             <Upload className="size-5 text-[#365f8d]" />
-            <span className="text-xs font-semibold text-[#354555]">{copy.selectFile}</span>
+            <span className="text-xs font-semibold text-[#354555]">
+              {isDraggingFiles ? uploadCopy.dropActiveSingle : copy.selectFile}
+            </span>
             <input
               ref={inputRef}
               id={inputId}
@@ -314,17 +368,25 @@ function CourseMediaUpload({
               {state === "preparing"
                 ? copy.preparing
                 : state === "uploading"
-                  ? copy.uploading(numberFormatter.format(progress))
+                  ? transferStatus?.kind === "determinate"
+                    ? copy.uploading(numberFormatter.format(transferStatus.progress))
+                    : uploadCopy.transferring
                   : state === "processing"
                     ? copy.processing
                     : state === "ready"
                       ? copy.ready
                       : error}
             </span>
-            {state === "uploading" ? (
-              <span className="mt-1.5 block h-1 overflow-hidden rounded bg-[#dfe7ed]">
-                <span className="block h-full bg-[#2b9188]" style={{ width: `${progress}%` }} />
-              </span>
+            {state === "uploading" && transferStatus ? (
+              <UploadTransferIndicator
+                status={transferStatus}
+                label={
+                  transferStatus.kind === "determinate"
+                    ? copy.uploading(numberFormatter.format(transferStatus.progress))
+                    : uploadCopy.transferring
+                }
+                className="mt-1.5"
+              />
             ) : null}
           </span>
           {state === "error" && canRetry ? (
@@ -371,6 +433,7 @@ export function CourseMediaSourceField({
   allowInternalUrl = false,
   onAssetChange,
   onAssetSelection,
+  onSourceChange,
 }: {
   courseId?: string;
   defaultAssetId?: string;
@@ -393,6 +456,7 @@ export function CourseMediaSourceField({
     selection?: CourseMediaSelection,
   ) => void;
   onAssetSelection?: (selection: CourseMediaSelection | null) => void;
+  onSourceChange?: (source: CourseMediaSourceSelection) => void;
 }) {
   const copy = getCourseSupportCopy(locale).media;
   const stockAvailableForKind =
@@ -446,6 +510,62 @@ export function CourseMediaSourceField({
     createdAt: string;
   } | null>(null);
   const [libraryResults, setLibraryResults] = useState<Array<NonNullable<typeof librarySelection>>>([]);
+  const [uploadSelection, setUploadSelection] =
+    useState<CourseMediaSelection | null>(() =>
+      defaultAssetId
+        ? {
+            id: defaultAssetId,
+            originalFileName: defaultFileName ?? "",
+            durationMilliseconds: null,
+          }
+        : null,
+    );
+  const [externalUrl, setExternalUrl] = useState(
+    defaultAssetId ? "" : defaultUrl ?? "",
+  );
+
+  const notifyAssetSelection = useCallback(
+    (selection: CourseMediaSelection | null) => {
+      onAssetChange?.(selection?.id ?? null, selection ?? undefined);
+      onAssetSelection?.(selection);
+    },
+    [onAssetChange, onAssetSelection],
+  );
+
+  const notifySource = useCallback(
+    (source: CourseMediaSourceSelection) => {
+      onSourceChange?.(source);
+      notifyAssetSelection(
+        source.mode === "upload" || source.mode === "library"
+          ? source.selection
+          : null,
+      );
+    },
+    [notifyAssetSelection, onSourceChange],
+  );
+
+  const activateMode = (nextMode: typeof mode) => {
+    if (
+      mode === "upload" &&
+      nextMode !== "upload" &&
+      uploadSelection?.id !== defaultAssetId
+    ) {
+      setUploadSelection(null);
+    }
+    setMode(nextMode);
+    if (nextMode === "upload") {
+      notifySource({ mode: nextMode, selection: uploadSelection });
+    } else if (nextMode === "library") {
+      notifySource({ mode: nextMode, selection: librarySelection });
+    } else if (nextMode === "url") {
+      notifySource({ mode: nextMode, url: externalUrl });
+    } else {
+      notifySource({
+        mode: nextMode,
+        url: stockSelection?.imageUrl ?? defaultUrl ?? "",
+      });
+    }
+  };
 
   const searchLibrary = async (requestedQuery = libraryQuery) => {
     setLibraryLoading(true);
@@ -551,7 +671,9 @@ export function CourseMediaSourceField({
             { type: blob.type },
           ),
         );
-        setMode("upload");
+        activateMode("upload");
+      } else {
+        notifySource({ mode: "stock", url: payload.data.imageUrl });
       }
     } catch {
       setStockError(copy.errors.stockSelect);
@@ -576,7 +698,7 @@ export function CourseMediaSourceField({
       >
         <button
           type="button"
-          onClick={() => setMode("upload")}
+          onClick={() => activateMode("upload")}
           className={cn(
             "focus-ring inline-flex h-8 items-center justify-center gap-2 rounded px-3 text-xs font-semibold",
             mode === "upload" ? "bg-white text-[#294f79] shadow-sm" : "text-[#71808b]",
@@ -591,7 +713,7 @@ export function CourseMediaSourceField({
           <button
             type="button"
             onClick={() => {
-              setMode("library");
+              activateMode("library");
               if (!libraryLoaded && !libraryLoading) void searchLibrary("");
             }}
             className={cn(
@@ -608,7 +730,7 @@ export function CourseMediaSourceField({
         {stockAvailableForKind ? (
           <button
             type="button"
-            onClick={() => setMode("stock")}
+            onClick={() => activateMode("stock")}
             className={cn(
               "focus-ring inline-flex h-8 items-center justify-center gap-2 rounded px-3 text-xs font-semibold",
               mode === "stock" ? "bg-white text-[#294f79] shadow-sm" : "text-[#71808b]",
@@ -622,7 +744,7 @@ export function CourseMediaSourceField({
         ) : null}
         {allowExternalUrl ? <button
           type="button"
-          onClick={() => setMode("url")}
+          onClick={() => activateMode("url")}
           className={cn(
             "focus-ring inline-flex h-8 items-center justify-center gap-2 rounded px-3 text-xs font-semibold",
             mode === "url" ? "bg-white text-[#294f79] shadow-sm" : "text-[#71808b]",
@@ -642,8 +764,12 @@ export function CourseMediaSourceField({
         kind={kind}
         locale={locale}
         externalFile={materializedFile}
-        onAssetChange={onAssetChange}
-        onAssetSelection={onAssetSelection}
+        onAssetSelection={(selection) => {
+          setUploadSelection(selection);
+          if (mode === "upload") {
+            notifySource({ mode: "upload", selection });
+          }
+        }}
       />
       {libraryAvailable ? (
         <div className={cn("space-y-3", mode !== "library" && "hidden")} aria-hidden={mode !== "library"}>
@@ -704,8 +830,7 @@ export function CourseMediaSourceField({
                         originalFileName: asset.originalFileName,
                         durationMilliseconds: asset.durationMilliseconds,
                       };
-                      onAssetChange?.(asset.id);
-                      onAssetSelection?.(selection);
+                      notifySource({ mode: "library", selection });
                     }}
                     className={cn(
                       "focus-ring flex min-h-14 w-full items-center gap-3 px-3 py-2 text-left hover:bg-[#f3f7fa]",
@@ -740,14 +865,19 @@ export function CourseMediaSourceField({
           required={mode === "url"}
           disabled={mode !== "url"}
           maxLength={2_000}
-          defaultValue={defaultAssetId ? "" : defaultUrl ?? ""}
+          value={externalUrl}
+          onChange={(event) => {
+            const nextUrl = event.currentTarget.value;
+            setExternalUrl(nextUrl);
+            notifySource({ mode: "url", url: nextUrl });
+          }}
           placeholder="https://..."
           className={inputClass}
           aria-label={copy.urlLabel(label)}
         />
       </div> : null}
       {stockAvailableForKind ? (
-        <div className={cn("space-y-3", mode !== "stock" && "hidden")} aria-hidden={mode !== "stock"}>
+        <div className={cn("min-w-0 space-y-3", mode !== "stock" && "hidden")} aria-hidden={mode !== "stock"}>
           <input
             type="hidden"
             name={urlName}
@@ -790,7 +920,7 @@ export function CourseMediaSourceField({
             </button>
           </div>
           {stockSelection || defaultStockAttribution ? (
-            <div className="rounded-md border border-[#b9ddd8] bg-[#eff9f7] px-3 py-2 text-xs text-[#176f68]">
+            <div className="min-w-0 break-words rounded-md border border-[#b9ddd8] bg-[#eff9f7] px-3 py-2 text-xs text-[#176f68] [overflow-wrap:anywhere]">
               {stockSelection?.attribution ?? defaultStockAttribution}
             </div>
           ) : null}
@@ -803,12 +933,12 @@ export function CourseMediaSourceField({
                   type="button"
                   onClick={() => void selectStock(image.id)}
                   disabled={stockLoading}
-                  className="focus-ring overflow-hidden rounded-md border border-[#dce1e5] bg-white text-left hover:border-[#2b9188]"
+                  className="focus-ring min-w-0 overflow-hidden rounded-md border border-[#dce1e5] bg-white text-left hover:border-[#2b9188]"
                   title={image.attribution}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={image.previewUrl} alt={image.alt ?? ""} className="aspect-[4/3] w-full object-cover" />
-                  <span className="block truncate px-2 py-1.5 text-[10px] text-[#5f6f7b]">{image.author}</span>
+                  <span className="block min-w-0 truncate px-2 py-1.5 text-[10px] text-[#5f6f7b]">{image.author}</span>
                 </button>
               ))}
             </div>

@@ -1,6 +1,7 @@
 import { sanitizeGalleryDocument } from "@/lib/content-blocks/interactive-documents";
 import { sanitizeDownloadDocument } from "@/lib/content-blocks/layout-documents";
 import { sanitizeVideoComposition } from "@/lib/media/video-composition";
+import { sanitizeVideoPoster } from "@/lib/media/video-poster";
 import type {
   ContentBlockData,
   ExamQuestionPoolConfiguration,
@@ -22,9 +23,25 @@ export class CourseContentCopyReferenceError extends Error {
 }
 
 export function courseContentDataForCopy(
+  type: string,
   data: ContentBlockData,
 ): ContentBlockData {
-  if (!data.videoComposition) return data;
+  const sanitizedData: ContentBlockData =
+    type === "video"
+      ? {
+          ...data,
+          videoDescriptionIntent:
+            data.videoDescriptionIntent === "automatic" ||
+            data.videoDescriptionIntent === "touched"
+              ? data.videoDescriptionIntent
+              : "touched",
+        }
+      : (() => {
+          const rest = { ...data };
+          delete rest.videoDescriptionIntent;
+          return rest;
+        })();
+  if (!data.videoComposition) return sanitizedData;
   const composition = sanitizeVideoComposition(data.videoComposition);
   if (!composition) {
     throw new CourseContentCopyReferenceError(
@@ -32,7 +49,7 @@ export function courseContentDataForCopy(
     );
   }
   return {
-    ...data,
+    ...sanitizedData,
     videoComposition: {
       version: composition.version,
       audioTracks: composition.audioTracks,
@@ -76,6 +93,15 @@ export function collectCourseContentMediaReferences(
           ? block.type
           : null;
     if (mediaAssetId && kind) register(mediaAssetId, kind);
+    if (block.type === "video" && block.data.videoPoster) {
+      const poster = sanitizeVideoPoster(block.data.videoPoster);
+      if (!poster) {
+        throw new CourseContentCopyReferenceError(
+          "A video block contains an invalid poster selection.",
+        );
+      }
+      if (poster.source === "upload") register(poster.mediaAssetId, "image");
+    }
     if (block.type === "video" && block.data.videoComposition) {
       const composition = sanitizeVideoComposition(block.data.videoComposition);
       if (!composition) {

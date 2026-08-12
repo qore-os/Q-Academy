@@ -216,8 +216,10 @@ export async function promoteFilesystemMediaObject(
     source: MediaObjectIdentity;
     target: MediaObjectIdentity;
     expectedSha256: string;
+    signal?: AbortSignal;
   },
 ) {
+  input.signal?.throwIfAborted();
   const source = resolveFilesystemMediaObjectPath(configuration, input.source);
   const target = resolveFilesystemMediaObjectPath(configuration, input.target);
   if (
@@ -233,7 +235,10 @@ export async function promoteFilesystemMediaObject(
 
   const sha256 = async (path: string) => {
     const hash = createHash("sha256");
-    for await (const chunk of createReadStream(path)) hash.update(chunk);
+    for await (const chunk of createReadStream(path)) {
+      input.signal?.throwIfAborted();
+      hash.update(chunk);
+    }
     return hash.digest("hex");
   };
 
@@ -241,10 +246,12 @@ export async function promoteFilesystemMediaObject(
   const temporary = `${target}.promotion-${randomUUID()}`;
   try {
     await copyFile(source, temporary, constants.COPYFILE_EXCL);
+    input.signal?.throwIfAborted();
     const temporaryHandle = await open(temporary, "r+");
     await temporaryHandle.sync();
     await temporaryHandle.close();
     const promotedHash = await sha256(temporary);
+    input.signal?.throwIfAborted();
     if (promotedHash !== input.expectedSha256) {
       throw new FilesystemMediaStorageError(
         "storage_unavailable",
@@ -253,6 +260,7 @@ export async function promoteFilesystemMediaObject(
     }
     try {
       await link(temporary, target);
+      input.signal?.throwIfAborted();
     } catch (error) {
       if (
         error &&
@@ -291,8 +299,10 @@ export async function copyFilesystemMediaObject(
     target: MediaObjectIdentity;
     expectedSha256: string;
     expectedSizeBytes: number;
+    signal?: AbortSignal;
   },
 ) {
+  input.signal?.throwIfAborted();
   const source = resolveFilesystemMediaObjectPath(configuration, input.source);
   const target = resolveFilesystemMediaObjectPath(configuration, input.target);
   if (
@@ -311,7 +321,10 @@ export async function copyFilesystemMediaObject(
 
   const digest = async (filePath: string) => {
     const hash = createHash("sha256");
-    for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+    for await (const chunk of createReadStream(filePath)) {
+      input.signal?.throwIfAborted();
+      hash.update(chunk);
+    }
     return hash.digest("hex");
   };
 
@@ -326,6 +339,7 @@ export async function copyFilesystemMediaObject(
       );
     }
     await copyFile(source, temporary, constants.COPYFILE_EXCL);
+    input.signal?.throwIfAborted();
     const temporaryHandle = await open(temporary, "r+");
     await temporaryHandle.sync();
     await temporaryHandle.close();
@@ -336,7 +350,9 @@ export async function copyFilesystemMediaObject(
       );
     }
     try {
+      input.signal?.throwIfAborted();
       await link(temporary, target);
+      input.signal?.throwIfAborted();
     } catch (error) {
       if (
         error &&
