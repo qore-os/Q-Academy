@@ -46,6 +46,17 @@ test("development Playwright suites require a ready app and a clean CI server", 
   }
 });
 
+test("production Docker builds exclude development Playwright configs", () => {
+  const ignoredPaths = source(".dockerignore").split(/\r?\n/);
+
+  for (const configPath of [
+    "playwright.config.ts",
+    "playwright.media-workflow.config.ts",
+  ]) {
+    assert.ok(ignoredPaths.includes(configPath), `${configPath} must be ignored`);
+  }
+});
+
 test("production artifact smoke covers login, both central routes, health, and API auth", () => {
   const smoke = source("tests/production-artifact-smoke.spec.ts");
 

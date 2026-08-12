@@ -23,5 +23,6 @@ npm-debug.log*
 tests
 docs
 playwright.config.ts
+playwright.media-workflow.config.ts
 CLAUDE.md
 AGENTS.md
