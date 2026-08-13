@@ -417,6 +417,7 @@ function CourseMediaUpload({
 export function CourseMediaSourceField({
   courseId,
   defaultAssetId,
+  defaultDurationMilliseconds,
   defaultFileName,
   defaultUrl,
   kind,
@@ -437,6 +438,7 @@ export function CourseMediaSourceField({
 }: {
   courseId?: string;
   defaultAssetId?: string;
+  defaultDurationMilliseconds?: number | null;
   defaultFileName?: string;
   defaultUrl?: string;
   kind: CourseMediaKind;
@@ -516,7 +518,7 @@ export function CourseMediaSourceField({
         ? {
             id: defaultAssetId,
             originalFileName: defaultFileName ?? "",
-            durationMilliseconds: null,
+            durationMilliseconds: defaultDurationMilliseconds ?? null,
           }
         : null,
     );

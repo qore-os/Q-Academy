@@ -1,6 +1,6 @@
 "use client";
 
-import { Captions, RotateCcw, Search, X } from "lucide-react";
+import { Captions, Play, RotateCcw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -45,6 +45,7 @@ export function VideoTranscriptPlayer({
   mediaAssetId,
   transcodeJobId,
   poster,
+  showPosterBeforePlayback = false,
   courseId,
   courseSlug,
   lessonId,
@@ -61,6 +62,7 @@ export function VideoTranscriptPlayer({
   mediaAssetId?: string;
   transcodeJobId?: string;
   poster?: unknown;
+  showPosterBeforePlayback?: boolean;
   courseId?: string;
   courseSlug?: string;
   lessonId?: string;
@@ -88,6 +90,23 @@ export function VideoTranscriptPlayer({
   const [playbackRate, setPlaybackRate] = useState<VideoPlaybackRate>(1);
   const [endCardVisible, setEndCardVisible] = useState(false);
   const compositionSourceKey = `${mediaAssetId ?? ""}:${transcodeJobId ?? ""}`;
+  const resolvedPosterUrl = useMemo(
+    () => videoPosterUrl(mediaAssetId, poster),
+    [mediaAssetId, poster],
+  );
+  const playbackSourceKey = `${compositionSourceKey}:${src}:${resolvedPosterUrl ?? ""}`;
+  const [startedPlaybackSourceKey, setStartedPlaybackSourceKey] = useState<
+    string | null
+  >(null);
+  const [unavailablePosterUrl, setUnavailablePosterUrl] = useState<
+    string | null
+  >(null);
+  const showsPosterBeforePlayback = Boolean(
+    showPosterBeforePlayback &&
+    resolvedPosterUrl &&
+    unavailablePosterUrl !== resolvedPosterUrl &&
+    startedPlaybackSourceKey !== playbackSourceKey,
+  );
   const [failedCompositionSourceKey, setFailedCompositionSourceKey] = useState<
     string | null
   >(null);
@@ -456,10 +475,12 @@ export function VideoTranscriptPlayer({
       <div className="relative overflow-hidden rounded-md bg-black">
         <video
           ref={videoRef}
-          controls
-          preload="metadata"
+          controls={!showsPosterBeforePlayback}
+          tabIndex={showsPosterBeforePlayback ? -1 : undefined}
+          aria-hidden={showsPosterBeforePlayback || undefined}
+          preload={showsPosterBeforePlayback ? "none" : "metadata"}
           playsInline
-          poster={videoPosterUrl(mediaAssetId, poster)}
+          poster={showPosterBeforePlayback ? undefined : resolvedPosterUrl}
           onLoadedMetadata={onLoadedMetadata}
           onError={() => {
             if (!transcodeJobId) return;
@@ -496,6 +517,7 @@ export function VideoTranscriptPlayer({
           onPlay={() => {
             lastHeartbeatAtRef.current = Date.now();
             setEndCardVisible(false);
+            setStartedPlaybackSourceKey(playbackSourceKey);
             setPlaying(true);
             const video = videoRef.current;
             if (video) postPlaybackHeartbeat(video, 0);
@@ -537,6 +559,30 @@ export function VideoTranscriptPlayer({
             />
           ) : null}
         </video>
+        {showsPosterBeforePlayback && resolvedPosterUrl ? (
+          <button
+            type="button"
+            aria-label={copy("video.play", {
+              title: title?.trim() || copy("video.title"),
+            })}
+            data-video-poster-start
+            onClick={() => {
+              void videoRef.current?.play().catch(() => undefined);
+            }}
+            className="focus-ring absolute inset-0 block size-full overflow-hidden bg-black"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={resolvedPosterUrl}
+              alt=""
+              onError={() => setUnavailablePosterUrl(resolvedPosterUrl)}
+              className="size-full object-contain"
+            />
+            <span className="pointer-events-none absolute left-1/2 top-1/2 grid size-14 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-full bg-black/70 text-white shadow-lg sm:size-16">
+              <Play className="ml-0.5 size-6 fill-current sm:size-7" />
+            </span>
+          </button>
+        ) : null}
         {transcodeJobId && (!mediaAssetId || compositionLoadFailed) ? (
           <div
             role="alert"

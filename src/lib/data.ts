@@ -659,6 +659,42 @@ export async function getCourseBuilderData(
       ])
     : [[], []];
 
+  const blockMediaAssetIds = [
+    ...new Set(
+      blockRows.flatMap((block) =>
+        typeof block.data.mediaAssetId === "string"
+          ? [block.data.mediaAssetId]
+          : [],
+      ),
+    ),
+  ];
+  const blockMediaAssetRows = blockMediaAssetIds.length
+    ? await db
+        .select({
+          id: mediaAssets.id,
+          durationMilliseconds: mediaAssets.durationMilliseconds,
+        })
+        .from(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.organizationId, organizationId),
+            eq(mediaAssets.status, "ready"),
+            isNull(mediaAssets.deletedAt),
+            inArray(mediaAssets.id, blockMediaAssetIds),
+          ),
+        )
+    : [];
+  const blockMediaAssetDurations = new Map(
+    blockMediaAssetRows.map((asset) => [asset.id, asset.durationMilliseconds]),
+  );
+  const withMediaAssetDuration = (block: (typeof blockRows)[number]) => ({
+    ...block,
+    mediaAssetDurationMilliseconds:
+      typeof block.data.mediaAssetId === "string"
+        ? (blockMediaAssetDurations.get(block.data.mediaAssetId) ?? null)
+        : null,
+  });
+
   const modulesWithLessons = moduleRows.map((module) => ({
     ...module,
     delayPendingState:
@@ -670,14 +706,16 @@ export async function getCourseBuilderData(
       .filter((lesson) => lesson.moduleId === module.id)
       .map((lesson) => ({
         ...lesson,
-        blocks: blockRows.filter(
-          (block) => block.lessonId === lesson.id && !block.pageId,
-        ),
+        blocks: blockRows
+          .filter((block) => block.lessonId === lesson.id && !block.pageId)
+          .map(withMediaAssetDuration),
         pages: pageRows
           .filter((page) => page.lessonId === lesson.id)
           .map((page) => ({
             ...page,
-            blocks: blockRows.filter((block) => block.pageId === page.id),
+            blocks: blockRows
+              .filter((block) => block.pageId === page.id)
+              .map(withMediaAssetDuration),
           })),
       })),
   }));

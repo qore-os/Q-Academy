@@ -231,6 +231,7 @@ type Block = {
   sortOrder: number;
   required: boolean;
   data: BlockData;
+  mediaAssetDurationMilliseconds: number | null;
   revision: number;
   style: {
     width: "compact" | "content" | "full";
@@ -915,7 +916,7 @@ function BlockEditorFields({
     videoSourceSelection?.mode === "upload" ||
     videoSourceSelection?.mode === "library"
       ? videoSourceSelection.selection?.durationMilliseconds
-      : undefined;
+      : block.mediaAssetDurationMilliseconds;
   const videoEditorKey = activeVideoAssetId
     ? `asset:${activeVideoAssetId}`
     : activeVideoSourceUrl
@@ -1287,6 +1288,9 @@ function BlockEditorFields({
               kind={block.type as "image" | "video" | "audio" | "file"}
               label={labels[block.type]}
               defaultAssetId={data.mediaAssetId}
+              defaultDurationMilliseconds={
+                block.mediaAssetDurationMilliseconds
+              }
               defaultFileName={data.mediaAssetName}
               defaultUrl={url}
               defaultStockAttribution={data.stockImage?.attribution}

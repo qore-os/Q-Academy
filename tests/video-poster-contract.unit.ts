@@ -179,6 +179,30 @@ test("automatic transcription sends only canonical two-letter languages", () => 
   );
 });
 
+test("persisted video blocks receive only current ready asset duration metadata", () => {
+  const data = source("src/lib/data.ts");
+  const builder = source("src/components/admin/course-builder.tsx");
+  const mediaSource = source(
+    "src/components/admin/course-media-source-field.tsx",
+  );
+
+  assert.match(data, /eq\(mediaAssets\.organizationId, organizationId\)/);
+  assert.match(data, /eq\(mediaAssets\.status, "ready"\)/);
+  assert.match(data, /isNull\(mediaAssets\.deletedAt\)/);
+  assert.match(
+    data,
+    /mediaAssetDurationMilliseconds:[\s\S]*blockMediaAssetDurations\.get\(block\.data\.mediaAssetId\) \?\? null/,
+  );
+  assert.match(
+    builder,
+    /: block\.mediaAssetDurationMilliseconds;[\s\S]*defaultDurationMilliseconds=\{\s*block\.mediaAssetDurationMilliseconds\s*\}/,
+  );
+  assert.match(
+    mediaSource,
+    /durationMilliseconds: defaultDurationMilliseconds \?\? null/,
+  );
+});
+
 test("editor keeps manual AI output separate and durable jobs own automatic descriptions", () => {
   const editor = source("src/components/admin/video-transcript-editor.tsx");
   assert.match(editor, /name="caption"/);

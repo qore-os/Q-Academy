@@ -141,6 +141,7 @@ function PreviewBlock({
         playbackPolicy={data.videoPlayback}
         mediaAssetId={data.mediaAssetId}
         poster={data.videoPoster}
+        showPosterBeforePlayback
         locale={locale}
       />
     );

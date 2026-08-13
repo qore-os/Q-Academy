@@ -256,6 +256,17 @@ test("video poster and description workflow fits the editor", async ({
       .locator('input[name="mediaAssetId"]:not([disabled])')
       .inputValue();
     expect(uploadedVideoId).toMatch(/^[0-9a-f-]{36}$/i);
+    const [uploadedVideo] = await client<
+      Array<{ duration_milliseconds: number | null; status: string }>
+    >`
+      select duration_milliseconds, status
+      from media_assets
+      where id = ${uploadedVideoId}
+    `;
+    expect(uploadedVideo).toEqual({
+      duration_milliseconds: 1_000,
+      status: "ready",
+    });
     await expect(dialog.locator("video").first()).toHaveAttribute(
       "src",
       `/api/media-assets/${uploadedVideoId}/download`,
