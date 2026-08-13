@@ -1176,10 +1176,16 @@ Die beiden getrennten `media-worker`-Dispatcher rufen auf dem isolierten
 dem nur fuer Medienjobs gueltigen `MEDIA_CRON_SECRET` auf. Dieser Endpunkt ist
 streng begrenzt: Jeder Request claimt hoechstens einen Scan und danach
 hoechstens einen Thumbnail-, Transcode- oder Transkriptjob. Ein einzelner
-Provideraufruf hat ein hartes Zehn-Minuten-Limit. Kompositionsjobs koennen vor
-diesem Aufruf jedoch bis zu acht weitere unveraenderliche S3-Quellen seriell
-materialisieren und vollstaendig verifizieren. Der Dispatcher und die Route
-begrenzen deshalb den gesamten synchronen Request auf 14.400 Sekunden.
+Provideraufruf ist einzeln hart begrenzt. Fuer den Transkriptionspfad laufen
+ClamAV-Scan, Materialisierung der unveraenderlichen S3-Quelle und STT seriell.
+Das gebundene Arbeitsbudget betraegt daher 19.500 Sekunden: 600 Sekunden
+ClamAV, 900 Sekunden S3-Materialisierung und 18.000 Sekunden automatische
+Transkription. Die Route erlaubt 19.800 Sekunden und behaelt damit 300 Sekunden
+fuer Abschlussarbeiten. Der Dispatcher wartet hoechstens 19.900 Sekunden,
+damit er die Antwort mit weiteren 100 Sekunden Transportreserve empfangen und
+atomar persistieren kann. Die Worker-Heartbeat-Grenze liegt nochmals darueber.
+Kompositionsjobs koennen vor ihrem Provideraufruf bis zu acht weitere
+unveraenderliche S3-Quellen seriell materialisieren und vollstaendig verifizieren.
 Retention oder S3-Harddelete koennen die beiden Jobschleifen daher nicht
 blockieren.
 
@@ -1193,26 +1199,39 @@ Quell-Digest, startet FFmpeg beziehungsweise den konfigurierten STT-Provider
 ohne Shell und speichert ein Derivat erst nach erneuter Version-/Metadaten-/
 Digestpruefung. Vor Kundenfreigabe muessen S3 und die konkrete STT-Installation
 im Runner-Netz abgenommen werden. Ist automatische Transkription beim ersten
-Release noch nicht freigegeben, muss `MEDIA_TRANSCRIPTION_ENABLED=false` gesetzt
-sein. Dieser explizite Modus ueberspringt nur den Provider-Canary; Transkriptjobs
+Release noch nicht freigegeben, bleibt `MEDIA_TRANSCRIPTION_ENABLED=false`; das
+ist auch der Produktionsdefault bei fehlendem Wert. Nur eine explizite, gepruefte
+Freigabe darf den Wert auf `true` setzen. Der deaktivierte Modus ueberspringt den Provider-Canary; Transkriptjobs
 scheitern lokal mit `provider_unavailable`, und es wird kein Audio uebertragen.
 Der weiterhin deklarierte Secret-Bind zeigt dann auf eine leere, root-verwaltete
 Platzhalterdatei, nicht auf einen vermeintlichen API-Schluessel:
 
-Im aktivierten Modus ist der Produktionsadapter auf `whisper-1` und
-`https://api.openai.com/v1/audio/transcriptions` festgelegt. Sein dedizierter
+Im aktivierten Modus ist der Produktionsadapter auf
+`gpt-4o-transcribe-diarize`, `response_format=diarized_json`,
+`chunking_strategy=auto` und
+`https://api.openai.com/v1/audio/transcriptions` festgelegt. Nur die daraus
+gelieferten validen Zeitsegmente werden deterministisch als WebVTT
+serialisiert; Sprecherlabels bleiben ausserhalb des Cue-Texts. Sein dedizierter
 Schluessel liegt standardmaessig nur in
 `/etc/q-academy/openai-transcription-api-key` mit Host-Owner `1001:1001` und
 Modus `0400`; `OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE` darf ausschliesslich
 einen gleich geschuetzten alternativen Hostpfad benennen. UID/GID 1001 bleibt
-auf dem Host ohne Login-Konto fuer den Container reserviert. Vor dem Lauf gilt:
+auf dem Host ohne Login-Konto fuer den Container reserviert. Release, Reconcile
+und Rollback verlangen zusaetzlich hoechstens 1024 Byte, im aktivierten Modus
+mindestens acht Byte und im deaktivierten Modus eine exakt leere
+Platzhalterdatei. Bei aktivierter Transkription muessen Hostpfad und Inhalt vom
+allgemeinen Text-KI-Credential verschieden sein. Die Produktionsuebergaenge
+oeffnen beide Dateien ohne Symlink-Folge und lehnen einen Identitaetswechsel
+waehrend des stillen Inhaltsvergleichs ab; Credential-Inhalte werden dabei
+weder ausgegeben noch als Prozessargument oder Umgebungswert weitergereicht.
+Vor dem Lauf gilt:
 
 ```bash
 test "$(stat -c '%u:%g:%a' /etc/q-academy/openai-transcription-api-key)" = \
   "1001:1001:400"
 ```
 
-Der Medien-Preflight uebertraegt einen synthetischen Audio-Canary an den echten
+Der Medien-Preflight uebertraegt einen gesprochenen Audio-Canary an den echten
 Provider. Ohne dokumentierte Freigabe von Audio-Egress, Rechtsgrundlage oder
 Einwilligung, Datenschutzhinweis, AVV/DPA, Retention/Datenregion und
 Kostenalarmierung darf dieses Gate nicht ausgefuehrt und der Medienbetrieb
@@ -1230,6 +1249,24 @@ Eine leere Datei deaktiviert externe KI kontrolliert; Kernfunktionen bleiben im
 Fallback verfuegbar. Ein bisheriger Inline-Wert `AI_API_KEY` muss aus der
 Produktionsumgebung entfernt werden.
 
+Das Produktionsmodell muss explizit als `AI_MODEL=gpt-5.6-terra` gesetzt sein;
+App-Start, Release, Reconcile und Rollback lehnen fehlende oder abweichende
+Werte ab. Die App verwendet
+weiterhin den offiziell unterstuetzten Chat-Completions-Vertrag, damit explizit
+konfigurierte OpenAI-kompatible Endpunkte funktionsfaehig bleiben. Fuer GPT-5.6
+werden `max_completion_tokens`, Developer-Nachrichten, `store=false` und als
+konservativer Migrations-Baseline `reasoning_effort=none` gesendet.
+
+Ein Wechsel auf die Responses API ist fuer diesen Modellwechsel kein
+Startvertrag: GPT-5.6 Terra unterstuetzt Chat Completions und Structured Outputs
+weiterhin offiziell, waehrend `AI_BASE_URL` lokal auch kompatible Provider
+adressieren kann. Responses ist ein separates Qualitaets-Gate fuer den
+mehrstufigen Q-Coach. Vor einem Wechsel muessen dessen Verlauf, Usage-Metriken,
+Fehlerparser und Provider-Kompatibilitaet gemeinsam migriert und gegen reale
+Dialoge evaluiert werden. Ebenso darf `reasoning_effort` erst nach einem Canary
+von `none` auf `low` steigen, weil das Completion-Limit auch Reasoning-Tokens
+umfasst und sonst vor sichtbarem Output ausgeschopft werden kann.
+
 Erstellung oder Rotation erfolgt atomar und ohne Ausgabe des Schluessels. Die
 Quelldatei im ersten Befehl muss bereits root-only lesbar sein:
 
@@ -1243,9 +1280,23 @@ test "$(stat -c '%u:%g:%a' /etc/q-academy/ai-api-key)" = "1001:1001:400"
 ```
 
 Zum Deaktivieren wird derselbe Ablauf mit einer leeren root-only Quelldatei
-verwendet. Danach App neu deployen beziehungsweise neu starten und
-`npm run ai:course-provider:preflight` nur bei bewusst aktivierter externer KI
-ausfuehren. Ein Rollback verwendet weiterhin die aktuell montierte Datei; eine
+verwendet. Bei einer nicht leeren Datei fuehren Release, Reconcile und Rollback
+vor der Runtime-Aktivierung automatisch einen auf 90 Sekunden begrenzten echten
+Structured-Output-Canary gegen das konfigurierte `AI_BASE_URL` aus. Der
+Non-root-Operations-Container erhaelt nur diesen App-Schluessel, verlangt als
+autoritative Response-Modellkennung exakt `gpt-5.6-terra` und gibt weder
+Credential noch Provider-Response aus. Er ist nur an das kontrollierte
+`egress`-Netz angebunden; der Host-Firewall-Vertrag wird vor dem Canary angewendet
+und verifiziert. Bei einer leeren Datei wird das Gate ohne Provider-Egress
+explizit uebersprungen. Ein manueller Lauf erfolgt mit:
+
+```bash
+docker compose --env-file "$Q_ACADEMY_ENV_FILE" -f compose.production.yml \
+  --profile operations run --rm --no-deps --no-build --pull never \
+  ai-provider-preflight
+```
+
+Ein Rollback verwendet weiterhin die aktuell montierte Datei; eine
 Schluesselrotation muss bei Bedarf separat auf die vorherige Datei
 zurueckgedreht werden. Der Transkriptionsschluessel bleibt in der oben
 beschriebenen separaten Datei und wird niemals in den App-Container gemountet.
@@ -1272,7 +1323,7 @@ Das vollstaendige Provider- und Datenmodell steht in
 `scheduler`, `media-worker` und `media-maintenance` aktualisieren jeweils nur
 nach einer erfolgreichen HTTP-2xx-Antwort einen atomar geschriebenen
 Success-Marker unter `/tmp`. Der Medien-Dispatcher aktualisiert waehrend seines
-auf vier Stunden begrenzten Requests zusaetzlich alle 30 Sekunden einen
+auf 19.900 Sekunden begrenzten HTTP-Requests zusaetzlich alle 30 Sekunden einen
 separaten In-progress-Marker; dieser belegt nur Prozessaktivitaet und wird nie
 als fachlicher Erfolg gewertet. Transportfehler werden als HTTP `000` gezaehlt.
 Nach `SCHEDULER_MAX_CONSECUTIVE_FAILURES`,
@@ -1846,7 +1897,12 @@ und beide Healthchecks pruefen. Das verwendete Backup und die Freigabe protokoll
 Der Runtime-Rollback ist ausschliesslich als bestaetigtes, prozessgesperrtes
 Skript verfuegbar. Es aendert weder Schema noch Datenbank und
 bricht ohne vorhandenes Image, exakte Tag-Bestaetigung oder dokumentierte
-Migrationskompatibilitaet ab. Dieses Beispiel gilt fuer den normalen Rollback
+Migrationskompatibilitaet ab. Seit der GPT-5.6-/Diarize-Migration muessen App,
+Media-Runner und Media-Preflight ausserdem exakt dieselben eingebetteten
+AI-Laufzeitvertraege tragen. Ein Runtime-Rollback auf ein Image vor dieser
+Vertragsgrenze wird vor Preflight, Writer-Stop und Datenmutation geschlossen
+abgelehnt; in diesem Fall ist ein vorwaerts gerichteter Fix oder ein separat
+freigegebener Restore erforderlich. Dieses Beispiel gilt fuer den normalen Rollback
 ohne Pending-Marker; der Marker-Sonderpfad ist ausschliesslich im Abschnitt
 "Offenen Pending-Release sicher aufloesen" beschrieben:
 

@@ -6,6 +6,12 @@ function source(path: string) {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
+function matchedInteger(value: string, pattern: RegExp) {
+  const match = pattern.exec(value);
+  if (!match?.[1]) throw new Error(`Missing numeric contract: ${pattern}`);
+  return Number(match[1].replaceAll("_", ""));
+}
+
 test("S3 processing runner binds exact source versions and verifies output uploads", () => {
   const worker = source("src/lib/media/processing-worker.ts");
   const storage = source("src/lib/media/s3-storage.ts");
@@ -111,7 +117,115 @@ test("processing jobs renew their owned lease and abort work after claim loss", 
   const dispatchRoute = source(
     "src/app/api/internal/jobs/media/dispatch/route.ts",
   );
-  assert.match(dispatchRoute, /export const maxDuration = 14_400/);
+  assert.match(dispatchRoute, /export const maxDuration = 19_800/);
+});
+
+test("media dispatch envelopes cover the serial scan and transcription critical path", () => {
+  const clamAv = source("src/lib/media/clamav-scanner.ts");
+  const s3Timeouts = source("src/lib/media/s3-operation-timeout.ts");
+  const processorTimeouts = source("src/lib/media/processing-preflight.ts");
+  const dispatchRoute = source(
+    "src/app/api/internal/jobs/media/dispatch/route.ts",
+  );
+  const dispatcher = source("scripts/ops/dispatcher-http-post.mjs");
+  const compose = source("compose.production.yml");
+
+  const clamAvSeconds =
+    matchedInteger(
+      clamAv,
+      /DEFAULT_SCAN_TIMEOUT_MS = ([0-9_]+) \* 60_000/,
+    ) * 60;
+  const materializationSeconds =
+    matchedInteger(
+      s3Timeouts,
+      /S3_SCAN_STREAM_DEADLINE_MS = ([0-9_]+) \* 60_000/,
+    ) * 60;
+  const transcriptSeconds = matchedInteger(
+    processorTimeouts,
+    /MAX_PROCESSOR_TIMEOUT_SECONDS = ([0-9_]+)/,
+  );
+  const routeSeconds = matchedInteger(
+    dispatchRoute,
+    /export const maxDuration = ([0-9_]+)/,
+  );
+  const dispatcherSeconds = matchedInteger(
+    dispatcher,
+    /maximumTimeoutSeconds = ([0-9_]+)/,
+  );
+  const productionRequestSeconds = matchedInteger(
+    compose,
+    /media\/dispatch\?limit=1'[\s\S]*?--timeout-seconds ([0-9]+)/,
+  );
+  const pollSeconds = matchedInteger(
+    compose,
+    /MEDIA_WORKER_POLL_SECONDS:-([0-9]+)/,
+  );
+  const heartbeatSeconds = matchedInteger(
+    compose,
+    /MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-([0-9]+)/,
+  );
+
+  const boundedWorkSeconds =
+    clamAvSeconds + materializationSeconds + transcriptSeconds;
+  assert.equal(boundedWorkSeconds, 19_500);
+  assert.equal(routeSeconds, boundedWorkSeconds + 300);
+  assert.equal(dispatcherSeconds, routeSeconds + 100);
+  assert.equal(productionRequestSeconds, dispatcherSeconds);
+  assert.match(
+    compose,
+    /MEDIA_WORKER_POLL_SECONDS \+ 19900 \+ 60/,
+  );
+  assert.ok(
+    heartbeatSeconds >= pollSeconds + dispatcherSeconds + 60,
+    "The default heartbeat must cover poll, caller timeout, and settlement.",
+  );
+});
+
+test("automatic transcription duration fails before source materialization", () => {
+  const worker = source("src/lib/media/processing-worker.ts");
+  const claimedJobStart = worker.indexOf("async function processClaimedJob");
+  const claimedJobEnd = worker.indexOf(
+    "export async function processMediaProcessingQueue",
+    claimedJobStart,
+  );
+  const claimedJob = worker.slice(claimedJobStart, claimedJobEnd);
+  const durationCheck = claimedJob.indexOf(
+    "automaticTranscriptionDurationSupported(source.durationMilliseconds)",
+  );
+  const workDirectory = claimedJob.indexOf("const root = mediaProcessingWorkRoot()");
+  const transcriptProvider = claimedJob.indexOf("await completeTranscript(");
+  assert.ok(durationCheck >= 0);
+  assert.ok(durationCheck < workDirectory);
+  assert.ok(durationCheck < transcriptProvider);
+
+  const enqueueStart = worker.indexOf(
+    "export async function enqueueReadyTranscriptInTransaction",
+  );
+  const enqueueEnd = worker.indexOf(
+    "export async function enqueueMediaProcessingJob",
+    enqueueStart,
+  );
+  const enqueue = worker.slice(enqueueStart, enqueueEnd);
+  assert.match(
+    enqueue,
+    /automaticTranscriptionDurationSupported\(source\.durationMilliseconds\)/,
+  );
+
+  const actions = source("src/lib/course-builder-actions.ts");
+  const actionDurationCheck = actions.indexOf(
+    "automaticTranscriptionDurationSupported(\n          videoDescriptionAsset.durationMilliseconds",
+  );
+  const actionTranscriptEnqueue = actions.indexOf(
+    "await enqueueReadyTranscriptInTransaction(tx",
+    actionDurationCheck,
+  );
+  const actionDescriptionEnqueue = actions.indexOf(
+    "await enqueueVideoDescriptionJobInTransaction(tx",
+    actionDurationCheck,
+  );
+  assert.ok(actionDurationCheck >= 0);
+  assert.ok(actionDurationCheck < actionTranscriptEnqueue);
+  assert.ok(actionDurationCheck < actionDescriptionEnqueue);
 });
 
 test("production runner uses FFmpeg and a bounded disk-backed work root", () => {
@@ -187,7 +301,7 @@ test("media provider keeps its deployment-controlled process boundary shell-free
   assert.match(provider, /shell: false/);
   assert.match(provider, /detached: process\.platform !== "win32"/);
   assert.match(provider, /process\.kill\(-pid, "SIGKILL"\)/);
-  assert.match(provider, /MAX_COMMAND_TIMEOUT_MS = 13_800_000/);
+  assert.match(provider, /MAX_COMMAND_TIMEOUT_MS = 18_000_000/);
   assert.match(provider, /stdio: \["ignore"/);
   assert.match(
     provider,
@@ -202,7 +316,7 @@ test("media provider keeps its deployment-controlled process boundary shell-free
   assert.match(provider, /class DisabledTranscriptProvider/);
   assert.match(
     provider,
-    /MEDIA_TRANSCRIPTION_ENABLED\?\.trim\(\) === "false"[\s\S]*new DisabledTranscriptProvider\(\)/,
+    /MEDIA_TRANSCRIPTION_ENABLED\?\.trim\(\) !== "true"[\s\S]*new DisabledTranscriptProvider\(\)/,
   );
 });
 

@@ -16,6 +16,7 @@ Degradationsueberwachung bewusst voneinander:
 | App-S3-Principal-Preflight | erforderliche App-Rechte und explizit verbotene S3-Rechte | Release blockieren | Erstabnahme und Provider-/IAM-Aenderung |
 | ClamAV-Preflight | sauberer INSTREAM und erkannter Standard-AV-Testvektor | Medienfreigabe blockieren | Release und Scanner-/Signatur-Aenderung |
 | Medien-Preflight | ClamAV, S3, FFmpeg, FFprobe, STT und Arbeitsfilesystem | Medienfreigabe blockieren | Release |
+| Terra-Provider-Preflight | Credential, HTTPS-Endpoint, GPT-5.6-Chatvertrag, Structured Output und autoritative Modellkennung | Release oder Produktionsneustart blockieren | Release, Reconcile, Rollback und Credential-/Provider-Aenderung |
 | interne Metriken | Runtime, Queue-Alter/-Tiefe/-Fehler und Worker-Heartbeats | Alarmieren, nicht automatisch routen | fortlaufend |
 
 Die S3-Zeilen beschreiben im Modus `versioned` den vollstaendigen Vertrag. Im
@@ -38,12 +39,23 @@ Plattformausfall. Externe Provider werden deshalb nicht pro Readiness-Abruf
 beschrieben, gelistet oder mit Schreibcanaries belastet.
 
 Der release-blockierende STT-Teil ist dagegen bewusst echt: Das ausschliesslich
-in den Medien-Images enthaltene Script sendet einen synthetischen Audio-Canary
-an `https://api.openai.com/v1/audio/transcriptions` mit `whisper-1`. Erst nach
+in den Medien-Images enthaltene Script sendet einen gesprochenen Audio-Canary
+an `https://api.openai.com/v1/audio/transcriptions` mit
+`gpt-4o-transcribe-diarize`, `diarized_json` und automatischem Server-VAD. Der
+Canary gilt nur mit validen Zeitsegmenten und erkannten Canary-Begriffen. Erst nach
 Freigabe von Audio-Egress, Einwilligung/Rechtsgrundlage, AVV/DPA, Retention,
 Datenregion und Kostenkontrollen sowie erfolgreichem Canary darf der
 Medienbetrieb live gehen. `--help`, ein Offline-Mock oder ein zweiter Provider
 erfuellt diesen Vertrag nicht.
+
+Auch der allgemeine KI-Provider wird bei einer nicht leeren App-Credential-Datei
+mit echtem Egress geprueft. Der Non-root-Operations-Container sendet einen
+kleinen, zeit- und antwortgroessenbegrenzten Structured-Output-Request mit dem
+Produktionsvertrag fuer `gpt-5.6-terra`. Nur ein vollstaendiger Abschluss, das
+exakte Canary-JSON und die autoritative Response-Modellkennung
+`gpt-5.6-terra` bestehen. Eine leere Credential-Datei deaktiviert externe KI
+und ueberspringt den Canary ohne Egress; Provider-Ausfaelle werden nicht in die
+laufende HTTP-Readiness aufgenommen.
 
 ## App-S3-Principal
 

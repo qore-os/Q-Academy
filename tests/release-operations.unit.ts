@@ -101,6 +101,10 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /pg_class relation_record/);
   assert.match(deploy, /Fresh database has no application relations/);
   assert.match(deploy, /docker image inspect/);
+  assert.match(
+    deploy,
+    /verify_ai_runtime_contract_images "\$release_tag"/,
+  );
   assert.match(deploy, /Q_ACADEMY_KEY_ROTATION_IMAGE/);
   assert.match(deploy, /Q_ACADEMY_TENANT_OPS_IMAGE/);
   assert.match(deploy, /Q_ACADEMY_MEDIA_RUNNER_IMAGE/);
@@ -1045,7 +1049,15 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.match(rollback, /target release image is not present locally/);
   assert.match(
     rollback,
-    /target_runtime_components=\(app media-runner media-preflight s3-app-principal-preflight\)/,
+    /verify_ai_runtime_contract_images "\$target_tag"/,
+  );
+  assert.match(
+    rollback,
+    /rollback target predates or disagrees with the required AI runtime contracts/,
+  );
+  assert.match(
+    rollback,
+    /target_runtime_components=\(app tenant-ops media-runner media-preflight s3-app-principal-preflight\)/,
   );
   assert.match(rollback, /target_runtime_components\+=\(dispatcher caddy\)/);
   assert.match(rollback, /stop -t 30 "\$\{DATABASE_WRITER_SERVICES\[@\]\}"/);
@@ -1131,6 +1143,48 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.ok(caddyVolumeInit >= 0 && caddyVolumeInit < caddyHealthGate);
   assert.ok(caddyHealthGate < externalReadiness);
   assert.ok(externalReadiness < releasePersistence);
+});
+
+test("runtime AI contract labels reject pre-migration images before activation", () => {
+  assert.match(
+    common,
+    /AI_TEXT_RUNTIME_CONTRACT=gpt-5\.6-terra-chat-completions-v1/,
+  );
+  assert.match(
+    common,
+    /TRANSCRIPTION_RUNTIME_CONTRACT=openai-diarized-transcription-v1/,
+  );
+  const contractScript = String.raw`
+set -euo pipefail
+source scripts/ops/release-common.sh
+Q_TEST_LABEL_MODE=valid
+docker() {
+  [[ "$1" == image && "$2" == inspect && "$3" == --format ]]
+  if [[ "$Q_TEST_LABEL_MODE" == invalid ]]; then
+    printf 'legacy-contract\n'
+  elif [[ "$4" == *ai-text-contract* ]]; then
+    printf '%s\n' "$AI_TEXT_RUNTIME_CONTRACT"
+  else
+    printf '%s\n' "$TRANSCRIPTION_RUNTIME_CONTRACT"
+  fi
+}
+verify_ai_runtime_contract_images git-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+Q_TEST_LABEL_MODE=invalid
+if verify_ai_runtime_contract_images git-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; then
+  exit 20
+fi
+if verify_ai_runtime_contract_images latest; then
+  exit 21
+fi
+printf 'ai-runtime-contract-ok\n'
+`;
+  const result = spawnSync("bash", ["-s"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: contractScript,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "ai-runtime-contract-ok\n");
 });
 
 test("release state and upstream image references fail closed", () => {

@@ -341,6 +341,7 @@ test(
       for (const providerInput of providerInputs) {
         const serialized = JSON.stringify(providerInput);
         assert.equal(providerInput.userFirstName, "Testmitglied");
+        assert.match(providerInput.safetyIdentifier, /^[0-9a-f]{64}$/);
         assert.equal(serialized.includes(organizationId), false);
         assert.equal(serialized.includes(course!.id), false);
         assert.equal(serialized.includes(courseVersionId), false);

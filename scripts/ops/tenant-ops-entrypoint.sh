@@ -20,6 +20,7 @@ Allowed commands:
   audit:verify
   user-data:export
   test:http-slo
+  ai:provider:preflight
   help
 
 Input files are restricted to /operations/input. New exports and erasure
@@ -112,7 +113,7 @@ command_name="$1"
 shift
 
 case "$command_name" in
-  help|--help|-h|tenant:provision|tenant:status|tenant:contract|tenant:erase|tenant:erase:verify|audit:export|audit:verify|user-data:export|test:http-slo) ;;
+  help|--help|-h|tenant:provision|tenant:status|tenant:contract|tenant:erase|tenant:erase:verify|audit:export|audit:verify|user-data:export|test:http-slo|ai:provider:preflight) ;;
   *)
     printf 'Unsupported tenant operation: %s\n' "$command_name" >&2
     usage >&2
@@ -122,7 +123,7 @@ esac
 
 scope="${Q_ACADEMY_OPS_SCOPE:-}"
 case "$scope:$command_name" in
-  *:help|*:--help|*:-h|admin:tenant:provision|admin:tenant:status|admin:tenant:contract|export:audit:export|export:user-data:export|erasure:tenant:erase|verify:tenant:erase:verify|verify:audit:verify|http-slo:test:http-slo) ;;
+  *:help|*:--help|*:-h|admin:tenant:provision|admin:tenant:status|admin:tenant:contract|export:audit:export|export:user-data:export|erasure:tenant:erase|verify:tenant:erase:verify|verify:audit:verify|http-slo:test:http-slo|ai-provider:ai:provider:preflight) ;;
   *)
     printf 'Operation %s is not permitted in scope %s.\n' "$command_name" "${scope:-unset}" >&2
     exit 77
@@ -167,5 +168,9 @@ case "$command_name" in
     ;;
   test:http-slo)
     exec /app/node_modules/.bin/tsx /app/scripts/http-slo-smoke.ts "$@"
+    ;;
+  ai:provider:preflight)
+    [ "$#" -eq 0 ] || fail "ai:provider:preflight does not accept arguments."
+    exec node --conditions=react-server --import tsx /app/scripts/ai-course-provider-preflight.ts
     ;;
 esac

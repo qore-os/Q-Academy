@@ -26,6 +26,7 @@ import {
   resolveS3BrowserUploadOriginInventory,
   S3BrowserUploadOriginInventoryError,
 } from "./media/s3-browser-upload-origins";
+import { DEFAULT_AI_TEXT_MODEL } from "./ai/chat-completion-config";
 
 export type EnvironmentSource = Record<string, string | undefined>;
 
@@ -537,6 +538,11 @@ export function validateProductionServerEnvironment(
   }
   if (valueOf(environment, "AI_API_KEY")) {
     issues.push("AI_API_KEY must be unset in production; use AI_API_KEY_FILE.");
+  }
+  if (valueOf(environment, "AI_MODEL") !== DEFAULT_AI_TEXT_MODEL) {
+    issues.push(
+      `AI_MODEL must be '${DEFAULT_AI_TEXT_MODEL}' in production.`,
+    );
   }
   const aiApiKeyFile = valueOf(environment, "AI_API_KEY_FILE");
   if (

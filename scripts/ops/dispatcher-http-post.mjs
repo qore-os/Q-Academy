@@ -9,7 +9,9 @@ import { pathToFileURL } from "node:url";
 
 const maximumAuthorizationBytes = 1024;
 const maximumResponseBytes = 1024 * 1024;
-const maximumTimeoutSeconds = 14_400;
+// The media route has a 19,800-second execution envelope. Its caller gets a
+// separate 100-second transport margin to receive and persist the response.
+const maximumTimeoutSeconds = 19_900;
 const productionTemporaryDirectory = "/tmp";
 
 const allowedEndpoints = new Set([

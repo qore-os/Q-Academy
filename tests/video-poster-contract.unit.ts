@@ -93,6 +93,92 @@ test("description generation uses only a server-fetched immutable transcript", (
   assert.match(route, /recordProviderCircuitFailure/);
 });
 
+test("transcript routes require current succeeded processing provenance", () => {
+  for (const path of [
+    "src/app/api/media-assets/[id]/video-description/route.ts",
+    "src/app/api/media-assets/[id]/processing/route.ts",
+  ]) {
+    const route = source(path);
+    const lookupStart = route.indexOf(".from(mediaAssetTranscripts)");
+    const lookupEnd = route.indexOf(
+      ".orderBy(desc(mediaAssetTranscripts.createdAt))",
+      lookupStart,
+    );
+    const lookup = route.slice(lookupStart, lookupEnd);
+    assert.ok(lookupStart >= 0 && lookupEnd > lookupStart);
+    assert.match(lookup, /\.innerJoin\(\s*mediaProcessingJobs,/);
+    assert.match(
+      lookup,
+      /eq\(mediaProcessingJobs\.id, mediaAssetTranscripts\.processingJobId\)/,
+    );
+    assert.match(
+      lookup,
+      /eq\(\s*mediaProcessingJobs\.organizationId,\s*mediaAssetTranscripts\.organizationId,/,
+    );
+    assert.match(
+      lookup,
+      /eq\(\s*mediaProcessingJobs\.sourceAssetId,\s*mediaAssetTranscripts\.sourceAssetId,/,
+    );
+    assert.match(
+      lookup,
+      /eq\(\s*mediaProcessingJobs\.sourceContentSha256,\s*mediaAssetTranscripts\.sourceContentSha256,/,
+    );
+    assert.match(lookup, /eq\(mediaProcessingJobs\.type, "transcript"\)/);
+    assert.match(lookup, /eq\(mediaProcessingJobs\.status, "succeeded"\)/);
+    assert.match(
+      lookup,
+      /eq\(mediaProcessingJobs\.provider, TRANSCRIPT_PROCESSING_PROVIDER\)/,
+    );
+    assert.doesNotMatch(lookup, /mediaAssetTranscripts\.provider/);
+  }
+});
+
+test("automatic transcription sends only canonical two-letter languages", () => {
+  const processingRoute = source(
+    "src/app/api/media-assets/[id]/processing/route.ts",
+  );
+  const descriptionRoute = source(
+    "src/app/api/media-assets/[id]/video-description/route.ts",
+  );
+  const editor = source("src/components/admin/video-transcript-editor.tsx");
+  const worker = source("src/lib/media/processing-worker.ts");
+  assert.match(
+    processingRoute,
+    /\.regex\(AUTOMATIC_TRANSCRIPTION_LANGUAGE_PATTERN\)/,
+  );
+  assert.doesNotMatch(
+    processingRoute.slice(
+      processingRoute.indexOf("const requestSchema"),
+      processingRoute.indexOf("async function assertSharedVideoProcessingSources"),
+    ),
+    /\.toLowerCase\(\)/,
+  );
+  assert.match(
+    descriptionRoute.slice(
+      descriptionRoute.indexOf("const requestSchema"),
+      descriptionRoute.indexOf("function response"),
+    ),
+    /\.regex\(AUTOMATIC_TRANSCRIPTION_LANGUAGE_PATTERN\)/,
+  );
+  assert.match(
+    descriptionRoute,
+    /automaticTranscriptionDurationSupported\(asset\.durationMilliseconds\)/,
+  );
+  assert.match(
+    editor,
+    /const requestedLanguage = automaticTranscriptLanguage;[\s\S]*language: requestedLanguage/,
+  );
+  assert.match(editor, /disabled=\{[\s\S]*!automaticTranscriptLanguage/);
+  assert.match(
+    worker,
+    /const language = normalizeAutomaticTranscriptionLanguage\(input\.language\)/,
+  );
+  assert.match(
+    worker,
+    /const language = normalizeAutomaticTranscriptionLanguage\(\s*job\.options\.language/,
+  );
+});
+
 test("editor keeps manual AI output separate and durable jobs own automatic descriptions", () => {
   const editor = source("src/components/admin/video-transcript-editor.tsx");
   assert.match(editor, /name="caption"/);
@@ -100,6 +186,14 @@ test("editor keeps manual AI output separate and durable jobs own automatic desc
   assert.match(editor, /scope\.controller\.abort\(\)/);
   assert.match(editor, /signal: scope\.controller\.signal/);
   assert.match(editor, /TRANSCRIPT_POLLING_MAXIMUM_MS/);
+  assert.match(
+    editor,
+    /const automaticTranscriptionAvailable =\s*automaticTranscriptionDurationSupported\(sourceDurationMilliseconds\)/,
+  );
+  assert.match(
+    editor,
+    /disabled=\{[\s\S]*?!automaticTranscriptionAvailable[\s\S]*?!automaticTranscriptLanguage/,
+  );
   assert.match(editor, /transcriptEditVersionRef/);
   assert.doesNotMatch(
     editor,
@@ -108,6 +202,10 @@ test("editor keeps manual AI output separate and durable jobs own automatic desc
   const generateTranscript = editor.slice(
     editor.indexOf("  const generateTranscript = async"),
     editor.indexOf("  generateTranscriptRef.current = generateTranscript;"),
+  );
+  assert.match(
+    generateTranscript,
+    /!serverProcessingEnabled \|\| !automaticTranscriptionAvailable/,
   );
   assert.doesNotMatch(
     generateTranscript,
@@ -139,6 +237,10 @@ test("editor keeps manual AI output separate and durable jobs own automatic desc
   );
   assert.match(editor, /setDescriptionSuggestion\(payload\.description\)/);
   assert.match(editor, /onClick=\{\(\) => void generateDescription\(\)\}/);
+  assert.match(
+    editor,
+    /transcriptLanguage: automaticTranscriptLanguage/,
+  );
   assert.doesNotMatch(editor, /setDescriptionTouched\(true\);[\s\S]*?fetch\(/);
   assert.match(editor, /onDescriptionPendingChange\?\.\(true\)/);
   assert.match(editor, /onDescriptionPendingChange\?\.\(false\)/);
@@ -212,6 +314,14 @@ test("a newly selected primary video drives and resets the unsaved editor", () =
   assert.match(
     editor,
     /persistedLanguage[\s\S]*embeddedLanguage[\s\S]*const initialLanguage/,
+  );
+  assert.match(
+    editor,
+    /normalizeLegacyAutomaticTranscriptionLanguage\(initialLanguageCandidate\)/,
+  );
+  assert.match(
+    editor,
+    /!automaticTranscriptionAvailable \|\|[\s\S]*!automaticTranscriptLanguage[\s\S]*automaticTranscriptRequestedRef\.current = true/,
   );
   assert.match(builder, /sourceAssetId=\{activeVideoAssetId\}/);
   assert.match(

@@ -108,6 +108,8 @@ app_domain="$(production_env_value "$env_file" APP_DOMAIN)" || fail "production 
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
 verify_ai_api_key_file "$env_file" || fail "AI API key file is invalid"
+verify_openai_transcription_api_key_file "$env_file" || fail "OpenAI transcription API key file is invalid"
+verify_ai_credential_separation "$env_file" || fail "AI credential separation is invalid"
 verify_caddy_sites_directory "$env_file" || fail "external Caddy sites directory is invalid"
 configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 configured_tag="$(production_env_value "$env_file" APP_IMAGE_TAG)" || fail "APP_IMAGE_TAG is invalid"
@@ -146,7 +148,7 @@ fi
 [[ "${MIGRATIONS_BACKWARD_COMPATIBLE:-false}" == "true" ]] || fail "migration compatibility must be explicitly approved"
 
 target_release_images=()
-target_runtime_components=(app media-runner media-preflight s3-app-principal-preflight)
+target_runtime_components=(app tenant-ops media-runner media-preflight s3-app-principal-preflight)
 target_runtime_components+=(dispatcher caddy)
 for component in "${target_runtime_components[@]}"; do
   target_release_images+=("q-academy-$component:$target_tag")
@@ -155,6 +157,8 @@ for target_image in "${target_release_images[@]}"; do
   docker image inspect "$target_image" >/dev/null 2>&1 ||
     fail "target release image is not present locally: $target_image"
 done
+verify_ai_runtime_contract_images "$target_tag" ||
+  fail "rollback target predates or disagrees with the required AI runtime contracts"
 export APP_IMAGE_TAG="$target_tag"
 compose=(docker compose --env-file "$env_file" -f "$compose_file" "${MEDIA_S3_COMPOSE_PROFILE_ARGS[@]}")
 strato_compose=(docker compose --env-file "$env_file" -f "$compose_file" --profile strato)
@@ -171,6 +175,13 @@ run bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" apply \
   --project "$project_name"
 run bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" verify \
   --project "$project_name"
+
+if ai_api_key_file_is_configured "$env_file"; then
+  run_with_timeout "$AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS" \
+    "${compose[@]}" run --rm --no-deps --no-build --pull never ai-provider-preflight
+else
+  printf 'External AI is disabled; skipping the Terra provider preflight.\n'
+fi
 
 media_bucket="$(production_env_value "$env_file" MEDIA_S3_BUCKET)" || fail "MEDIA_S3_BUCKET is invalid"
 run "${compose[@]}" run --rm --no-deps database-config-preflight

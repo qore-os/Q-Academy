@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import postgres from "postgres";
 
+import {
+  MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+} from "../src/lib/media/transcription-contract";
+
 const databaseUrl =
   process.env.DATABASE_URL ??
   "postgresql://postgres:postgres@127.0.0.1:54329/q_academy";
@@ -22,10 +27,15 @@ test("shared video media remains manageable from every referencing course", asyn
     poster: randomUUID(),
     audio: randomUUID(),
   };
+  const overlongVideoId = randomUUID();
   const unboundVideoId = randomUUID();
   const unboundTranscriptJobId = randomUUID();
   const transcriptJobId = randomUUID();
+  const currentTranscriptJobId = randomUUID();
   const transcriptRequestKey = randomUUID().replaceAll("-", "").repeat(2);
+  const currentTranscriptRequestKey = randomUUID()
+    .replaceAll("-", "")
+    .repeat(2);
   let trainerId = "";
   let moduleId = "";
   let sourceCourseId = "";
@@ -221,17 +231,17 @@ test("shared video media remains manageable from every referencing course", asyn
       ) values (
         ${transcriptJobId}, ${fixture.organizationId}, ${assetIds.video},
         ${fixture.ownerId}, 'transcript', 'succeeded', ${transcriptRequestKey},
-        ${"a".repeat(64)}, 'e2e-transcript', ${sql.json({ language: "de" })},
+        ${"a".repeat(64)}, 'configured-transcript-v1', ${sql.json({ language: "de" })},
         ${sql.json({})}, now()
       )
     `;
     await sql`
       insert into media_asset_transcripts (
         organization_id, source_asset_id, processing_job_id,
-        source_content_sha256, language, provider, document
+        source_content_sha256, language, provider, document, created_at
       ) values (
         ${fixture.organizationId}, ${assetIds.video}, ${transcriptJobId},
-        ${"a".repeat(64)}, 'de', 'e2e-transcript',
+        ${"a".repeat(64)}, 'de', ${TRANSCRIPT_PROCESSING_PROVIDER},
         ${sql.json({
           version: 1,
           language: "de",
@@ -239,10 +249,41 @@ test("shared video media remains manageable from every referencing course", asyn
             {
               startMs: 0,
               endMs: 2_000,
-              text: "Ein gemeinsames Lernvideo mit sicherem Transkript.",
+              text: "Dieses Legacy-Transkript darf nicht sichtbar sein.",
             },
           ],
-        })}
+        })}, now() - interval '1 minute'
+      )
+    `;
+    await sql`
+      insert into media_processing_jobs (
+        id, organization_id, source_asset_id, requested_by_id, type, status,
+        request_key, source_content_sha256, provider, options
+      ) values (
+        ${currentTranscriptJobId}, ${fixture.organizationId}, ${assetIds.video},
+        ${fixture.ownerId}, 'transcript', 'queued',
+        ${currentTranscriptRequestKey}, ${"a".repeat(64)},
+        ${TRANSCRIPT_PROCESSING_PROVIDER}, ${sql.json({ language: "de" })}
+      )
+    `;
+    await sql`
+      insert into media_asset_transcripts (
+        organization_id, source_asset_id, processing_job_id,
+        source_content_sha256, language, provider, document, created_at
+      ) values (
+        ${fixture.organizationId}, ${assetIds.video}, ${currentTranscriptJobId},
+        ${"a".repeat(64)}, 'de', 'legacy-looking-row-provider',
+        ${sql.json({
+          version: 1,
+          language: "de",
+          segments: [
+            {
+              startMs: 0,
+              endMs: 2_000,
+              text: "Nur dieses aktuelle Transkript darf sichtbar sein.",
+            },
+          ],
+        })}, now()
       )
     `;
     const [block] = await sql<Array<{ id: string }>>`
@@ -316,6 +357,150 @@ test("shared video media remains manageable from every referencing course", asyn
     await expect(
       page.getByText("Wiederverwendbares Modul hinzugefuegt.", { exact: true }),
     ).toBeVisible();
+
+    const [jobsBeforeInvalidLanguage] = await sql<Array<{ count: number }>>`
+      select count(*)::int as count
+      from media_processing_jobs
+      where organization_id = ${fixture.organizationId}
+        and source_asset_id = ${assetIds.video}
+    `;
+    const invalidLanguage = await page.request.post(
+      `/api/media-assets/${assetIds.video}/processing`,
+      {
+        headers: { Origin: "http://127.0.0.1:3000" },
+        data: {
+          type: "transcript",
+          language: "deu",
+          courseId: targetCourseId,
+          blockId,
+        },
+      },
+    );
+    expect(invalidLanguage.status(), await invalidLanguage.text()).toBe(422);
+    const [jobsAfterInvalidLanguage] = await sql<Array<{ count: number }>>`
+      select count(*)::int as count
+      from media_processing_jobs
+      where organization_id = ${fixture.organizationId}
+        and source_asset_id = ${assetIds.video}
+    `;
+    expect(jobsAfterInvalidLanguage.count).toBe(jobsBeforeInvalidLanguage.count);
+
+    const invalidDescriptionLanguage = await page.request.post(
+      `/api/media-assets/${assetIds.video}/video-description`,
+      {
+        headers: { Origin: "http://127.0.0.1:3000" },
+        data: {
+          courseId: targetCourseId,
+          blockId,
+          locale: "de",
+          transcriptLanguage: "deu",
+        },
+      },
+    );
+    expect(
+      invalidDescriptionLanguage.status(),
+      await invalidDescriptionLanguage.text(),
+    ).toBe(422);
+
+    const queuedProcessing = await page.request.get(
+      `/api/media-assets/${assetIds.video}/processing?language=de`,
+    );
+    expect(queuedProcessing.status(), await queuedProcessing.text()).toBe(200);
+    expect((await queuedProcessing.json()).transcript).toBeNull();
+    const queuedDescription = await page.request.post(
+      `/api/media-assets/${assetIds.video}/video-description`,
+      {
+        headers: { Origin: "http://127.0.0.1:3000" },
+        data: {
+          courseId: targetCourseId,
+          blockId,
+          locale: "de",
+          transcriptLanguage: "de",
+        },
+      },
+    );
+    expect(
+      queuedDescription.status(),
+      await queuedDescription.text(),
+    ).toBe(422);
+
+    await sql`
+      update media_processing_jobs
+      set status = 'succeeded', result = ${sql.json({})}, completed_at = now(),
+          updated_at = now()
+      where id = ${currentTranscriptJobId}
+    `;
+    const succeededProcessing = await page.request.get(
+      `/api/media-assets/${assetIds.video}/processing?language=de`,
+    );
+    expect(
+      succeededProcessing.status(),
+      await succeededProcessing.text(),
+    ).toBe(200);
+    const succeededProcessingBody = await succeededProcessing.json();
+    expect(succeededProcessingBody.transcript?.webVtt).toContain(
+      "Nur dieses aktuelle Transkript darf sichtbar sein.",
+    );
+    expect(succeededProcessingBody.transcript?.webVtt).not.toContain(
+      "Dieses Legacy-Transkript darf nicht sichtbar sein.",
+    );
+
+    await sql`
+      insert into media_assets (
+        id, organization_id, uploaded_by_id, purpose, kind, status,
+        storage_driver, storage_key, staging_storage_key, original_file_name,
+        safe_file_name, declared_mime_type, detected_mime_type,
+        declared_size_bytes, actual_size_bytes, duration_milliseconds,
+        quota_bytes, content_sha256, upload_expires_at, uploaded_at,
+        scan_completed_at
+      ) values (
+        ${overlongVideoId}, ${fixture.organizationId}, ${fixture.ownerId},
+        'course_content', 'video', 'ready', 'filesystem',
+        ${`tenants/${fixture.organizationId}/assets/${overlongVideoId}/overlong.mp4`},
+        ${`incoming/tenants/${fixture.organizationId}/assets/${overlongVideoId}/overlong.mp4`},
+        'overlong.mp4', 'overlong.mp4', 'video/mp4', 'video/mp4',
+        1, 1, ${MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS + 1}, 1,
+        ${"d".repeat(64)}, now() + interval '1 hour', now(), now()
+      )
+    `;
+    await sql`
+      insert into course_media_assets (
+        organization_id, course_id, media_asset_id, attached_by_id
+      ) values
+        (${fixture.organizationId}, ${sourceCourseId}, ${overlongVideoId}, ${fixture.ownerId}),
+        (${fixture.organizationId}, ${targetCourseId}, ${overlongVideoId}, ${fixture.ownerId})
+    `;
+    const [overlongBlock] = await sql<Array<{ id: string }>>`
+      insert into content_blocks (
+        lesson_id, page_id, type, title, sort_order, required, data
+      ) values (
+        ${lesson.id}, ${pageId}, 'video', ${`Overlong Video ${suffix}`}, 1,
+        false, ${sql.json({
+          mediaAssetId: overlongVideoId,
+          mediaAssetName: "overlong.mp4",
+          videoUrl: `/api/media-assets/${overlongVideoId}/download`,
+          videoDescriptionIntent: "automatic",
+          transcriptLanguage: "de",
+        })}
+      ) returning id
+    `;
+    const overlongDescription = await page.request.post(
+      `/api/media-assets/${overlongVideoId}/video-description`,
+      {
+        headers: { Origin: "http://127.0.0.1:3000" },
+        data: {
+          courseId: targetCourseId,
+          blockId: overlongBlock.id,
+          locale: "de",
+          transcriptLanguage: "de",
+        },
+      },
+    );
+    expect(
+      overlongDescription.status(),
+      await overlongDescription.text(),
+    ).toBe(422);
+    await sql`delete from content_blocks where id = ${overlongBlock.id}`;
 
     await page
       .getByRole("button", { name: `Shared Lesson ${suffix} 1 Seite` })
@@ -544,7 +729,7 @@ test("shared video media remains manageable from every referencing course", asyn
       delete from media_assets
       where id in (
         ${assetIds.video}, ${assetIds.poster}, ${assetIds.audio},
-        ${unboundVideoId}
+        ${unboundVideoId}, ${overlongVideoId}
       )
     `;
     if (trainerId) await sql`delete from users where id = ${trainerId}`;

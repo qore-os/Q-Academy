@@ -7,7 +7,7 @@ import { parse, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { parseFile } from "music-metadata";
 import sharp from "sharp";
 
@@ -27,6 +27,12 @@ import {
   runBoundedMediaCommand,
 } from "@/lib/media/processing-provider";
 import { resolveMediaProcessorTimeouts } from "@/lib/media/processing-preflight";
+import {
+  automaticTranscriptionDurationSupported,
+  normalizeAutomaticTranscriptionLanguage,
+  normalizeLegacyAutomaticTranscriptionLanguage,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+} from "@/lib/media/transcription-contract";
 import {
   deleteStoredMediaObject,
   deleteStoredMediaObjectRevision,
@@ -97,6 +103,9 @@ function requestKey(input: {
         asset: input.sourceAssetId,
         digest: input.sourceContentSha256,
         type: input.type,
+        ...(input.type === "transcript"
+          ? { provider: TRANSCRIPT_PROCESSING_PROVIDER }
+          : {}),
         options: Object.fromEntries(
           Object.entries(input.options).sort(([left], [right]) =>
             left.localeCompare(right),
@@ -109,7 +118,7 @@ function requestKey(input: {
 
 function providerFor(type: JobType, options: MediaProcessingOptions) {
   return type === "transcript"
-    ? "configured-transcript-v1"
+    ? TRANSCRIPT_PROCESSING_PROVIDER
     : options.videoComposition
       ? "ffmpeg-multitrack-v1"
       : "ffmpeg-v2";
@@ -117,9 +126,7 @@ function providerFor(type: JobType, options: MediaProcessingOptions) {
 
 type MediaProcessingRequestOptions = Omit<
   MediaProcessingOptions,
-  | "videoComposition"
-  | "videoCompositionCourseId"
-  | "videoCompositionBlockId"
+  "videoComposition" | "videoCompositionCourseId" | "videoCompositionBlockId"
 > & {
   videoComposition?: VideoCompositionDocument;
 };
@@ -207,8 +214,38 @@ export async function enqueueReadyTranscriptInTransaction(
   if (!/^[0-9a-f]{64}$/.test(input.sourceContentSha256)) {
     throw new Error("Only immutable ready media can be transcribed.");
   }
+  const [source] = await transaction
+    .select({ durationMilliseconds: mediaAssets.durationMilliseconds })
+    .from(mediaAssets)
+    .where(
+      and(
+        eq(mediaAssets.id, input.sourceAssetId),
+        eq(mediaAssets.organizationId, input.organizationId),
+        eq(mediaAssets.status, "ready"),
+        eq(mediaAssets.contentSha256, input.sourceContentSha256),
+        inArray(mediaAssets.kind, ["audio", "video"]),
+        isNull(mediaAssets.deletedAt),
+      ),
+    )
+    .limit(1);
+  if (!source) {
+    throw new Error("Only immutable ready media can be transcribed.");
+  }
+  if (
+    !automaticTranscriptionDurationSupported(source.durationMilliseconds)
+  ) {
+    throw new Error(
+      "The source duration exceeds the automatic transcription contract.",
+    );
+  }
+  const language = normalizeAutomaticTranscriptionLanguage(input.language);
+  if (!language) {
+    throw new Error(
+      "Automatic transcription requires a two-letter ISO-639-1 language.",
+    );
+  }
   const options: MediaProcessingOptions = {
-    language: input.language.toLowerCase(),
+    language,
   };
   const key = requestKey({
     sourceAssetId: input.sourceAssetId,
@@ -301,6 +338,23 @@ export async function enqueueMediaProcessingJob(input: {
   if (input.type === "transcript" && !["audio", "video"].includes(asset.kind)) {
     throw new Error("Only audio and video media can be transcribed.");
   }
+  if (
+    input.type === "transcript" &&
+    !automaticTranscriptionDurationSupported(asset.durationMilliseconds)
+  ) {
+    throw new Error(
+      "The source duration exceeds the automatic transcription contract.",
+    );
+  }
+  const transcriptLanguage =
+    input.type === "transcript"
+      ? normalizeAutomaticTranscriptionLanguage(options.language ?? "de")
+      : null;
+  if (input.type === "transcript" && !transcriptLanguage) {
+    throw new Error(
+      "Automatic transcription requires a two-letter ISO-639-1 language.",
+    );
+  }
   if (options.videoEdit && input.type !== "transcode") {
     throw new Error("Video edit options are only valid for transcodes.");
   }
@@ -315,7 +369,8 @@ export async function enqueueMediaProcessingJob(input: {
   if (
     Boolean(options.videoComposition) !== Boolean(input.compositionCourseId) ||
     Boolean(options.videoComposition) !== Boolean(input.compositionBlockId) ||
-    (input.compositionCourseId && !UUID_PATTERN.test(input.compositionCourseId)) ||
+    (input.compositionCourseId &&
+      !UUID_PATTERN.test(input.compositionCourseId)) ||
     (input.compositionBlockId && !UUID_PATTERN.test(input.compositionBlockId))
   ) {
     throw new Error("Video compositions require an explicit block binding.");
@@ -384,7 +439,8 @@ export async function enqueueMediaProcessingJob(input: {
     );
   }
   const normalizedOptions: MediaProcessingOptions = {
-    language: options.language,
+    language:
+      input.type === "transcript" ? transcriptLanguage! : options.language,
     width: options.width,
     height: options.height,
     atMilliseconds: options.atMilliseconds,
@@ -488,18 +544,25 @@ export async function enqueueDefaultMediaProcessingJobs(input: {
       }),
     );
   }
-  requests.push(
-    enqueueMediaProcessingJob({
-      organizationId: input.organizationId,
-      sourceAssetId: input.sourceAssetId,
-      type: "transcript",
-      options: { language: row.defaultLocale },
-    }),
-  );
+  if (
+    automaticTranscriptionDurationSupported(
+      row.asset.durationMilliseconds,
+    )
+  ) {
+    requests.push(
+      enqueueMediaProcessingJob({
+        organizationId: input.organizationId,
+        sourceAssetId: input.sourceAssetId,
+        type: "transcript",
+        options: { language: row.defaultLocale },
+      }),
+    );
+  }
   return Promise.all(requests);
 }
 
 async function claimNextJob(now: Date) {
+  await supersedeLegacyTranscriptJobs(now);
   return db.transaction(async (tx) => {
     const [candidate] = await tx
       .select()
@@ -507,6 +570,16 @@ async function claimNextJob(now: Date) {
       .where(
         and(
           sql`${mediaProcessingJobs.attempt} < ${mediaProcessingJobs.maxAttempts}`,
+          or(
+            ne(mediaProcessingJobs.type, "transcript"),
+            and(
+              eq(
+                mediaProcessingJobs.provider,
+                TRANSCRIPT_PROCESSING_PROVIDER,
+              ),
+              sql<boolean>`${mediaProcessingJobs.options} ->> 'language' ~ '^[a-z]{2}$'`,
+            ),
+          ),
           or(
             and(
               eq(mediaProcessingJobs.status, "queued"),
@@ -547,6 +620,175 @@ async function claimNextJob(now: Date) {
       .returning();
     return claimed ?? null;
   });
+}
+
+export async function supersedeLegacyTranscriptJobs(
+  now = new Date(),
+  limit = 25,
+) {
+  const boundedLimit = Number.isInteger(limit)
+    ? Math.min(Math.max(limit, 1), 100)
+    : 25;
+  let superseded = 0;
+  for (let index = 0; index < boundedLimit; index += 1) {
+    const migrated = await db.transaction(async (tx) => {
+      const [legacy] = await tx
+        .select()
+        .from(mediaProcessingJobs)
+        .where(
+          and(
+            eq(mediaProcessingJobs.type, "transcript"),
+            or(
+              ne(
+                mediaProcessingJobs.provider,
+                TRANSCRIPT_PROCESSING_PROVIDER,
+              ),
+              sql<boolean>`coalesce(${mediaProcessingJobs.options} ->> 'language', '') !~ '^[a-z]{2}$'`,
+            ),
+            or(
+              eq(mediaProcessingJobs.status, "queued"),
+              and(
+                eq(mediaProcessingJobs.status, "processing"),
+                lte(mediaProcessingJobs.leaseExpiresAt, now),
+              ),
+            ),
+          ),
+        )
+        .orderBy(asc(mediaProcessingJobs.createdAt))
+        .limit(1)
+        .for("update", { skipLocked: true });
+      if (!legacy) return false;
+
+      const language = normalizeLegacyAutomaticTranscriptionLanguage(
+        legacy.options.language,
+      );
+      const [source] = await tx
+        .select({ durationMilliseconds: mediaAssets.durationMilliseconds })
+        .from(mediaAssets)
+        .where(
+          and(
+            eq(mediaAssets.id, legacy.sourceAssetId),
+            eq(mediaAssets.organizationId, legacy.organizationId),
+          ),
+        )
+        .limit(1);
+      if (
+        !language ||
+        !automaticTranscriptionDurationSupported(
+          source?.durationMilliseconds,
+        )
+      ) {
+        const [failed] = await tx
+          .update(mediaProcessingJobs)
+          .set({
+            status: "failed",
+            claimToken: null,
+            claimedAt: null,
+            leaseExpiresAt: null,
+            nextRetryAt: null,
+            completedAt: now,
+            failureCode: language
+              ? "transcript_duration_unsupported"
+              : "transcript_language_unsupported",
+            failureDetail: null,
+            result: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(mediaProcessingJobs.id, legacy.id),
+              eq(mediaProcessingJobs.provider, legacy.provider),
+              eq(mediaProcessingJobs.status, legacy.status),
+              legacy.claimToken
+                ? eq(mediaProcessingJobs.claimToken, legacy.claimToken)
+                : isNull(mediaProcessingJobs.claimToken),
+            ),
+          )
+          .returning({ id: mediaProcessingJobs.id });
+        return Boolean(failed);
+      }
+      const options: MediaProcessingOptions = {
+        language,
+      };
+      const currentRequestKey = requestKey({
+        sourceAssetId: legacy.sourceAssetId,
+        sourceContentSha256: legacy.sourceContentSha256,
+        type: "transcript",
+        options,
+      });
+      const [cancelled] = await tx
+        .update(mediaProcessingJobs)
+        .set({
+          status: "cancelled",
+          claimToken: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          nextRetryAt: null,
+          completedAt: now,
+          failureCode:
+            legacy.provider === TRANSCRIPT_PROCESSING_PROVIDER
+              ? "transcript_language_normalized"
+              : "provider_contract_superseded",
+          failureDetail: null,
+          result: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(mediaProcessingJobs.id, legacy.id),
+            eq(mediaProcessingJobs.provider, legacy.provider),
+            eq(mediaProcessingJobs.status, legacy.status),
+            legacy.claimToken
+              ? eq(mediaProcessingJobs.claimToken, legacy.claimToken)
+              : isNull(mediaProcessingJobs.claimToken),
+          ),
+        )
+        .returning({ id: mediaProcessingJobs.id });
+      if (!cancelled) return false;
+
+      await tx
+        .insert(mediaProcessingJobs)
+        .values({
+          organizationId: legacy.organizationId,
+          sourceAssetId: legacy.sourceAssetId,
+          requestedById: legacy.requestedById,
+          type: "transcript",
+          requestKey: currentRequestKey,
+          sourceContentSha256: legacy.sourceContentSha256,
+          provider: TRANSCRIPT_PROCESSING_PROVIDER,
+          options,
+          maxAttempts: legacy.maxAttempts,
+        })
+        .onConflictDoNothing({ target: mediaProcessingJobs.requestKey });
+      await tx
+        .update(mediaProcessingJobs)
+        .set({
+          status: "queued",
+          attempt: 0,
+          claimToken: null,
+          claimedAt: null,
+          leaseExpiresAt: null,
+          nextRetryAt: null,
+          completedAt: null,
+          failureCode: null,
+          failureDetail: null,
+          result: null,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(mediaProcessingJobs.requestKey, currentRequestKey),
+            eq(mediaProcessingJobs.provider, TRANSCRIPT_PROCESSING_PROVIDER),
+            inArray(mediaProcessingJobs.status, ["failed", "cancelled"]),
+            isNull(mediaProcessingJobs.claimToken),
+          ),
+        );
+      return true;
+    });
+    if (!migrated) break;
+    superseded += 1;
+  }
+  return superseded;
 }
 
 async function withMediaProcessingLease<T>(
@@ -679,11 +921,15 @@ async function completeTranscript(
   signal: AbortSignal,
 ) {
   const provider = configuredTranscriptProvider();
-  const language =
-    typeof job.options.language === "string" &&
-    /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(job.options.language)
-      ? job.options.language
-      : "de";
+  const language = normalizeAutomaticTranscriptionLanguage(
+    job.options.language,
+  );
+  if (!language) {
+    throw new MediaProcessingProviderError(
+      "invalid_output",
+      "The transcript job language contract is invalid.",
+    );
+  }
   const document = await provider.transcribe({
     inputPath,
     outputPath: resolve(
@@ -1378,6 +1624,15 @@ async function processClaimedJob(
   signal: AbortSignal,
 ) {
   signal.throwIfAborted();
+  if (
+    job.type === "transcript" &&
+    job.provider !== TRANSCRIPT_PROCESSING_PROVIDER
+  ) {
+    throw new MediaProcessingProviderError(
+      "invalid_output",
+      "The transcript job provider contract is not current.",
+    );
+  }
   const configuration = getMediaStorageConfiguration();
   const [source] = await db
     .select()
@@ -1395,6 +1650,15 @@ async function processClaimedJob(
     throw new MediaProcessingProviderError(
       "invalid_output",
       "The immutable source media is no longer available.",
+    );
+  }
+  if (
+    job.type === "transcript" &&
+    !automaticTranscriptionDurationSupported(source.durationMilliseconds)
+  ) {
+    throw new MediaProcessingProviderError(
+      "invalid_output",
+      "The source duration exceeds the automatic transcription contract.",
     );
   }
   signal.throwIfAborted();

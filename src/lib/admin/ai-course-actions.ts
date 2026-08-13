@@ -33,6 +33,7 @@ import {
   retryAfterSeconds,
 } from "@/lib/auth-rate-limit";
 import { logServerError } from "@/lib/server-error-logging";
+import { privacySubjectReference } from "@/lib/privacy/subject-reference";
 import { DEFAULT_COURSE_COVER } from "@/lib/course-cover";
 import {
   assertOrganizationCourseCapacity,
@@ -261,7 +262,11 @@ export async function createAiCourseAction(
       return { error: copy.unavailable };
     }
 
-    const generation = await generateCourseDraft(parsed.data, locale);
+    const generation = await generateCourseDraft(
+      parsed.data,
+      locale,
+      privacySubjectReference(user.organizationId, user.id),
+    );
     courseId = await db.transaction(async (transaction) => {
       const [currentAuthor] = await transaction
         .select({

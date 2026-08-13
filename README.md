@@ -276,9 +276,12 @@ Die Direktzugaenge werden nur in der lokalen Entwicklungsumgebung gerendert. `EN
 Anwendung zeigen. `APP_DOMAIN` muss exakt deren Hostname sein und
 `DEFAULT_ORGANIZATION_SLUG` einen bestehenden aktiven Tenant benennen; eine
 Abweichung macht die Anwendung nicht readiness-faehig. Optional kann
-Lokal kann `AI_API_KEY`, bevorzugt aber `AI_API_KEY_FILE`, fuer einen
-OpenAI-kompatiblen Provider gesetzt werden. Produktion mountet den Schluessel
-ausschliesslich als App-lesbare Datei. Ohne
+`AI_API_KEY`, bevorzugt aber `AI_API_KEY_FILE`, fuer einen
+OpenAI-kompatiblen Provider gesetzt werden. Der Standard `AI_MODEL` ist
+`gpt-5.6-terra`; die drei Textpfade nutzen Chat Completions mit explizit
+deaktivierter Speicherung und `reasoning_effort=none`, um beim Modellwechsel
+die bisherigen Latenz- und Ausgabebudgets zu erhalten. Produktion mountet den
+Schluessel ausschliesslich als App-lesbare Datei. Ohne
 Schluessel arbeiten der Q-Coach und der KI-Kursassistent mit deterministischen
 Fallbacks. Der Vertrag fuer den zwingenden Transaktionsmail-Dienst steht in
 [MAIL_GATEWAY_CONTRACT.md](./docs/MAIL_GATEWAY_CONTRACT.md).
@@ -350,9 +353,11 @@ Automatische Transkripte werden asynchron ueber einen isolierten, ohne Shell
 gestarteten STT-Befehl als begrenztes, validiertes WebVTT erzeugt und koennen
 fuer Untertitel sowie zeitcodierte Suche uebernommen werden. Der
 Produktions-Compose verdrahtet dafuer den nur in den Medien-Images enthaltenen
-OpenAI-Adapter fest auf `whisper-1`; Schluessel, echter Canary und rechtliche
-Providerfreigabe bleiben Gates fuer automatische Transkription. Mit
-`MEDIA_TRANSCRIPTION_ENABLED=false` startet die Plattform explizit fail-closed:
+OpenAI-Adapter fest auf `gpt-4o-transcribe-diarize` mit zeitcodiertem
+`diarized_json` und automatischem Server-VAD; Schluessel, gesprochener Canary,
+Cue- und Sprachqualitaet sowie rechtliche
+Providerfreigabe bleiben Gates fuer automatische Transkription. Die Plattform
+startet standardmaessig mit `MEDIA_TRANSCRIPTION_ENABLED=false` fail-closed:
 kein Provider-Preflight, kein Audio-Egress und lokal fehlschlagende
 Transkriptjobs. Profilbilder und Medien-Profilfelder
 laufen durch dieselbe tenantgebundene `ready`-Asset-Pipeline. Der S3-Runner bindet exakte VersionId,

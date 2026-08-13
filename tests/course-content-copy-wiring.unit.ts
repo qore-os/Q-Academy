@@ -106,7 +106,19 @@ test("saved and copied videos retain the normalized transcript language", () => 
   );
   assert.match(
     descriptionJobs,
-    /TRANSCRIPT_LANGUAGE_PATTERN\.test\(normalized\) \? normalized : fallback/,
+    /normalizeLegacyAutomaticTranscriptionLanguage\(candidate\)/,
+  );
+  assert.match(
+    actions,
+    /const automaticTranscriptLanguage =[\s\S]*?normalizeLegacyAutomaticTranscriptionLanguage\(\s*parsed\.transcriptLanguage/,
+  );
+  assert.match(
+    actions,
+    /if \(automaticVideoDescriptionRequested && !automaticTranscriptLanguage\) \{\s*return failure\("course_builder\.invalid_input"\)/,
+  );
+  assert.match(
+    actions,
+    /data = \{ \.\.\.data, transcriptLanguage: automaticTranscriptLanguage \}/,
   );
   for (const implementation of [actions, service, cloneRoute]) {
     assert.match(

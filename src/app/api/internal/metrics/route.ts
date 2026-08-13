@@ -6,6 +6,13 @@ import { authorizeInternalMetricsRequest } from "@/lib/internal-job-auth";
 import { readJobQueueMetrics } from "@/lib/job-queue-metrics";
 import { readMediaScanBacklogMetrics } from "@/lib/media/scan-worker";
 import { readMediaProcessingBacklogMetrics } from "@/lib/media/processing-worker";
+import {
+  configuredTranscriptionProviderId,
+  OPENAI_TRANSCRIPTION_MODEL,
+  OPENAI_TRANSCRIPTION_RESPONSE_FORMAT,
+  OPENAI_TRANSCRIPTION_RESULT_PROVIDER,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+} from "@/lib/media/transcription-contract";
 import { readClamAvSignatureStatusFromEnvironment } from "@/lib/media/clamav-signature-status";
 import {
   readOperationalWorkerSuccess,
@@ -174,9 +181,26 @@ export async function GET(request: Request) {
       ]);
       const signatureStatus =
         await readClamAvSignatureStatusFromEnvironment(process.env, now);
+      const transcriptProvider = configuredTranscriptionProviderId(process.env);
+      const bundledOpenAi =
+        transcriptProvider === OPENAI_TRANSCRIPTION_RESULT_PROVIDER;
       samples.push(
         ...queueSamples("media_scan", backlog),
         ...queueSamples("media_processing", processingBacklog),
+        {
+          name: "q_academy_media_transcription_contract_info",
+          help: "Active Q-Academy media transcription contract.",
+          type: "gauge",
+          labels: {
+            job_contract: TRANSCRIPT_PROCESSING_PROVIDER,
+            provider: transcriptProvider,
+            model: bundledOpenAi ? OPENAI_TRANSCRIPTION_MODEL : "none",
+            response_format: bundledOpenAi
+              ? OPENAI_TRANSCRIPTION_RESPONSE_FORMAT
+              : "none",
+          },
+          value: 1,
+        },
         {
           name: "q_academy_clamav_signature_timestamp_seconds",
           help: "Unix timestamp of the newest ClamAV daily signature database.",

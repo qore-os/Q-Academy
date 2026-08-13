@@ -74,6 +74,7 @@ import {
 } from "@/lib/ai/document-knowledge-source.server";
 import { ApiError } from "@/lib/api/errors";
 import { getCourseLearningAccess } from "@/lib/learning-access";
+import { privacySubjectReference } from "@/lib/privacy/subject-reference";
 
 type AgentExecutor = Pick<typeof db, "select">;
 
@@ -1962,6 +1963,10 @@ export async function previewAiAgentDraftAsMember(
     message: preview.message,
     history: [],
     courses: providerInput.courses,
+    safetyIdentifier: privacySubjectReference(
+      input.actor.organizationId,
+      preview.memberId,
+    ),
     memberProfile: providerInput.memberProfile,
   });
   const suggestions = [

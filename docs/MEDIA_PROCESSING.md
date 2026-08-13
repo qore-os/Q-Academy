@@ -1,6 +1,6 @@
 # Medienverarbeitung
 
-Stand: 2026-07-15.
+Stand: 2026-08-13.
 
 ## Lifecycle
 
@@ -8,7 +8,10 @@ Ein Upload wird weiterhin zuerst vollstaendig gestreamt, signatur- und
 strukturgeprueft, mit SHA-256 gebunden und je nach Umgebung durch ClamAV
 gescannt. Erst ein unveraenderliches `ready`-Asset darf einen
 `media_processing_job` erhalten. Der Request-Key bindet Jobtyp, Optionen,
-Asset-ID und Inhaltsdigest; identische Auftraege sind damit idempotent.
+Asset-ID, Inhaltsdigest und bei Transkripten den versionierten Providervertrag;
+identische Auftraege sind damit idempotent. Jobs eines abgeloesten
+Transkriptvertrags werden erst nach Lease-Ablauf claim-gesichert abgebrochen und
+unter dem aktuellen Vertrag neu eingereiht.
 
 Fuer Kursvideo werden automatisch Thumbnail, H.264/AAC-Transcode und
 Transkript eingeplant, fuer Kursaudio ein Transkript. Ein Worker beansprucht
@@ -29,18 +32,47 @@ Nicht parsebare oder unplausible Dateien werden quarantiniert.
   `ffmpeg` aus `PATH` verwendet.
 - Der Produktions-Compose setzt `MEDIA_TRANSCRIPT_COMMAND` fest auf
   `/app/node_modules/.bin/tsx` und startet damit ausschliesslich
-  `/app/scripts/openai-whisper-transcribe.ts`. Die Jobargumente sind fest
-  `--input {input} --output-vtt {output} --language {language} --temperature 0`;
+  `/app/scripts/openai-transcribe.ts`. Die Jobargumente sind fest
+  `--input {input} --output-vtt {output} --language {language}`;
   der Preflight ist fest das Script plus `--preflight`. Ein `--help`-Ersatz
   besteht den Preflight nicht.
 - Der Adapter verwendet ausschliesslich
-  `https://api.openai.com/v1/audio/transcriptions` und das feste Modell
-  `whisper-1`. Weder Base-URL noch Modell kommen aus Job-, Tenant- oder
-  Operator-Eingaben.
+  `https://api.openai.com/v1/audio/transcriptions`, das feste Modell
+  `gpt-4o-transcribe-diarize`, `response_format=diarized_json` und
+  `chunking_strategy=auto`. Die API liefert damit zeitcodierte Segmente fuer
+  das kanonische WebVTT; Sprecherlabels werden nicht in Cue-Text eingebettet.
+  `prompt`, `include` und `timestamp_granularities` sind fuer diesen Vertrag
+  bewusst ausgeschlossen. Weder Base-URL noch Modell kommen aus Job-, Tenant-
+  oder Operator-Eingaben. Siehe die offizielle
+  [Create-transcription-Referenz](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create).
+- FFmpeg normalisiert die Eingabe auf Mono-MP3 mit 16 kHz und 32 kbit/s und
+  teilt sie deterministisch in hoechstens fuenf Minuten lange Dateien. Jede
+  Datei bleibt mit maximal 24.000.000 Byte unter der offiziellen 25-MB-Grenze;
+  `chunking_strategy=auto` fuehrt innerhalb eines Uploads zusaetzlich die vom
+  Modell erwartete serverseitige VAD-Segmentierung aus. Die automatische
+  Verarbeitung ist auf zwei Stunden begrenzt und lehnt laengere oder unbekannte
+  Dauern im Worker vor Quelldownload, FFmpeg und Providerzugriff ab. Manuell
+  importierte WebVTT-Transkripte duerfen weiterhin bis zu zwoelf Stunden
+  abdecken. Unvollstaendige Segmentantworten und unplausible Zeitcodes schlagen
+  geschlossen fehl. Damit umfasst ein automatischer Auftrag hoechstens 24
+  Provideraufrufe; die feste Modellgrenze von 2.000 Ausgabetokens je
+  Fuenf-Minuten-Aufruf bleibt innerhalb der globalen Text- und WebVTT-Grenzen.
+  Bei unbekannter oder laengerer Dauer werden weder ein automatischer
+  Transkript- noch ein Videobeschreibungsauftrag angelegt. Bereits persistierte
+  Beschreibungsauftraege enden stabil mit `transcript_duration_unsupported`.
 - `MEDIA_FFMPEG_TIMEOUT_SECONDS` und `MEDIA_TRANSCRIPT_TIMEOUT_SECONDS`
   begrenzen die beiden Prozessoren getrennt. Die Produktionsdefaults sind
-  10.800 beziehungsweise 7.200 Sekunden; zulaessig sind 60 bis 13.800
-  Sekunden und damit immer weniger als das Vier-Stunden-Dispatcher-Limit.
+  10.800 beziehungsweise 18.000 Sekunden; zulaessig sind 60 bis 18.000
+  Sekunden. Das Transkriptionsdefault deckt den formalen Worst Case aus
+  FFmpeg, 24 seriellen Fuenf-Minuten-Chunks, je drei begrenzten
+  Provider-Versuchen und einer festen Abschlussreserve ab.
+- Der synchrone Media-Dispatch hat einen schichtweisen End-to-End-Vertrag:
+  600 Sekunden ClamAV plus 900 Sekunden gebundene S3-Quellmaterialisierung
+  plus 18.000 Sekunden STT ergeben 19.500 Sekunden Arbeit. Die Route hat mit
+  19.800 Sekunden weitere 300 Sekunden Abschlussreserve; der HTTP-Dispatcher
+  wartet 19.900 Sekunden und besitzt damit nochmals 100 Sekunden
+  Transportreserve. Das Mindestalter des Success-Heartbeats ist dynamisch
+  `MEDIA_WORKER_POLL_SECONDS + 19.900 + 60` Sekunden.
 - `MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON` ersetzt nur die drei exakten Platzhalter
   `{input}`, `{output}` und `{language}`. Im Produktions-Compose ist das Array
   fest verdrahtet; freie Jobargumente werden nicht uebernommen.
@@ -71,8 +103,11 @@ Build-Argumenten oder App-Logs. Der Hostpfad
 Syntax, `read_only: true` und `create_host_path: false` ausschliesslich nach
 `media-runner` und `media-preflight` als
 `/run/secrets/q-academy-openai-transcription-api-key`. Auf dem Host muss die
-regulaere Datei exakt UID/GID `1001:1001` und Modus `0400` besitzen. UID/GID
-1001 ist fuer den nicht privilegierten Containerprozess reserviert und braucht
+regulaere Datei exakt UID/GID `1001:1001` und Modus `0400` besitzen. Release,
+Reconcile und Rollback verlangen zusaetzlich hoechstens 1024 Byte, im
+aktivierten Modus mindestens acht Byte und im deaktivierten Modus eine exakt
+leere Platzhalterdatei. UID/GID 1001 ist fuer den nicht privilegierten
+Containerprozess reserviert und braucht
 kein anmeldbares Hostkonto. Initiales Einspielen und Rotation erfolgen aus
 einer geschuetzten Operatorquelle, niemals ueber die Env-Datei oder die
 Shell-History:
@@ -88,18 +123,30 @@ test "$(stat -c '%u:%g:%a' /etc/q-academy/openai-transcription-api-key)" = \
 ```
 
 Nach jeder Rotation muss der echte Medien-Preflight erfolgreich laufen; der
+gesprochene Canary muss dabei als zeitcodiertes `diarized_json` mit den
+erwarteten Canary-Begriffen zurueckkommen. Der
 alte Schluessel wird erst danach beim Provider widerrufen. Vor Kundenfreigabe
 muessen Audio-Egress zu OpenAI, Rechtsgrundlage beziehungsweise Einwilligung,
 Datenschutzhinweis, AVV/DPA, Provider-Retention und Datenregion schriftlich
 freigegeben sein. Die fuer Uploads erzeugten Audio-Chunks liegen nur im
-Container-`/tmp`-Tmpfs und werden im `finally` entfernt; diese lokale
-Bereinigung ersetzt keine vertragliche Provider-Retention.
+isolierten Job-Arbeitsverzeichnis und werden im `finally` entfernt; nur der
+kurze Preflight-Canary liegt im Container-`/tmp`-Tmpfs. Diese lokale Bereinigung
+ersetzt keine vertragliche Provider-Retention. Der stabile `Idempotency-Key`
+bindet Modell, Format, Chunking, Sprache und Inhaltsdigest fuer Retries. Er ist
+keine Zusage ueber genau einmalige Providerabrechnung.
 Das Kostenmodell wird gegen den jeweils gueltigen
 Minutenpreis vertraglich bestaetigt und mit Budget-/Usage-Alarmen begrenzt.
 Bei Provider-Ausfall bleiben neue Transkriptjobs unfertig und werden ueber die
 bestehende Queue erneut versucht; es gibt keinen stillen Ersatzprovider und
 keine Freigabe eines Scheintranskripts. Bestehende Inhalte und die App-
 Readiness bleiben davon getrennt.
+
+Die Freigabe des Transkriptionsvertrags braucht reale, nicht synthetische
+Audio-Evals fuer Deutsch und Englisch: WER, Cue-Zeitabweichung, schnelle
+Fuenf-Minuten-Sprache, Satzgrenzen an lokalen Chunk-Grenzen sowie Laufzeit und
+Kosten fuer 60 Minuten und den zweistuendigen automatischen Grenzfall. Der Canary prueft
+nur Erreichbarkeit, Authentisierung und das erwartete Antwortschema; er ersetzt
+keine Qualitaetsabnahme.
 
 Derivate werden mit Quell-Digest und Job-ID hochgeladen und erst nach einem
 verifizierenden Head-Request inklusive VersionId, ETag, Groesse, MIME-Typ und

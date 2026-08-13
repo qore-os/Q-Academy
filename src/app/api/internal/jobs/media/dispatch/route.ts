@@ -14,10 +14,10 @@ import {
 import { recordOperationalWorkerSuccess } from "@/lib/operational-heartbeats";
 
 export const dynamic = "force-dynamic";
-// A composition can materialize multiple immutable S3 sources before the
-// bounded malware scan and processor complete. Keep the HTTP envelope aligned
-// with the production dispatcher's hard four-hour transport timeout.
-export const maxDuration = 14_400;
+// One request runs the bounded ClamAV scan before processing. Reserve 600s for
+// that scan, 900s for immutable S3 source materialization, 18,000s for STT,
+// and 300s for route settlement after the bounded work completes.
+export const maxDuration = 19_800;
 
 export async function POST(request: Request) {
   const requestId = randomUUID();

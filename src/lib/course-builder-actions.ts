@@ -58,6 +58,10 @@ import {
   videoPlaybackPolicyFromForm,
 } from "@/lib/media/video-playback-policy";
 import {
+  automaticTranscriptionDurationSupported,
+  normalizeLegacyAutomaticTranscriptionLanguage,
+} from "@/lib/media/transcription-contract";
+import {
   boundVideoCompositionMatchesDocument,
   sanitizeVideoComposition,
 } from "@/lib/media/video-composition";
@@ -3132,6 +3136,19 @@ export async function updateCourseContentBlockAction(
     return failure("course_builder.block.type_uneditable");
   const parsed = parseBlockForm(parsedType.data, formData, locale);
   if ("error" in parsed) return failure("course_builder.invalid_input");
+  const automaticVideoDescriptionRequested =
+    block.type === "video" &&
+    "caption" in parsed.data &&
+    !parsed.data.caption?.trim() &&
+    "videoDescriptionIntent" in parsed &&
+    parsed.videoDescriptionIntent === "automatic" &&
+    "transcriptLanguage" in parsed;
+  const automaticTranscriptLanguage = automaticVideoDescriptionRequested
+    ? normalizeLegacyAutomaticTranscriptionLanguage(parsed.transcriptLanguage)
+    : null;
+  if (automaticVideoDescriptionRequested && !automaticTranscriptLanguage) {
+    return failure("course_builder.invalid_input");
+  }
   const style = contentBlockStyleSchema.safeParse({
     width: value(formData, "style.width"),
     alignment: value(formData, "style.alignment"),
@@ -3160,9 +3177,13 @@ export async function updateCourseContentBlockAction(
         return "conflict" as const;
       }
       let data: ContentBlockData = parsed.data;
+      if (block.type === "video" && automaticTranscriptLanguage) {
+        data = { ...data, transcriptLanguage: automaticTranscriptLanguage };
+      }
       let videoDescriptionAsset: {
         id: string;
         contentSha256: string;
+        durationMilliseconds: number | null;
       } | null = null;
       const stockImageSelectionId =
         "stockImageSelectionId" in parsed
@@ -3308,6 +3329,7 @@ export async function updateCourseContentBlockAction(
             videoDescriptionAsset = {
               id: asset.id,
               contentSha256: asset.contentSha256,
+              durationMilliseconds: asset.durationMilliseconds,
             };
           }
           if (
@@ -3494,18 +3516,22 @@ export async function updateCourseContentBlockAction(
         updated &&
         block.type === "video" &&
         videoDescriptionAsset &&
+        automaticTranscriptionDurationSupported(
+          videoDescriptionAsset.durationMilliseconds,
+        ) &&
         !data.caption?.trim() &&
         "videoDescriptionIntent" in parsed &&
         parsed.videoDescriptionIntent === "automatic" &&
         "transcriptLanguage" in parsed &&
-        typeof parsed.transcriptLanguage === "string"
+        typeof parsed.transcriptLanguage === "string" &&
+        automaticTranscriptLanguage
       ) {
         await enqueueReadyTranscriptInTransaction(tx, {
           organizationId: user.organizationId,
           sourceAssetId: videoDescriptionAsset.id,
           sourceContentSha256: videoDescriptionAsset.contentSha256,
           requestedById: user.id,
-          language: parsed.transcriptLanguage,
+          language: automaticTranscriptLanguage,
         });
         await enqueueVideoDescriptionJobInTransaction(tx, {
           organizationId: user.organizationId,
@@ -3515,7 +3541,7 @@ export async function updateCourseContentBlockAction(
           sourceContentSha256: videoDescriptionAsset.contentSha256,
           expectedBlockRevision: updated.revision,
           locale,
-          transcriptLanguage: parsed.transcriptLanguage,
+          transcriptLanguage: automaticTranscriptLanguage,
           requestedById: user.id,
         });
       }

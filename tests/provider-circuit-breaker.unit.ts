@@ -24,6 +24,10 @@ test("AI course generation shares the persistent provider circuit and has a deep
     "scripts/ai-course-provider-preflight.ts",
     "utf8",
   );
+  const preflightCore = readFileSync(
+    "src/lib/ai/provider-preflight-core.ts",
+    "utf8",
+  );
   const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
     scripts: Record<string, string>;
   };
@@ -32,8 +36,13 @@ test("AI course generation shares the persistent provider circuit and has a deep
   assert.match(courseDraft, /recordProviderCircuitFailure/);
   assert.match(courseDraft, /recordProviderCircuitSuccess/);
   assert.match(courseDraft, /providerKey: "ai-compatible"/);
-  assert.match(preflight, /result\.provider !== "openai-compatible"/);
+  assert.match(preflight, /runAiProviderPreflight/);
   assert.match(preflight, /ai_course_provider_preflight_failed/);
+  assert.match(preflightCore, /aiChatCompletionControls\(model, 128\)/);
+  assert.match(preflightCore, /response_format/);
+  assert.match(preflightCore, /confirmedChatCompletionModel/);
+  assert.match(preflightCore, /MAXIMUM_PREFLIGHT_RESPONSE_BYTES/);
+  assert.match(preflightCore, /AbortSignal\.timeout/);
   assert.equal(
     packageJson.scripts["ai:course-provider:preflight"],
     "node --conditions=react-server --import tsx scripts/ai-course-provider-preflight.ts",

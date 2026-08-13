@@ -2,11 +2,22 @@ import "server-only";
 
 import { z } from "zod";
 import { loadAiApiKey } from "@/lib/ai/api-key-credential";
+import { readBoundedProviderJson } from "@/lib/ai/bounded-provider-response";
 import {
   generatedCourseDraftSchema,
   type GeneratedCourseBlock,
   type GeneratedCourseDraft,
 } from "@/lib/ai/course-draft-schema";
+import {
+  aiChatCompletionControls,
+  aiChatCompletionSafetyFields,
+  aiInstructionRole,
+  configuredAiTextModel,
+} from "@/lib/ai/chat-completion-config";
+import {
+  completedChatCompletionResponseSchema,
+  confirmedChatCompletionModel,
+} from "@/lib/ai/chat-completion-response";
 import { sanitizeAiReferenceText } from "@/lib/ai/grounding";
 import { getCourseDraftFallbackCopy } from "@/lib/i18n/course-draft-fallback";
 import type { AppLocale } from "@/lib/i18n/model";
@@ -76,26 +87,7 @@ export type GeneratedCourseDraftResult = {
   fallbackReason: "not_configured" | "provider_error" | null;
 };
 
-const compatibleResponseSchema = z
-  .object({
-    choices: z
-      .array(
-        z
-          .object({
-            message: z
-              .object({
-                content: z.union([
-                  z.string(),
-                  z.array(z.object({ text: z.string() }).passthrough()),
-                ]),
-              })
-              .passthrough(),
-          })
-          .passthrough(),
-      )
-      .min(1),
-  })
-  .passthrough();
+const MAX_PROVIDER_RESPONSE_BYTES = 1_024 * 1_024;
 
 const scopeShape = {
   compact: { modules: 2, lessonsPerModule: 2 },
@@ -280,9 +272,10 @@ async function providerDraft(
   brief: AiCourseBrief,
   apiKey: string,
   locale: AppLocale,
+  safetyIdentifier: string,
 ): Promise<GeneratedCourseDraftResult> {
   const copy = getCourseDraftFallbackCopy(locale);
-  const model = process.env.AI_MODEL?.trim() || "gpt-4.1-mini";
+  const model = configuredAiTextModel();
   const jsonSchema = z.toJSONSchema(generatedCourseDraftSchema, {
     target: "draft-7",
     reused: "inline",
@@ -308,8 +301,8 @@ async function providerDraft(
     },
     body: JSON.stringify({
       model,
-      temperature: 0.2,
-      max_tokens: 8_000,
+      ...aiChatCompletionControls(model, 8_000),
+      ...aiChatCompletionSafetyFields(model, safetyIdentifier),
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -319,7 +312,7 @@ async function providerDraft(
         },
       },
       messages: [
-        { role: "system", content: systemMessage },
+        { role: aiInstructionRole(model), content: systemMessage },
         {
           role: "user",
           content: `BEGIN_UNTRUSTED_BRIEF\n${JSON.stringify({
@@ -341,7 +334,13 @@ async function providerDraft(
     throw new Error(`AI provider returned HTTP ${response.status}.`);
   }
 
-  const parsedResponse = compatibleResponseSchema.parse(await response.json());
+  const parsedResponse = completedChatCompletionResponseSchema.parse(
+    await readBoundedProviderJson(response, MAX_PROVIDER_RESPONSE_BYTES),
+  );
+  const confirmedModel = confirmedChatCompletionModel(
+    model,
+    parsedResponse.model,
+  );
   const rawContent = parsedResponse.choices[0]?.message.content;
   const content = Array.isArray(rawContent)
     ? rawContent.map((part) => part.text).join("").trim()
@@ -352,14 +351,15 @@ async function providerDraft(
   return {
     draft,
     provider: "openai-compatible",
-    model,
+    model: confirmedModel,
     fallbackReason: null,
   };
 }
 
 export async function generateCourseDraft(
   brief: AiCourseBrief,
-  locale: AppLocale = "de",
+  locale: AppLocale,
+  safetyIdentifier: string,
 ): Promise<GeneratedCourseDraftResult> {
   let apiKey: string | null;
   try {
@@ -395,7 +395,7 @@ export async function generateCourseDraft(
   }
 
   try {
-    const result = await providerDraft(brief, apiKey, locale);
+    const result = await providerDraft(brief, apiKey, locale, safetyIdentifier);
     await recordProviderCircuitSuccess("ai-compatible");
     return result;
   } catch (error) {

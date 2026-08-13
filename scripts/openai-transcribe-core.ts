@@ -13,16 +13,23 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
+import {
+  MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS,
+  OPENAI_TRANSCRIPTION_CHUNKING_STRATEGY,
+  OPENAI_TRANSCRIPTION_MODEL,
+  OPENAI_TRANSCRIPTION_REQUEST_CONTRACT,
+  OPENAI_TRANSCRIPTION_RESPONSE_FORMAT,
+} from "../src/lib/media/transcription-contract";
+
 export const OPENAI_API_BASE_URL = "https://api.openai.com/v1" as const;
 export const OPENAI_TRANSCRIPTIONS_URL =
   `${OPENAI_API_BASE_URL}/audio/transcriptions` as const;
-export const OPENAI_TRANSCRIPTION_MODEL = "whisper-1" as const;
 export const DEFAULT_OPENAI_API_KEY_FILE =
   "/run/secrets/q-academy-openai-transcription-api-key" as const;
 
-const AUDIO_CHUNK_SECONDS = 20 * 60;
+const AUDIO_CHUNK_SECONDS = 5 * 60;
 const AUDIO_BITRATE = "32k";
-const MAX_AUDIO_SECONDS = 12 * 60 * 60;
+const MAX_AUDIO_SECONDS = MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS / 1_000;
 const FFMPEG_LIMIT_SECONDS = MAX_AUDIO_SECONDS + 1;
 const MAX_AUDIO_CHUNKS = Math.ceil(FFMPEG_LIMIT_SECONDS / AUDIO_CHUNK_SECONDS);
 const MAX_UPLOAD_BYTES = 24_000_000;
@@ -31,6 +38,8 @@ const MAX_WEBVTT_BYTES = 550_000;
 const MAX_TRANSCRIPT_SEGMENTS = 2_000;
 const MAX_TRANSCRIPT_TEXT_LENGTH = 300_000;
 const MAX_SEGMENT_TEXT_LENGTH = 1_000;
+const MAX_PROVIDER_SEGMENT_TEXT_LENGTH = 20_000;
+const TARGET_WEBVTT_CUE_TEXT_LENGTH = 240;
 const MAX_RETRY_DELAY_MS = 10_000;
 const PROVIDER_ATTEMPTS = 3;
 const PROVIDER_REQUEST_TIMEOUT_MS = 180_000;
@@ -87,7 +96,6 @@ export type OpenAiTranscriptionCliConfiguration =
   | Readonly<{
       mode: "preflight";
       apiKeyFile: string;
-      temperature: number;
     }>
   | Readonly<{
       mode: "transcribe";
@@ -96,7 +104,6 @@ export type OpenAiTranscriptionCliConfiguration =
       outputVttPath: string;
       language: string;
       providerLanguage: string;
-      temperature: number;
     }>;
 
 type FetchImplementation = (
@@ -129,13 +136,9 @@ function singleValueArguments(argv: readonly string[]) {
       continue;
     }
     if (
-      ![
-        "--api-key-file",
-        "--input",
-        "--output-vtt",
-        "--language",
-        "--temperature",
-      ].includes(argument)
+      !["--api-key-file", "--input", "--output-vtt", "--language"].includes(
+        argument,
+      )
     ) {
       transcriptionError(
         "configuration_invalid",
@@ -161,35 +164,17 @@ function singleValueArguments(argv: readonly string[]) {
   return { preflight, values };
 }
 
-function temperature(value: string | undefined) {
-  const raw = value ?? "0";
-  if (!/^(?:0(?:\.\d{1,6})?|1(?:\.0{1,6})?)$/.test(raw)) {
-    transcriptionError(
-      "configuration_invalid",
-      "The transcription temperature must be between zero and one.",
-    );
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    transcriptionError(
-      "configuration_invalid",
-      "The transcription temperature must be between zero and one.",
-    );
-  }
-  return parsed;
-}
-
 function language(value: string | undefined) {
-  const normalized = value?.trim().toLowerCase() ?? "";
-  if (!/^[a-z]{2}(?:-[a-z0-9]{2,8})*$/.test(normalized)) {
+  const normalized = value ?? "";
+  if (!/^[a-z]{2}$/.test(normalized)) {
     transcriptionError(
       "configuration_invalid",
-      "The transcription language must begin with an ISO-639-1 code.",
+      "The transcription language must be a lowercase ISO-639-1 code.",
     );
   }
   return {
     language: normalized,
-    providerLanguage: normalized.slice(0, 2),
+    providerLanguage: normalized,
   };
 }
 
@@ -200,7 +185,6 @@ export function parseOpenAiTranscriptionArguments(
   const apiKeyFile = resolve(
     values.get("--api-key-file") ?? DEFAULT_OPENAI_API_KEY_FILE,
   );
-  const configuredTemperature = temperature(values.get("--temperature"));
   if (preflight) {
     if (
       values.has("--input") ||
@@ -215,7 +199,6 @@ export function parseOpenAiTranscriptionArguments(
     return {
       mode: "preflight",
       apiKeyFile,
-      temperature: configuredTemperature,
     };
   }
 
@@ -242,16 +225,14 @@ export function parseOpenAiTranscriptionArguments(
     inputPath: resolvedInput,
     outputVttPath: resolvedOutput,
     ...configuredLanguage,
-    temperature: configuredTemperature,
   };
 }
 
 export async function readOpenAiApiKeyFile(path: string) {
   let handle;
   try {
-    const noFollow = "O_NOFOLLOW" in constants
-      ? (constants.O_NOFOLLOW as number)
-      : 0;
+    const noFollow =
+      "O_NOFOLLOW" in constants ? (constants.O_NOFOLLOW as number) : 0;
     handle = await open(
       path,
       constants.O_RDONLY | constants.O_NONBLOCK | noFollow,
@@ -551,7 +532,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function boundedSegmentText(value: unknown) {
-  if (typeof value !== "string" || value.length > 4_000) {
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_PROVIDER_SEGMENT_TEXT_LENGTH
+  ) {
     transcriptionError(
       "provider_response_invalid",
       "The transcription provider returned invalid segment text.",
@@ -562,7 +546,7 @@ function boundedSegmentText(value: unknown) {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (normalized.length > MAX_SEGMENT_TEXT_LENGTH) {
+  if (normalized.length > MAX_PROVIDER_SEGMENT_TEXT_LENGTH) {
     transcriptionError(
       "provider_response_invalid",
       "The transcription provider returned oversized segment text.",
@@ -571,16 +555,125 @@ function boundedSegmentText(value: unknown) {
   return normalized;
 }
 
-export function validateVerboseTranscriptionResponse(
+function splitCueText(value: string) {
+  const parts: string[] = [];
+  let remaining = value;
+  while (remaining.length > TARGET_WEBVTT_CUE_TEXT_LENGTH) {
+    let breakAt = remaining.lastIndexOf(" ", TARGET_WEBVTT_CUE_TEXT_LENGTH + 1);
+    if (breakAt < TARGET_WEBVTT_CUE_TEXT_LENGTH / 2) {
+      breakAt = TARGET_WEBVTT_CUE_TEXT_LENGTH;
+      if (
+        /[\uD800-\uDBFF]/.test(remaining[breakAt - 1] ?? "") &&
+        /[\uDC00-\uDFFF]/.test(remaining[breakAt] ?? "")
+      ) {
+        breakAt -= 1;
+      }
+    }
+    const part = remaining.slice(0, breakAt).trim();
+    if (!part || part.length > MAX_SEGMENT_TEXT_LENGTH) {
+      transcriptionError(
+        "provider_response_invalid",
+        "The transcription provider returned unsplittable segment text.",
+      );
+    }
+    parts.push(part);
+    remaining = remaining.slice(breakAt).trimStart();
+  }
+  if (remaining) parts.push(remaining);
+  return parts;
+}
+
+function splitTimedSegment(
+  text: string,
+  startSeconds: number,
+  endSeconds: number,
+) {
+  const cueTexts = splitCueText(text);
+  if (cueTexts.length <= 1) {
+    return cueTexts.map((cueText) => ({
+      startSeconds,
+      endSeconds,
+      text: cueText,
+    }));
+  }
+
+  const startMilliseconds = Math.round(startSeconds * 1_000);
+  const endMilliseconds = Math.round(endSeconds * 1_000);
+  if (endMilliseconds - startMilliseconds < cueTexts.length) {
+    transcriptionError(
+      "provider_response_invalid",
+      "The transcription provider returned oversized text for its timestamp span.",
+    );
+  }
+  const totalWeight = cueTexts.reduce(
+    (sum, cueText) => sum + cueText.length,
+    0,
+  );
+  let completedWeight = 0;
+  let cueStartMilliseconds = startMilliseconds;
+  return cueTexts.map((cueText, index) => {
+    completedWeight += cueText.length;
+    const remainingCues = cueTexts.length - index - 1;
+    const proportionalEnd = Math.round(
+      startMilliseconds +
+        ((endMilliseconds - startMilliseconds) * completedWeight) / totalWeight,
+    );
+    const cueEndMilliseconds =
+      remainingCues === 0
+        ? endMilliseconds
+        : Math.min(
+            Math.max(proportionalEnd, cueStartMilliseconds + 1),
+            endMilliseconds - remainingCues,
+          );
+    const result = {
+      startSeconds: cueStartMilliseconds / 1_000,
+      endSeconds: cueEndMilliseconds / 1_000,
+      text: cueText,
+    };
+    cueStartMilliseconds = cueEndMilliseconds;
+    return result;
+  });
+}
+
+function normalizedTranscriptText(value: string) {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function normalizedDiarizedAggregateText(
+  value: string,
+  speakerLabels: ReadonlySet<string>,
+) {
+  const withoutSpeakerLabels = value
+    .normalize("NFKC")
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trimStart();
+      const separator = trimmed.indexOf(":");
+      if (separator <= 0) return line;
+      const label = trimmed
+        .slice(0, separator)
+        .trim()
+        .toLocaleLowerCase("en-US");
+      return speakerLabels.has(label) ? trimmed.slice(separator + 1) : line;
+    })
+    .join(" ");
+  return normalizedTranscriptText(withoutSpeakerLabels);
+}
+
+export function validateDiarizedTranscriptionResponse(
   value: unknown,
   expectedDurationSeconds: number,
 ): ProviderTranscript {
   if (
     !isRecord(value) ||
+    value.task !== "transcribe" ||
+    typeof value.text !== "string" ||
+    value.text.length > MAX_TRANSCRIPT_TEXT_LENGTH ||
+    /[\u0000\u000b\u000c\u007f]/.test(value.text) ||
     typeof value.duration !== "number" ||
     !Number.isFinite(value.duration) ||
     value.duration <= 0 ||
-    value.duration > expectedDurationSeconds + 5 ||
+    Math.abs(value.duration - expectedDurationSeconds) > 5 ||
     !Array.isArray(value.segments) ||
     value.segments.length > MAX_TRANSCRIPT_SEGMENTS
   ) {
@@ -594,7 +687,10 @@ export function validateVerboseTranscriptionResponse(
     endSeconds: number;
     text: string;
   }> = [];
+  const providerSegmentTexts: string[] = [];
+  const providerSpeakerLabels = new Set<string>();
   let previousStart = 0;
+  const segmentIds = new Set<string>();
   for (const candidate of value.segments) {
     if (!isRecord(candidate)) {
       transcriptionError(
@@ -604,7 +700,17 @@ export function validateVerboseTranscriptionResponse(
     }
     const startSeconds = candidate.start;
     const endSeconds = candidate.end;
+    const id = candidate.id;
+    const speaker = candidate.speaker;
     if (
+      candidate.type !== "transcript.text.segment" ||
+      typeof id !== "string" ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(id) ||
+      segmentIds.has(id) ||
+      typeof speaker !== "string" ||
+      speaker.trim().length < 1 ||
+      speaker.length > 64 ||
+      /[\u0000-\u001f\u007f]/.test(speaker) ||
       typeof startSeconds !== "number" ||
       typeof endSeconds !== "number" ||
       !Number.isFinite(startSeconds) ||
@@ -612,25 +718,56 @@ export function validateVerboseTranscriptionResponse(
       startSeconds < 0 ||
       startSeconds + 0.05 < previousStart ||
       endSeconds <= startSeconds ||
-      endSeconds > expectedDurationSeconds + 5
+      endSeconds > value.duration
     ) {
       transcriptionError(
         "provider_response_invalid",
         "The transcription provider returned invalid segment timestamps.",
       );
     }
+    segmentIds.add(id);
+    providerSpeakerLabels.add(
+      speaker.normalize("NFKC").trim().toLocaleLowerCase("en-US"),
+    );
     const text = boundedSegmentText(candidate.text);
     if (text) {
-      segments.push({ startSeconds, endSeconds, text });
+      providerSegmentTexts.push(text);
+      const cueSegments = splitTimedSegment(text, startSeconds, endSeconds);
+      if (segments.length + cueSegments.length > MAX_TRANSCRIPT_SEGMENTS) {
+        transcriptionError(
+          "provider_response_invalid",
+          "The transcription provider returned too many bounded cues.",
+        );
+      }
+      segments.push(...cueSegments);
     }
     previousStart = startSeconds;
+  }
+  const normalizedProviderText = normalizedTranscriptText(value.text);
+  const normalizedSegmentText = normalizedTranscriptText(
+    providerSegmentTexts.join(" "),
+  );
+  const normalizedUnlabeledProviderText = normalizedDiarizedAggregateText(
+    value.text,
+    providerSpeakerLabels,
+  );
+  if (
+    normalizedProviderText !== normalizedSegmentText &&
+    normalizedUnlabeledProviderText !== normalizedSegmentText
+  ) {
+    transcriptionError(
+      "provider_response_invalid",
+      "The transcription provider returned incomplete timed segments.",
+    );
   }
   return { durationSeconds: value.duration, segments };
 }
 
 async function sha256File(path: string) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path, { highWaterMark: 64 * 1_024 })) {
+  for await (const chunk of createReadStream(path, {
+    highWaterMark: 64 * 1_024,
+  })) {
     hash.update(chunk as Buffer);
   }
   return hash.digest("hex");
@@ -697,9 +834,14 @@ async function boundedJsonResponse(response: Response) {
   } finally {
     reader.releaseLock();
   }
-  const bytes = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total);
+  const bytes = Buffer.concat(
+    chunks.map((chunk) => Buffer.from(chunk)),
+    total,
+  );
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    return JSON.parse(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+    ) as unknown;
   } catch {
     transcriptionError(
       "provider_response_invalid",
@@ -739,28 +881,52 @@ function providerStatusError(status: number) {
   );
 }
 
-function formTemperature(value: number) {
-  return Number.isInteger(value) ? String(value) : String(value).slice(0, 8);
+export function openAiTranscriptionRequestDigest(
+  input: Readonly<{
+    contentSha256: string;
+    language: string;
+  }>,
+) {
+  if (
+    !/^[0-9a-f]{64}$/.test(input.contentSha256) ||
+    !/^[a-z]{2}$/.test(input.language)
+  ) {
+    transcriptionError(
+      "configuration_invalid",
+      "The transcription request digest input is invalid.",
+    );
+  }
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        contract: OPENAI_TRANSCRIPTION_REQUEST_CONTRACT,
+        endpoint: OPENAI_TRANSCRIPTIONS_URL,
+        model: OPENAI_TRANSCRIPTION_MODEL,
+        responseFormat: OPENAI_TRANSCRIPTION_RESPONSE_FORMAT,
+        chunkingStrategy: OPENAI_TRANSCRIPTION_CHUNKING_STRATEGY,
+        language: input.language,
+        contentSha256: input.contentSha256,
+      }),
+    )
+    .digest("hex");
 }
 
-export async function requestOpenAiTranscription(input: Readonly<{
-  apiKey: string;
-  audioPath: string;
-  expectedDurationSeconds: number;
-  language: string;
-  temperature: number;
-  fetchImplementation?: FetchImplementation;
-  sleep?: SleepImplementation;
-  requestTimeoutMs?: number;
-}>): Promise<ProviderTranscript> {
+export async function requestOpenAiTranscription(
+  input: Readonly<{
+    apiKey: string;
+    audioPath: string;
+    expectedDurationSeconds: number;
+    language: string;
+    fetchImplementation?: FetchImplementation;
+    sleep?: SleepImplementation;
+    requestTimeoutMs?: number;
+  }>,
+): Promise<ProviderTranscript> {
   if (
     input.apiKey.length < 8 ||
     input.apiKey.length > 512 ||
     /[^\x21-\x7e]/.test(input.apiKey) ||
     !/^[a-z]{2}$/.test(input.language) ||
-    !Number.isFinite(input.temperature) ||
-    input.temperature < 0 ||
-    input.temperature > 1 ||
     !Number.isFinite(input.expectedDurationSeconds) ||
     input.expectedDurationSeconds <= 0 ||
     input.expectedDurationSeconds > AUDIO_CHUNK_SECONDS + 2
@@ -801,12 +967,17 @@ export async function requestOpenAiTranscription(input: Readonly<{
     );
   }
   const fetchImplementation = input.fetchImplementation ?? fetch;
-  const sleep = input.sleep ?? ((milliseconds) =>
-    new Promise<void>((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
+  const sleep =
+    input.sleep ??
+    ((milliseconds) =>
+      new Promise<void>((resolvePromise) =>
+        setTimeout(resolvePromise, milliseconds),
+      ));
   const contentDigest = await sha256File(input.audioPath);
-  const idempotencyDigest = createHash("sha256")
-    .update(`${OPENAI_TRANSCRIPTION_MODEL}\0${input.language}\0${formTemperature(input.temperature)}\0${contentDigest}`)
-    .digest("hex");
+  const idempotencyDigest = openAiTranscriptionRequestDigest({
+    contentSha256: contentDigest,
+    language: input.language,
+  });
   const requestTimeoutMs = Math.min(
     Math.max(Math.trunc(timeoutOverride ?? PROVIDER_REQUEST_TIMEOUT_MS), 1),
     PROVIDER_REQUEST_TIMEOUT_MS,
@@ -815,10 +986,9 @@ export async function requestOpenAiTranscription(input: Readonly<{
   for (let attempt = 0; attempt < PROVIDER_ATTEMPTS; attempt += 1) {
     const form = new FormData();
     form.set("model", OPENAI_TRANSCRIPTION_MODEL);
-    form.set("response_format", "verbose_json");
-    form.set("timestamp_granularities[]", "segment");
+    form.set("response_format", OPENAI_TRANSCRIPTION_RESPONSE_FORMAT);
+    form.set("chunking_strategy", OPENAI_TRANSCRIPTION_CHUNKING_STRATEGY);
     form.set("language", input.language);
-    form.set("temperature", formTemperature(input.temperature));
     form.set(
       "file",
       await openAsBlob(input.audioPath, { type: "audio/mpeg" }),
@@ -857,8 +1027,7 @@ export async function requestOpenAiTranscription(input: Readonly<{
         const status = response.status;
         await discardResponse(response);
         if (retry && attempt + 1 < PROVIDER_ATTEMPTS) {
-          retryDelay =
-            waitMilliseconds || Math.min(500 * 2 ** attempt, 2_000);
+          retryDelay = waitMilliseconds || Math.min(500 * 2 ** attempt, 2_000);
         } else {
           throw providerStatusError(status);
         }
@@ -871,7 +1040,7 @@ export async function requestOpenAiTranscription(input: Readonly<{
             "The transcription provider returned an unexpected content type.",
           );
         }
-        return validateVerboseTranscriptionResponse(
+        return validateDiarizedTranscriptionResponse(
           await boundedJsonResponse(response),
           input.expectedDurationSeconds,
         );
@@ -921,10 +1090,7 @@ export function mergeTranscriptChunks(
   let previousChunkEnd = 0;
   for (const [index, item] of chunks.entries()) {
     const duration = item.chunk.endSeconds - item.chunk.startSeconds;
-    if (
-      index > 0 &&
-      Math.abs(item.chunk.startSeconds - previousChunkEnd) > 2
-    ) {
+    if (index > 0 && Math.abs(item.chunk.startSeconds - previousChunkEnd) > 2) {
       transcriptionError(
         "transcript_output_invalid",
         "The transcript audio chunks are not contiguous.",
@@ -1048,13 +1214,20 @@ export async function writeWebVttAtomically(path: string, value: string) {
   let handle;
   try {
     const directoryMetadata = await lstat(outputDirectory);
-    if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink()) {
+    if (
+      !directoryMetadata.isDirectory() ||
+      directoryMetadata.isSymbolicLink()
+    ) {
       transcriptionError(
         "transcript_write_failed",
         "The WebVTT output directory is invalid.",
       );
     }
-    handle = await open(temporaryPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    handle = await open(
+      temporaryPath,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
     await handle.writeFile(value, "utf8");
     await handle.sync();
     await handle.close();
@@ -1072,20 +1245,24 @@ export async function writeWebVttAtomically(path: string, value: string) {
   }
 }
 
-export async function transcribeMediaToWebVtt(input: Readonly<{
-  apiKey: string;
-  inputPath: string;
-  outputVttPath: string;
-  providerLanguage: string;
-  temperature: number;
-  fetchImplementation?: FetchImplementation;
-  sleep?: SleepImplementation;
-}>) {
+export async function transcribeMediaToWebVtt(
+  input: Readonly<{
+    apiKey: string;
+    inputPath: string;
+    outputVttPath: string;
+    providerLanguage: string;
+    fetchImplementation?: FetchImplementation;
+    sleep?: SleepImplementation;
+  }>,
+) {
   const outputDirectory = dirname(resolve(input.outputVttPath));
   let workspace: string;
   try {
     const directoryMetadata = await lstat(outputDirectory);
-    if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink()) {
+    if (
+      !directoryMetadata.isDirectory() ||
+      directoryMetadata.isSymbolicLink()
+    ) {
       transcriptionError(
         "transcript_write_failed",
         "The WebVTT output directory is invalid.",
@@ -1100,7 +1277,10 @@ export async function transcribeMediaToWebVtt(input: Readonly<{
     );
   }
   try {
-    const chunks = await createCompressedAudioChunks(input.inputPath, workspace);
+    const chunks = await createCompressedAudioChunks(
+      input.inputPath,
+      workspace,
+    );
     const transcribed: Array<{
       chunk: AudioChunk;
       transcript: ProviderTranscript;
@@ -1113,7 +1293,6 @@ export async function transcribeMediaToWebVtt(input: Readonly<{
           audioPath: chunk.path,
           expectedDurationSeconds: chunk.endSeconds - chunk.startSeconds,
           language: input.providerLanguage,
-          temperature: input.temperature,
           fetchImplementation: input.fetchImplementation,
           sleep: input.sleep,
         }),
@@ -1141,7 +1320,9 @@ async function createPreflightCanary(workspace: string) {
       "-f",
       "lavfi",
       "-i",
-      "sine=frequency=997:sample_rate=16000:duration=1",
+      "flite=text='Q Academy transcription canary':voice=slt",
+      "-t",
+      "3",
       "-map_metadata",
       "-1",
       "-ac",
@@ -1167,7 +1348,11 @@ async function createPreflightCanary(workspace: string) {
     workspace,
   );
   const metadata = await stat(canaryPath).catch(() => undefined);
-  if (!metadata?.isFile() || metadata.size < 1 || metadata.size >= MAX_UPLOAD_BYTES) {
+  if (
+    !metadata?.isFile() ||
+    metadata.size < 1 ||
+    metadata.size >= MAX_UPLOAD_BYTES
+  ) {
     transcriptionError(
       "audio_conversion_failed",
       "The deterministic provider canary could not be generated.",
@@ -1176,25 +1361,35 @@ async function createPreflightCanary(workspace: string) {
   return canaryPath;
 }
 
-export async function runOpenAiTranscriptionPreflight(input: Readonly<{
-  apiKey: string;
-  temperature: number;
-  fetchImplementation?: FetchImplementation;
-  sleep?: SleepImplementation;
-}>) {
+export async function runOpenAiTranscriptionPreflight(
+  input: Readonly<{
+    apiKey: string;
+    fetchImplementation?: FetchImplementation;
+    sleep?: SleepImplementation;
+  }>,
+) {
   const workspace = await mkdtemp(join(tmpdir(), "q-academy-stt-preflight-"));
   try {
     const canaryPath = await createPreflightCanary(workspace);
     const result = await requestOpenAiTranscription({
       apiKey: input.apiKey,
       audioPath: canaryPath,
-      expectedDurationSeconds: 1,
+      expectedDurationSeconds: 3,
       language: "en",
-      temperature: input.temperature,
       fetchImplementation: input.fetchImplementation,
       sleep: input.sleep,
     });
-    return { durationSeconds: result.durationSeconds };
+    const canaryText = result.segments.map((segment) => segment.text).join(" ");
+    if (!/academy/i.test(canaryText) || !/canary/i.test(canaryText)) {
+      transcriptionError(
+        "provider_response_invalid",
+        "The transcription provider did not verify the spoken canary.",
+      );
+    }
+    return {
+      durationSeconds: result.durationSeconds,
+      segments: result.segments.length,
+    };
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }

@@ -391,6 +391,32 @@ services:
           cpus: "1.0"
           memory: 512M
 
+  ai-provider-preflight:
+    <<: *tenant-ops-runtime
+    pull_policy: never
+    command:
+      - ai:provider:preflight
+    environment:
+      NODE_ENV: production
+      Q_ACADEMY_OPS_SCOPE: ai-provider
+      AI_API_KEY_FILE: /run/secrets/q-academy-ai-api-key
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_MODEL: ${AI_MODEL:-gpt-5.6-terra}
+    networks:
+      - egress
+    volumes:
+      - type: bind
+        source: ${AI_API_KEY_SOURCE_FILE:-/etc/q-academy/ai-api-key}
+        target: /run/secrets/q-academy-ai-api-key
+        read_only: true
+        bind:
+          create_host_path: false
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
   app: &app-runtime
     image: q-academy-app:${APP_IMAGE_TAG:?Set APP_IMAGE_TAG to the release commit}
     build:
@@ -438,6 +464,9 @@ services:
       EXAM_SELECTION_SECRET: ${EXAM_SELECTION_SECRET:?Set EXAM_SELECTION_SECRET in the production env file}
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in the production env file}
       METRICS_SECRET: ${METRICS_SECRET:?Set METRICS_SECRET in the production env file}
+      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-false}
+      MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}"]'
       EMAIL_DELIVERY_REQUIRED: ${EMAIL_DELIVERY_REQUIRED:-true}
       EMAIL_DELIVERY_WEBHOOK_URL: ${EMAIL_DELIVERY_WEBHOOK_URL:-}
       EMAIL_DELIVERY_WEBHOOK_SECRET: ${EMAIL_DELIVERY_WEBHOOK_SECRET:-}
@@ -467,7 +496,7 @@ services:
       MEDIA_CLAMAV_PORT: "3310"
       AI_API_KEY_FILE: /run/secrets/q-academy-ai-api-key
       AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
-      AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
+      AI_MODEL: ${AI_MODEL:-gpt-5.6-terra}
       STOCK_IMAGE_PROVIDER_NAME: ${STOCK_IMAGE_PROVIDER_NAME:-}
       STOCK_IMAGE_PROVIDER_BASE_URL: ${STOCK_IMAGE_PROVIDER_BASE_URL:-}
       STOCK_IMAGE_PROVIDER_API_KEY: ${STOCK_IMAGE_PROVIDER_API_KEY:-}
@@ -564,11 +593,11 @@ services:
       MEDIA_FFMPEG_PATH: /usr/bin/ffmpeg
       MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
       MEDIA_FFMPEG_TIMEOUT_SECONDS: ${MEDIA_FFMPEG_TIMEOUT_SECONDS:-10800}
-      MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-7200}
-      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-true}
+      MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-18000}
+      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-false}
       MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
-      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}","--temperature","0"]'
-      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--preflight"]'
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}"]'
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-transcribe.ts","--preflight"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -740,11 +769,11 @@ services:
       MEDIA_FFMPEG_PATH: /usr/bin/ffmpeg
       MEDIA_FFPROBE_PATH: /usr/bin/ffprobe
       MEDIA_FFMPEG_TIMEOUT_SECONDS: ${MEDIA_FFMPEG_TIMEOUT_SECONDS:-10800}
-      MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-7200}
-      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-true}
+      MEDIA_TRANSCRIPT_TIMEOUT_SECONDS: ${MEDIA_TRANSCRIPT_TIMEOUT_SECONDS:-18000}
+      MEDIA_TRANSCRIPTION_ENABLED: ${MEDIA_TRANSCRIPTION_ENABLED:-false}
       MEDIA_TRANSCRIPT_COMMAND: /app/node_modules/.bin/tsx
-      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}","--temperature","0"]'
-      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-whisper-transcribe.ts","--preflight"]'
+      MEDIA_TRANSCRIPT_COMMAND_ARGS_JSON: '["/app/scripts/openai-transcribe.ts","--input","{input}","--output-vtt","{output}","--language","{language}"]'
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: '["/app/scripts/openai-transcribe.ts","--preflight"]'
     networks:
       - egress
       - media
@@ -988,7 +1017,7 @@ services:
       CRON_SECRET: ${MEDIA_CRON_SECRET:?Set MEDIA_CRON_SECRET in the production env file}
       MEDIA_WORKER_POLL_SECONDS: ${MEDIA_WORKER_POLL_SECONDS:-10}
       WORKER_MAX_CONSECUTIVE_FAILURES: ${MEDIA_WORKER_MAX_CONSECUTIVE_FAILURES:-3}
-      WORKER_HEARTBEAT_STALE_SECONDS: ${MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-15000}
+      WORKER_HEARTBEAT_STALE_SECONDS: ${MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-20000}
     command:
       - /bin/sh
       - -ec
@@ -1005,10 +1034,10 @@ services:
         if [ "$${#WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 2 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -lt 1 ] || [ "$${WORKER_MAX_CONSECUTIVE_FAILURES}" -gt 20 ]; then
           printf 'Media worker failure limit must be between 1 and 20.\n' >&2; exit 1
         fi
-        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 14470 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
-          printf 'Media worker heartbeat age must be between 14470 and 86400 seconds.\n' >&2; exit 1
+        if [ "$${#WORKER_HEARTBEAT_STALE_SECONDS}" -gt 5 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt 19970 ] || [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -gt 86400 ]; then
+          printf 'Media worker heartbeat age must be between 19970 and 86400 seconds.\n' >&2; exit 1
         fi
-        minimum_heartbeat_age="$$((MEDIA_WORKER_POLL_SECONDS + 14400 + 60))"
+        minimum_heartbeat_age="$$((MEDIA_WORKER_POLL_SECONDS + 19900 + 60))"
         if [ "$${WORKER_HEARTBEAT_STALE_SECONDS}" -lt "$${minimum_heartbeat_age}" ]; then
           printf 'Media worker heartbeat age is shorter than one scan cycle.\n' >&2; exit 1
         fi
@@ -1042,7 +1071,7 @@ services:
             printf '%s\n' "$${authorization_header}" |
               node /opt/q-academy/dispatcher-http-post.mjs \
                 --url 'http://media-runner:3000/api/internal/jobs/media/dispatch?limit=1' \
-                --timeout-seconds 14400 \
+                --timeout-seconds 19900 \
                 --output "$${response_file}"
           )"; then :; else status=000; fi
           if kill "$${in_progress_pid}" 2>/dev/null; then :; fi

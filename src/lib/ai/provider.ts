@@ -1,9 +1,18 @@
 import "server-only";
 
-import { z } from "zod";
-
 import type { AiMessageCitation } from "@/db/schema";
 import { loadAiApiKey } from "@/lib/ai/api-key-credential";
+import { readBoundedProviderJson } from "@/lib/ai/bounded-provider-response";
+import {
+  aiChatCompletionControls,
+  aiChatCompletionSafetyFields,
+  aiInstructionRole,
+  configuredAiTextModel,
+} from "@/lib/ai/chat-completion-config";
+import {
+  completedChatCompletionResponseSchema,
+  confirmedChatCompletionModel,
+} from "@/lib/ai/chat-completion-response";
 import { dedupeAiMessageCitations } from "@/lib/ai/citations";
 import {
   rankAiCourseContext,
@@ -35,6 +44,7 @@ export type AiCompletionInput = {
   message: string;
   history: AiProviderMessage[];
   courses: AiCourseContext[];
+  safetyIdentifier: string;
   memberProfile?: ReadonlyArray<{ label: string; value: string }>;
 };
 
@@ -50,33 +60,7 @@ export type AiCompletionResult = {
   metadata: Record<string, unknown>;
 };
 
-const compatibleResponseSchema = z
-  .object({
-    choices: z
-      .array(
-        z
-          .object({
-            message: z
-              .object({
-                content: z.union([
-                  z.string(),
-                  z.array(z.object({ text: z.string() }).passthrough()),
-                ]),
-              })
-              .passthrough(),
-          })
-          .passthrough(),
-      )
-      .min(1),
-    usage: z
-      .object({
-        prompt_tokens: z.number().int().nonnegative().optional(),
-        completion_tokens: z.number().int().nonnegative().optional(),
-      })
-      .passthrough()
-      .optional(),
-  })
-  .passthrough();
+const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1_024;
 
 function normalize(value: string) {
   return value
@@ -272,7 +256,7 @@ async function completeWithCompatibleProvider(
   apiKey: string,
 ): Promise<AiCompletionResult> {
   const started = performance.now();
-  const model = process.env.AI_MODEL?.trim() || "gpt-4.1-mini";
+  const model = configuredAiTextModel();
   const referenceContext = renderUntrustedAiReferenceContext(context);
   const safeAgentPrompt =
     sanitizeAiReferenceText(input.agentSystemPrompt, 4_000) ||
@@ -306,10 +290,10 @@ async function completeWithCompatibleProvider(
     },
     body: JSON.stringify({
       model,
-      temperature: 0.2,
-      max_tokens: 1200,
+      ...aiChatCompletionControls(model, 1_200),
+      ...aiChatCompletionSafetyFields(model, input.safetyIdentifier),
       messages: [
-        { role: "system", content: systemMessage },
+        { role: aiInstructionRole(model), content: systemMessage },
         ...input.history.slice(-12),
         { role: "user", content: input.message },
       ],
@@ -320,7 +304,10 @@ async function completeWithCompatibleProvider(
   if (!response.ok) {
     throw new Error(`AI provider returned HTTP ${response.status}.`);
   }
-  const parsed = compatibleResponseSchema.parse(await response.json());
+  const parsed = completedChatCompletionResponseSchema.parse(
+    await readBoundedProviderJson(response, MAX_PROVIDER_RESPONSE_BYTES),
+  );
+  const confirmedModel = confirmedChatCompletionModel(model, parsed.model);
   const rawContent = parsed.choices[0]?.message.content;
   const content = Array.isArray(rawContent)
     ? rawContent.map((part) => part.text).join("\n").trim()
@@ -331,7 +318,7 @@ async function completeWithCompatibleProvider(
     content,
     suggestions: suggestionsFor(input.courses),
     provider: "openai-compatible",
-    model,
+    model: confirmedModel,
     inputTokens:
       parsed.usage?.prompt_tokens ??
       estimateTokens(

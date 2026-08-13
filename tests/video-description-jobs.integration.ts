@@ -12,7 +12,14 @@ import {
   enqueueVideoDescriptionJobInTransaction,
   processVideoDescriptionJobs,
 } from "../src/lib/ai/video-description-jobs";
-import { enqueueReadyTranscriptInTransaction } from "../src/lib/media/processing-worker";
+import {
+  enqueueReadyTranscriptInTransaction,
+  supersedeLegacyTranscriptJobs,
+} from "../src/lib/media/processing-worker";
+import {
+  MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+} from "../src/lib/media/transcription-contract";
 import { privacySubjectReference } from "../src/lib/privacy/subject-reference";
 import {
   applyMemberErasure,
@@ -52,13 +59,17 @@ type Fixture = {
 
 function providerResponse(description: string) {
   return new Response(
-    JSON.stringify({ choices: [{ message: { content: description } }] }),
+    JSON.stringify({
+      model: "gpt-5.6-terra",
+      choices: [{ finish_reason: "stop", message: { content: description } }],
+    }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 }
 
 async function createFixture(input?: {
   caption?: string;
+  durationMilliseconds?: number | null;
   organizationId?: string;
   userId?: string;
 }) {
@@ -70,6 +81,10 @@ async function createFixture(input?: {
   const blockId = randomUUID();
   const assetId = randomUUID();
   const digest = "a".repeat(64);
+  const durationMilliseconds =
+    input?.durationMilliseconds === undefined
+      ? 10_000
+      : input.durationMilliseconds;
   if (!input?.organizationId) {
     await sql`
       insert into organizations (id, name, slug)
@@ -129,7 +144,8 @@ async function createFixture(input?: {
       'ready', 'filesystem',
       ${`tenants/${organizationId}/assets/${assetId}/video.mp4`},
       ${`incoming/tenants/${organizationId}/assets/${assetId}/video.mp4`},
-      'video.mp4', 'video.mp4', 'video/mp4', 'video/mp4', 20, 20, 10000,
+      'video.mp4', 'video.mp4', 'video/mp4', 'video/mp4', 20, 20,
+      ${durationMilliseconds},
       20, ${digest}, now() + interval '1 hour', now(), now()
     )
   `;
@@ -244,10 +260,18 @@ async function installBlockUpdateFault(
   blockId: string,
   mode: "once" | "always",
 ) {
-  await sql.unsafe("drop trigger if exists test_video_description_apply_fault on content_blocks");
-  await sql.unsafe("drop function if exists test_video_description_apply_fault()");
-  await sql.unsafe("drop sequence if exists test_video_description_apply_fault_seq");
-  await sql.unsafe("create sequence test_video_description_apply_fault_seq start 1");
+  await sql.unsafe(
+    "drop trigger if exists test_video_description_apply_fault on content_blocks",
+  );
+  await sql.unsafe(
+    "drop function if exists test_video_description_apply_fault()",
+  );
+  await sql.unsafe(
+    "drop sequence if exists test_video_description_apply_fault_seq",
+  );
+  await sql.unsafe(
+    "create sequence test_video_description_apply_fault_seq start 1",
+  );
   await sql.unsafe(`
     create function test_video_description_apply_fault() returns trigger
     language plpgsql as $$
@@ -269,9 +293,15 @@ async function installBlockUpdateFault(
 }
 
 async function removeBlockUpdateFault() {
-  await sql.unsafe("drop trigger if exists test_video_description_apply_fault on content_blocks");
-  await sql.unsafe("drop function if exists test_video_description_apply_fault()");
-  await sql.unsafe("drop sequence if exists test_video_description_apply_fault_seq");
+  await sql.unsafe(
+    "drop trigger if exists test_video_description_apply_fault on content_blocks",
+  );
+  await sql.unsafe(
+    "drop function if exists test_video_description_apply_fault()",
+  );
+  await sql.unsafe(
+    "drop sequence if exists test_video_description_apply_fault_seq",
+  );
 }
 
 after(async () => {
@@ -284,11 +314,367 @@ after(async () => {
   ]);
 });
 
+test("unsupported automatic duration creates no transcript job or description retry loop", async () => {
+  const fixture = await createFixture({
+    durationMilliseconds: MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS + 1,
+  });
+  try {
+    const copiedJobs = await db.transaction((transaction) =>
+      enqueueCopiedVideoDescriptionJobsInTransaction(transaction, {
+        organizationId: fixture.organizationId,
+        originCourseId: fixture.courseId,
+        requestedById: fixture.userId,
+        blocks: [
+          {
+            id: fixture.blockId,
+            type: "video",
+            data: {
+              mediaAssetId: fixture.assetId,
+              caption: "",
+              videoDescriptionIntent: "automatic",
+            },
+            revision: 1,
+          },
+        ],
+        locale: "de",
+      }),
+    );
+    assert.deepEqual(copiedJobs, []);
+    await assert.rejects(
+      db.transaction((transaction) =>
+        enqueueReadyTranscriptInTransaction(transaction, {
+          organizationId: fixture.organizationId,
+          sourceAssetId: fixture.assetId,
+          sourceContentSha256: fixture.digest,
+          requestedById: fixture.userId,
+          language: "de",
+        }),
+      ),
+      /exceeds the automatic transcription contract/,
+    );
+    const [emptyQueues] = await sql<
+      Array<{ transcriptJobs: number; descriptionJobs: number }>
+    >`
+      select
+        (
+          select count(*)::int from media_processing_jobs
+          where organization_id = ${fixture.organizationId}
+            and source_asset_id = ${fixture.assetId}
+            and type = 'transcript'
+        ) as "transcriptJobs",
+        (
+          select count(*)::int from video_description_jobs
+          where organization_id = ${fixture.organizationId}
+            and live_source_asset_id = ${fixture.assetId}
+        ) as "descriptionJobs"
+    `;
+    assert.deepEqual(emptyQueues, { transcriptJobs: 0, descriptionJobs: 0 });
+    const descriptionJob = await db.transaction((transaction) =>
+      enqueueVideoDescriptionJobInTransaction(transaction, {
+        organizationId: fixture.organizationId,
+        originCourseId: fixture.courseId,
+        blockId: fixture.blockId,
+        sourceAssetId: fixture.assetId,
+        sourceContentSha256: fixture.digest,
+        expectedBlockRevision: 1,
+        locale: "de",
+        transcriptLanguage: "de",
+        requestedById: fixture.userId,
+      }),
+    );
+    let providerCalls = 0;
+    globalThis.fetch = async () => {
+      providerCalls += 1;
+      return providerResponse("Darf nicht erzeugt werden.");
+    };
+
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["failed"]);
+    assert.equal(providerCalls, 0);
+    assert.deepEqual(await processVideoDescriptionJobs(1), []);
+    const [state] = await sql<
+      Array<{
+        status: string;
+        failureCode: string | null;
+        nextRetryAt: Date | null;
+        completedAt: Date | null;
+        transcriptJobs: number;
+      }>
+    >`
+      select description.status,
+             description.failure_code as "failureCode",
+             description.next_retry_at as "nextRetryAt",
+             description.completed_at as "completedAt",
+             (
+               select count(*)::int
+               from media_processing_jobs processing
+               where processing.organization_id = ${fixture.organizationId}
+                 and processing.source_asset_id = ${fixture.assetId}
+                 and processing.type = 'transcript'
+             ) as "transcriptJobs"
+      from video_description_jobs description
+      where description.id = ${descriptionJob.id}
+    `;
+    assert.deepEqual(state, {
+      status: "failed",
+      failureCode: "transcript_duration_unsupported",
+      nextRetryAt: null,
+      completedAt: state?.completedAt,
+      transcriptJobs: 0,
+    });
+    assert.ok(state?.completedAt instanceof Date);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await sql`delete from organizations where id = ${fixture.organizationId}`;
+  }
+});
+
+test("legacy transcript provenance is claim-fenced and atomically requeued", async () => {
+  const fixture = await createFixture();
+  const legacyId = randomUUID();
+  const legacyClaim = randomUUID();
+  const legacyRequestKey = randomUUID().replaceAll("-", "").padEnd(64, "0");
+  try {
+    await sql`
+      insert into media_processing_jobs (
+        id, organization_id, source_asset_id, requested_by_id, type, status,
+        request_key, source_content_sha256, provider, options, attempt,
+        claim_token, claimed_at, lease_expires_at
+      ) values (
+        ${legacyId}, ${fixture.organizationId}, ${fixture.assetId},
+        ${fixture.userId}, 'transcript', 'processing', ${legacyRequestKey},
+        ${fixture.digest}, 'configured-transcript-v1',
+        ${sql.json({ language: "de" })}, 1, ${legacyClaim}, now(),
+        now() + interval '5 minutes'
+      )
+    `;
+    assert.equal(await supersedeLegacyTranscriptJobs(new Date(), 1), 0);
+    await sql`
+      update media_processing_jobs
+      set lease_expires_at = now() - interval '1 second'
+      where id = ${legacyId} and claim_token = ${legacyClaim}
+    `;
+    assert.equal(await supersedeLegacyTranscriptJobs(new Date(), 1), 1);
+    assert.equal(await supersedeLegacyTranscriptJobs(new Date(), 1), 0);
+
+    const jobs = await sql<
+      Array<{
+        id: string;
+        status: string;
+        provider: string;
+        claimToken: string | null;
+        failureCode: string | null;
+        language: string | null;
+      }>
+    >`
+      select id, status, provider, claim_token as "claimToken",
+             failure_code as "failureCode", options->>'language' as language
+      from media_processing_jobs
+      where organization_id = ${fixture.organizationId} and type = 'transcript'
+      order by created_at, id
+    `;
+    assert.equal(jobs.length, 2);
+    assert.deepEqual(
+      jobs.find((job) => job.id === legacyId),
+      {
+        id: legacyId,
+        status: "cancelled",
+        provider: "configured-transcript-v1",
+        claimToken: null,
+        failureCode: "provider_contract_superseded",
+        language: "de",
+      },
+    );
+    assert.deepEqual(
+      jobs.find((job) => job.provider === TRANSCRIPT_PROCESSING_PROVIDER),
+      {
+        id: jobs.find((job) => job.provider === TRANSCRIPT_PROCESSING_PROVIDER)
+          ?.id,
+        status: "queued",
+        provider: TRANSCRIPT_PROCESSING_PROVIDER,
+        claimToken: null,
+        failureCode: null,
+        language: "de",
+      },
+    );
+  } finally {
+    await sql`delete from organizations where id = ${fixture.organizationId}`;
+  }
+});
+
+test("legacy transcript languages normalize BCP47 and reject three-letter codes", async () => {
+  const fixture = await createFixture();
+  const normalizedId = randomUUID();
+  const invalidId = randomUUID();
+  const normalizedRequestKey = randomUUID()
+    .replaceAll("-", "")
+    .padEnd(64, "0");
+  const invalidRequestKey = randomUUID()
+    .replaceAll("-", "")
+    .padEnd(64, "0");
+  try {
+    await sql`
+      insert into media_processing_jobs (
+        id, organization_id, source_asset_id, requested_by_id, type, status,
+        request_key, source_content_sha256, provider, options, created_at
+      ) values
+        (
+          ${normalizedId}, ${fixture.organizationId}, ${fixture.assetId},
+          ${fixture.userId}, 'transcript', 'queued', ${normalizedRequestKey},
+          ${fixture.digest}, ${TRANSCRIPT_PROCESSING_PROVIDER},
+          ${sql.json({ language: "en-US" })}, now() - interval '2 seconds'
+        ),
+        (
+          ${invalidId}, ${fixture.organizationId}, ${fixture.assetId},
+          ${fixture.userId}, 'transcript', 'queued', ${invalidRequestKey},
+          ${fixture.digest}, 'configured-transcript-v1',
+          ${sql.json({ language: "deu" })}, now() - interval '1 second'
+        )
+    `;
+
+    assert.equal(await supersedeLegacyTranscriptJobs(new Date(), 10), 2);
+    const jobs = await sql<
+      Array<{
+        id: string;
+        status: string;
+        provider: string;
+        language: string | null;
+        failureCode: string | null;
+      }>
+    >`
+      select id, status, provider, options->>'language' as language,
+             failure_code as "failureCode"
+      from media_processing_jobs
+      where organization_id = ${fixture.organizationId}
+        and source_asset_id = ${fixture.assetId}
+        and type = 'transcript'
+      order by created_at, id
+    `;
+    assert.equal(jobs.length, 3);
+    assert.deepEqual(
+      jobs.find((job) => job.id === normalizedId),
+      {
+        id: normalizedId,
+        status: "cancelled",
+        provider: TRANSCRIPT_PROCESSING_PROVIDER,
+        language: "en-US",
+        failureCode: "transcript_language_normalized",
+      },
+    );
+    assert.deepEqual(
+      jobs.find((job) => job.id === invalidId),
+      {
+        id: invalidId,
+        status: "failed",
+        provider: "configured-transcript-v1",
+        language: "deu",
+        failureCode: "transcript_language_unsupported",
+      },
+    );
+    assert.deepEqual(
+      jobs.find(
+        (job) =>
+          job.id !== normalizedId &&
+          job.id !== invalidId &&
+          job.provider === TRANSCRIPT_PROCESSING_PROVIDER,
+      ),
+      {
+        id: jobs.find(
+          (job) => job.id !== normalizedId && job.id !== invalidId,
+        )?.id,
+        status: "queued",
+        provider: TRANSCRIPT_PROCESSING_PROVIDER,
+        language: "en",
+        failureCode: null,
+      },
+    );
+  } finally {
+    await sql`delete from organizations where id = ${fixture.organizationId}`;
+  }
+});
+
+test("legacy transcript jobs with unsupported source durations have no successor", async () => {
+  for (const duration of [
+    MAX_AUTOMATIC_TRANSCRIPTION_DURATION_MS + 1,
+    null,
+  ]) {
+    const fixture = await createFixture({ durationMilliseconds: duration });
+    const legacyId = randomUUID();
+    const legacyRequestKey = randomUUID()
+      .replaceAll("-", "")
+      .padEnd(64, "0");
+    try {
+      await sql`
+        insert into media_processing_jobs (
+          id, organization_id, source_asset_id, requested_by_id, type, status,
+          request_key, source_content_sha256, provider, options
+        ) values (
+          ${legacyId}, ${fixture.organizationId}, ${fixture.assetId},
+          ${fixture.userId}, 'transcript', 'queued', ${legacyRequestKey},
+          ${fixture.digest}, 'configured-transcript-v1',
+          ${sql.json({ language: "de" })}
+        )
+      `;
+
+      assert.equal(await supersedeLegacyTranscriptJobs(new Date(), 10), 1);
+      const jobs = await sql<
+        Array<{
+          id: string;
+          status: string;
+          failureCode: string | null;
+        }>
+      >`
+        select id, status, failure_code as "failureCode"
+        from media_processing_jobs
+        where organization_id = ${fixture.organizationId}
+          and source_asset_id = ${fixture.assetId}
+          and type = 'transcript'
+      `;
+      assert.deepEqual([...jobs], [
+        {
+          id: legacyId,
+          status: "failed",
+          failureCode: "transcript_duration_unsupported",
+        },
+      ]);
+    } finally {
+      await sql`delete from organizations where id = ${fixture.organizationId}`;
+    }
+  }
+});
+
 test("saved auto-description intent survives close and uses the exact later transcript", async () => {
   const fixture = await createFixture();
   try {
     const queued = await enqueueFixture(fixture, "de");
+    const legacyJobId = randomUUID();
+    const legacyRequestKey = randomUUID().replaceAll("-", "").padEnd(64, "0");
+    await sql`
+      insert into media_processing_jobs (
+        id, organization_id, source_asset_id, requested_by_id, type, status,
+        request_key, source_content_sha256, provider, options, result,
+        completed_at
+      ) values (
+        ${legacyJobId}, ${fixture.organizationId}, ${fixture.assetId},
+        ${fixture.userId}, 'transcript', 'succeeded', ${legacyRequestKey},
+        ${fixture.digest}, 'configured-transcript-v1',
+        ${sql.json({ language: "de" })}, ${sql.json({})}, now()
+      )
+    `;
+    await completeTranscript({
+      fixture,
+      processingJobId: legacyJobId,
+      language: "de",
+      text: "legacy-deutscher-inhalt",
+    });
+    let providerCalls = 0;
+    let requestBody = "";
+    globalThis.fetch = async (_input, init) => {
+      providerCalls += 1;
+      requestBody = String(init?.body ?? "");
+      return providerResponse("Automatisch erstellte Beschreibung.");
+    };
     assert.deepEqual(await processVideoDescriptionJobs(1), ["waiting"]);
+    assert.equal(providerCalls, 0);
     await completeTranscript({
       fixture,
       processingJobId: queued.transcriptJob.id,
@@ -310,19 +696,22 @@ test("saved auto-description intent survives close and uses the exact later tran
       language: "en",
       text: "newer-english-content",
     });
-    let providerCalls = 0;
-    let requestBody = "";
-    globalThis.fetch = async (_input, init) => {
-      providerCalls += 1;
-      requestBody = String(init?.body ?? "");
-      return providerResponse("Automatisch erstellte Beschreibung.");
-    };
     await forceJobDue(queued.descriptionJob.id);
     assert.deepEqual(await processVideoDescriptionJobs(1), ["succeeded"]);
     assert.equal(providerCalls, 1);
     assert.match(requestBody, /deutscher-inhalt/);
+    assert.doesNotMatch(requestBody, /legacy-deutscher-inhalt/);
     assert.doesNotMatch(requestBody, /newer-english-content/);
-    const [block] = await sql<Array<{ data: { caption?: string }; revision: number }>>`
+    assert.equal(
+      (JSON.parse(requestBody) as { safety_identifier?: unknown })
+        .safety_identifier,
+      privacySubjectReference(fixture.organizationId, fixture.userId),
+    );
+    assert.equal(requestBody.includes(fixture.organizationId), false);
+    assert.equal(requestBody.includes(fixture.userId), false);
+    const [block] = await sql<
+      Array<{ data: { caption?: string }; revision: number }>
+    >`
       select data, revision from content_blocks where id = ${fixture.blockId}
     `;
     assert.equal(block?.data.caption, "Automatisch erstellte Beschreibung.");
@@ -342,12 +731,329 @@ test("saved auto-description intent survives close and uses the exact later tran
   }
 });
 
-test("copied videos keep saved and legacy English transcript jobs in a German course", async () => {
+test("a changed generation contract supersedes and requeues without applying old output", async () => {
+  const fixture = await createFixture();
+  const originalModel = process.env.AI_MODEL;
+  try {
+    process.env.AI_MODEL = "gpt-4.1-mini";
+    const queued = await enqueueFixture(fixture);
+    await completeTranscript({
+      fixture,
+      processingJobId: queued.transcriptJob.id,
+    });
+    await sql`
+      update video_description_jobs
+      set generated_description = 'Aus dem alten Modellvertrag.', updated_at = now()
+      where id = ${queued.descriptionJob.id}
+    `;
+
+    process.env.AI_MODEL = "gpt-5.6-terra";
+    let providerCalls = 0;
+    let requestBody = "";
+    globalThis.fetch = async (_input, init) => {
+      providerCalls += 1;
+      requestBody = String(init?.body ?? "");
+      return providerResponse("Aus dem aktuellen Modellvertrag.");
+    };
+
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["superseded"]);
+    assert.equal(providerCalls, 0);
+    const jobsAfterRequeue = await sql<
+      Array<{
+        id: string;
+        requestKey: string;
+        status: string;
+        failureCode: string | null;
+        generatedDescription: string | null;
+      }>
+    >`
+      select id, request_key as "requestKey", status,
+             failure_code as "failureCode",
+             generated_description as "generatedDescription"
+      from video_description_jobs
+      where organization_id = ${fixture.organizationId}
+      order by created_at, id
+    `;
+    assert.equal(jobsAfterRequeue.length, 2);
+    const oldJob = jobsAfterRequeue.find(
+      (candidate) => candidate.id === queued.descriptionJob.id,
+    );
+    const replacementJob = jobsAfterRequeue.find(
+      (candidate) => candidate.id !== queued.descriptionJob.id,
+    );
+    assert.ok(oldJob);
+    assert.ok(replacementJob);
+    assert.deepEqual(oldJob, {
+      id: queued.descriptionJob.id,
+      requestKey: oldJob.requestKey,
+      status: "superseded",
+      failureCode: "generation_contract_changed",
+      generatedDescription: null,
+    });
+    assert.notEqual(replacementJob.requestKey, oldJob.requestKey);
+    assert.equal(replacementJob.status, "queued");
+    assert.equal(replacementJob.generatedDescription, null);
+
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["succeeded"]);
+    assert.equal(providerCalls, 1);
+    assert.match(requestBody, /"model":"gpt-5\.6-terra"/);
+    const [block] = await sql<Array<{ data: { caption?: string } }>>`
+      select data from content_blocks where id = ${fixture.blockId}
+    `;
+    assert.equal(block?.data.caption, "Aus dem aktuellen Modellvertrag.");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalModel === undefined) delete process.env.AI_MODEL;
+    else process.env.AI_MODEL = originalModel;
+    await sql`delete from organizations where id = ${fixture.organizationId}`;
+  }
+});
+
+test("historical description language is normalized in its claim-fenced successor", async () => {
+  const fixture = await createFixture();
+  const legacyId = randomUUID();
+  const legacyRequestKey = randomUUID()
+    .replaceAll("-", "")
+    .padEnd(64, "0");
+  try {
+    await sql`
+      insert into video_description_jobs (
+        id, organization_id, origin_course_id, live_block_id,
+        block_reference_id, live_source_asset_id, source_asset_reference_id,
+        requested_by_id, requester_subject_reference, source_content_sha256,
+        locale, transcript_language, expected_block_revision, request_key,
+        deadline_at
+      ) values (
+        ${legacyId}, ${fixture.organizationId}, ${fixture.courseId},
+        ${fixture.blockId}, ${fixture.blockId}, ${fixture.assetId},
+        ${fixture.assetId}, ${fixture.userId},
+        ${privacySubjectReference(fixture.organizationId, fixture.userId)},
+        ${fixture.digest}, 'de', 'en-US', 1, ${legacyRequestKey},
+        now() + interval '1 day'
+      )
+    `;
+    let providerCalls = 0;
+    globalThis.fetch = async () => {
+      providerCalls += 1;
+      return providerResponse("Darf nicht erzeugt werden.");
+    };
+
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["superseded"]);
+    assert.equal(providerCalls, 0);
+    const jobs = await sql<
+      Array<{
+        id: string;
+        status: string;
+        transcriptLanguage: string;
+        failureCode: string | null;
+      }>
+    >`
+      select id, status, transcript_language as "transcriptLanguage",
+             failure_code as "failureCode"
+      from video_description_jobs
+      where organization_id = ${fixture.organizationId}
+      order by created_at, id
+    `;
+    assert.equal(jobs.length, 2);
+    assert.deepEqual(jobs.find((job) => job.id === legacyId), {
+      id: legacyId,
+      status: "superseded",
+      transcriptLanguage: "en-US",
+      failureCode: "transcript_language_normalized",
+    });
+    assert.deepEqual(
+      jobs.find((job) => job.id !== legacyId),
+      {
+        id: jobs.find((job) => job.id !== legacyId)?.id,
+        status: "queued",
+        transcriptLanguage: "en",
+        failureCode: null,
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await sql`delete from organizations where id = ${fixture.organizationId}`;
+  }
+});
+
+test("historical three-letter description languages fail before provider use", async () => {
+  for (const language of ["eng", "deu"]) {
+    const fixture = await createFixture();
+    const legacyId = randomUUID();
+    const legacyRequestKey = randomUUID()
+      .replaceAll("-", "")
+      .padEnd(64, "0");
+    try {
+      await sql`
+        insert into video_description_jobs (
+          id, organization_id, origin_course_id, live_block_id,
+          block_reference_id, live_source_asset_id, source_asset_reference_id,
+          requested_by_id, requester_subject_reference, source_content_sha256,
+          locale, transcript_language, expected_block_revision, request_key,
+          deadline_at
+        ) values (
+          ${legacyId}, ${fixture.organizationId}, ${fixture.courseId},
+          ${fixture.blockId}, ${fixture.blockId}, ${fixture.assetId},
+          ${fixture.assetId}, ${fixture.userId},
+          ${privacySubjectReference(fixture.organizationId, fixture.userId)},
+          ${fixture.digest}, 'de', ${language}, 1, ${legacyRequestKey},
+          now() + interval '1 day'
+        )
+      `;
+      let providerCalls = 0;
+      globalThis.fetch = async () => {
+        providerCalls += 1;
+        return providerResponse("Darf nicht erzeugt werden.");
+      };
+
+      assert.deepEqual(await processVideoDescriptionJobs(1), ["failed"]);
+      assert.equal(providerCalls, 0);
+      const [job] = await sql<
+        Array<{
+          status: string;
+          failureCode: string | null;
+          successorCount: number;
+        }>
+      >`
+        select status, failure_code as "failureCode",
+               (
+                 select count(*)::int from video_description_jobs successor
+                 where successor.organization_id = ${fixture.organizationId}
+                   and successor.id <> ${legacyId}
+               ) as "successorCount"
+        from video_description_jobs where id = ${legacyId}
+      `;
+      assert.deepEqual(job, {
+        status: "failed",
+        failureCode: "transcript_language_unsupported",
+        successorCount: 0,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await sql`delete from organizations where id = ${fixture.organizationId}`;
+    }
+  }
+});
+
+test("a requeued description ignores a legacy transcript and queues one current transcript job", async () => {
+  const fixture = await createFixture();
+  const originalModel = process.env.AI_MODEL;
+  const legacyJobId = randomUUID();
+  const legacyRequestKey = randomUUID().replaceAll("-", "").padEnd(64, "0");
+  try {
+    process.env.AI_MODEL = "gpt-4.1-mini";
+    const descriptionJob = await db.transaction((transaction) =>
+      enqueueVideoDescriptionJobInTransaction(transaction, {
+        organizationId: fixture.organizationId,
+        originCourseId: fixture.courseId,
+        blockId: fixture.blockId,
+        sourceAssetId: fixture.assetId,
+        sourceContentSha256: fixture.digest,
+        expectedBlockRevision: 1,
+        locale: "de",
+        transcriptLanguage: "de",
+        requestedById: fixture.userId,
+      }),
+    );
+    await sql`
+      insert into media_processing_jobs (
+        id, organization_id, source_asset_id, requested_by_id, type, status,
+        request_key, source_content_sha256, provider, options, result,
+        completed_at
+      ) values (
+        ${legacyJobId}, ${fixture.organizationId}, ${fixture.assetId},
+        ${fixture.userId}, 'transcript', 'succeeded', ${legacyRequestKey},
+        ${fixture.digest}, 'configured-transcript-v1',
+        ${sql.json({ language: "de" })}, ${sql.json({})}, now()
+      )
+    `;
+    await completeTranscript({
+      fixture,
+      processingJobId: legacyJobId,
+      language: "de",
+      text: "legacy-transcript-must-not-be-used",
+    });
+
+    process.env.AI_MODEL = "gpt-5.6-terra";
+    let providerCalls = 0;
+    globalThis.fetch = async () => {
+      providerCalls += 1;
+      return providerResponse("Diese Antwort darf nicht erzeugt werden.");
+    };
+
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["superseded"]);
+    assert.equal(providerCalls, 0);
+    const [replacement] = await sql<Array<{ id: string }>>`
+      select id
+      from video_description_jobs
+      where organization_id = ${fixture.organizationId}
+        and id <> ${descriptionJob.id}
+        and status = 'queued'
+    `;
+    assert.ok(replacement);
+    const currentJobsBeforeLookup = await sql<Array<{ count: number }>>`
+      select count(*)::int as count
+      from media_processing_jobs
+      where organization_id = ${fixture.organizationId}
+        and source_asset_id = ${fixture.assetId}
+        and source_content_sha256 = ${fixture.digest}
+        and type = 'transcript'
+        and provider = ${TRANSCRIPT_PROCESSING_PROVIDER}
+        and options->>'language' = 'de'
+    `;
+    assert.equal(currentJobsBeforeLookup[0]?.count, 0);
+
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["waiting"]);
+    assert.equal(providerCalls, 0);
+    await forceJobDue(replacement.id);
+    assert.deepEqual(await processVideoDescriptionJobs(1), ["waiting"]);
+    assert.equal(providerCalls, 0);
+
+    const transcriptJobs = await sql<
+      Array<{
+        provider: string;
+        status: string;
+        digest: string;
+        language: string | null;
+      }>
+    >`
+      select provider, status, source_content_sha256 as digest,
+             options->>'language' as language
+      from media_processing_jobs
+      where organization_id = ${fixture.organizationId}
+        and source_asset_id = ${fixture.assetId}
+        and type = 'transcript'
+      order by created_at, id
+    `;
+    assert.deepEqual([...transcriptJobs], [
+      {
+        provider: "configured-transcript-v1",
+        status: "succeeded",
+        digest: fixture.digest,
+        language: "de",
+      },
+      {
+        provider: TRANSCRIPT_PROCESSING_PROVIDER,
+        status: "queued",
+        digest: fixture.digest,
+        language: "de",
+      },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalModel === undefined) delete process.env.AI_MODEL;
+    else process.env.AI_MODEL = originalModel;
+    await sql`delete from organizations where id = ${fixture.organizationId}`;
+  }
+});
+
+test("copied videos normalize BCP47 languages and skip legacy three-letter values", async () => {
   const fixture = await createFixture();
   const legacyBlockId = randomUUID();
+  const invalidLanguageBlockId = randomUUID();
   const transcript = {
     version: 1 as const,
-    language: "EN",
+    language: "en-US",
     segments: [{ startMs: 0, endMs: 2_000, text: "English source" }],
   };
   try {
@@ -365,17 +1071,31 @@ test("copied videos keep saved and legacy English transcript jobs in a German co
     `;
     await sql`
       insert into content_blocks (id, lesson_id, type, title, data, revision)
-      values (
-        ${legacyBlockId}, ${fixture.lessonId}, 'video', 'Legacy copied video',
-        ${sql.json({
-          mediaAssetId: fixture.assetId,
-          mediaAssetName: "video.mp4",
-          caption: "",
-          transcript,
-          videoDescriptionIntent: "automatic",
-        })},
-        1
-      )
+      values
+        (
+          ${legacyBlockId}, ${fixture.lessonId}, 'video', 'Legacy copied video',
+          ${sql.json({
+            mediaAssetId: fixture.assetId,
+            mediaAssetName: "video.mp4",
+            caption: "",
+            transcript,
+            videoDescriptionIntent: "automatic",
+          })},
+          1
+        ),
+        (
+          ${invalidLanguageBlockId}, ${fixture.lessonId}, 'video',
+          'Invalid legacy language',
+          ${sql.json({
+            mediaAssetId: fixture.assetId,
+            mediaAssetName: "video.mp4",
+            caption: "",
+            transcriptLanguage: "deu",
+            transcript,
+            videoDescriptionIntent: "automatic",
+          })},
+          1
+        )
     `;
     const persistedBlocks = await sql<
       Array<{
@@ -393,7 +1113,9 @@ test("copied videos keep saved and legacy English transcript jobs in a German co
     >`
       select id, type, data, revision
       from content_blocks
-      where id in (${fixture.blockId}, ${legacyBlockId})
+      where id in (
+        ${fixture.blockId}, ${legacyBlockId}, ${invalidLanguageBlockId}
+      )
       order by id
     `;
 
@@ -408,16 +1130,17 @@ test("copied videos keep saved and legacy English transcript jobs in a German co
     );
 
     assert.equal(jobs.length, 2);
-    const transcriptJobs = await sql<
-      Array<{ language: string | null }>
-    >`
+    const transcriptJobs = await sql<Array<{ language: string | null }>>`
       select options->>'language' as language
       from media_processing_jobs
       where organization_id = ${fixture.organizationId}
         and source_asset_id = ${fixture.assetId}
         and type = 'transcript'
     `;
-    assert.deepEqual([...transcriptJobs], [{ language: "en" }]);
+    assert.deepEqual(
+      transcriptJobs.map((job) => job.language).sort(),
+      ["en"],
+    );
     const descriptionJobs = await sql<
       Array<{ locale: string; transcriptLanguage: string }>
     >`
@@ -426,10 +1149,12 @@ test("copied videos keep saved and legacy English transcript jobs in a German co
       where organization_id = ${fixture.organizationId}
       order by live_block_id
     `;
-    assert.deepEqual([...descriptionJobs], [
-      { locale: "de", transcriptLanguage: "en" },
-      { locale: "de", transcriptLanguage: "en" },
-    ]);
+    assert.deepEqual(
+      descriptionJobs
+        .map((job) => `${job.locale}:${job.transcriptLanguage}`)
+        .sort(),
+      ["de:en", "de:en"],
+    );
   } finally {
     await sql`delete from organizations where id = ${fixture.organizationId}`;
   }
@@ -696,7 +1421,10 @@ test("member erasure and description apply share the asset-before-job lock order
     const completed = await Promise.race([
       Promise.all([processing, erasure]),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Description/erasure lock timeout.")), 10_000),
+        setTimeout(
+          () => reject(new Error("Description/erasure lock timeout.")),
+          10_000,
+        ),
       ),
     ]);
     assert.deepEqual(completed[0], ["superseded"]);
@@ -844,7 +1572,10 @@ test("terminal cleanup respects active learning holds and deletes released jobs"
       select id from video_description_jobs
       where id in (${heldQueued.descriptionJob.id}, ${unheldQueued.descriptionJob.id})
     `;
-    assert.deepEqual(remaining.map((row) => row.id), [heldQueued.descriptionJob.id]);
+    assert.deepEqual(
+      remaining.map((row) => row.id),
+      [heldQueued.descriptionJob.id],
+    );
     await sql`
       update privacy_legal_holds
       set released_at = now(), release_reason = 'Released', updated_at = now()
@@ -1213,19 +1944,20 @@ test("enqueue rejects stale, mismatched, and foreign tenant cursors", async () =
       assetId?: string;
       digest?: string;
       revision?: number;
-    }) => db.transaction((transaction) =>
-      enqueueVideoDescriptionJobInTransaction(transaction, {
-        organizationId: fixture.organizationId,
-        originCourseId: input.courseId ?? fixture.courseId,
-        blockId: input.blockId ?? fixture.blockId,
-        sourceAssetId: input.assetId ?? fixture.assetId,
-        sourceContentSha256: input.digest ?? fixture.digest,
-        expectedBlockRevision: input.revision ?? 1,
-        locale: "de",
-        transcriptLanguage: "de",
-        requestedById: fixture.userId,
-      }),
-    );
+    }) =>
+      db.transaction((transaction) =>
+        enqueueVideoDescriptionJobInTransaction(transaction, {
+          organizationId: fixture.organizationId,
+          originCourseId: input.courseId ?? fixture.courseId,
+          blockId: input.blockId ?? fixture.blockId,
+          sourceAssetId: input.assetId ?? fixture.assetId,
+          sourceContentSha256: input.digest ?? fixture.digest,
+          expectedBlockRevision: input.revision ?? 1,
+          locale: "de",
+          transcriptLanguage: "de",
+          requestedById: fixture.userId,
+        }),
+      );
     await assert.rejects(enqueue({ revision: 2 }), /context is unavailable/);
     await assert.rejects(
       enqueue({ assetId: foreign.assetId, digest: foreign.digest }),
@@ -1321,8 +2053,7 @@ test("DSAR exports only safe live-subject description lifecycle metadata", async
       };
     };
     assert.equal(
-      afterOriginDeletion.data.learning.videoDescriptionJobs[0]
-        ?.originCourseId,
+      afterOriginDeletion.data.learning.videoDescriptionJobs[0]?.originCourseId,
       null,
     );
     assert.equal(

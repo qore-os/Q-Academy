@@ -15,6 +15,11 @@ import {
   enqueueMediaProcessingJob,
   processMediaProcessingQueue,
 } from "@/lib/media/processing-worker";
+import {
+  AUTOMATIC_TRANSCRIPTION_LANGUAGE_PATTERN,
+  automaticTranscriptionDurationSupported,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+} from "@/lib/media/transcription-contract";
 import { sanitizeVideoEditPlan } from "@/lib/media/video-edit-plan";
 import {
   sanitizeVideoComposition,
@@ -60,10 +65,7 @@ const requestSchema = z
     type: z.enum(["thumbnail", "transcode", "transcript"]),
     language: z
       .string()
-      .trim()
-      .toLowerCase()
-      .regex(/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/)
-      .max(35)
+      .regex(AUTOMATIC_TRANSCRIPTION_LANGUAGE_PATTERN)
       .optional(),
     atMilliseconds: z.number().int().min(0).max(604_800_000).optional(),
     courseId: z.string().uuid(),
@@ -203,6 +205,24 @@ export async function GET(request: Request, { params }: Context) {
           document: mediaAssetTranscripts.document,
         })
         .from(mediaAssetTranscripts)
+        .innerJoin(
+          mediaProcessingJobs,
+          and(
+            eq(mediaProcessingJobs.id, mediaAssetTranscripts.processingJobId),
+            eq(
+              mediaProcessingJobs.organizationId,
+              mediaAssetTranscripts.organizationId,
+            ),
+            eq(
+              mediaProcessingJobs.sourceAssetId,
+              mediaAssetTranscripts.sourceAssetId,
+            ),
+            eq(
+              mediaProcessingJobs.sourceContentSha256,
+              mediaAssetTranscripts.sourceContentSha256,
+            ),
+          ),
+        )
         .where(
           and(
             eq(mediaAssetTranscripts.organizationId, user.organizationId),
@@ -210,6 +230,9 @@ export async function GET(request: Request, { params }: Context) {
             ...(requestedLanguage
               ? [eq(mediaAssetTranscripts.language, requestedLanguage)]
               : []),
+            eq(mediaProcessingJobs.type, "transcript"),
+            eq(mediaProcessingJobs.status, "succeeded"),
+            eq(mediaProcessingJobs.provider, TRANSCRIPT_PROCESSING_PROVIDER),
           ),
         )
         .orderBy(desc(mediaAssetTranscripts.createdAt))
@@ -301,6 +324,15 @@ export async function POST(request: Request, { params }: Context) {
         if (asset.kind !== "video") {
           return response({ error: "Vorschaubilder benoetigen ein Video." }, 422);
         }
+      }
+      if (
+        parsed.data.type === "transcript" &&
+        !automaticTranscriptionDurationSupported(asset.durationMilliseconds)
+      ) {
+        return response(
+          { error: "Automatische Transkription ist bis zu zwei Stunden moeglich." },
+          422,
+        );
       }
       const job = await enqueueMediaProcessingJob({
         organizationId: user.organizationId,

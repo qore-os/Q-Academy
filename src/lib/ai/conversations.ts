@@ -41,6 +41,7 @@ import { requireAiTransparencyAcknowledgement } from "@/lib/ai/transparency";
 import { ApiError } from "@/lib/api/errors";
 import { getActiveExamContentLock } from "@/lib/exam-content-access";
 import { getCourseLearningAccess } from "@/lib/learning-access";
+import { privacySubjectReference } from "@/lib/privacy/subject-reference";
 import { lockMemberCourseProgress } from "@/lib/progress-lock";
 
 type AiReader = Pick<typeof db, "select">;
@@ -811,6 +812,10 @@ export async function sendAiConversationMessage(input: {
     message: content,
     history,
     courses: courseContext,
+    safetyIdentifier: privacySubjectReference(
+      input.organizationId,
+      conversation.userId,
+    ),
     memberProfile,
   });
 

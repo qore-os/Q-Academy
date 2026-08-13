@@ -10,6 +10,7 @@ import { resolveMediaProcessingPreflightConfiguration } from "../src/lib/media/p
 const production = {
   NODE_ENV: "production",
   Q_ACADEMY_RUNTIME_ROLE: "media-worker",
+  MEDIA_TRANSCRIPTION_ENABLED: "true",
   MEDIA_STORAGE_DRIVER: "s3",
   MEDIA_PROCESSING_WORK_ROOT: "/var/lib/q-academy-media-processing/work",
   MEDIA_FFMPEG_PATH: "/usr/bin/ffmpeg",
@@ -30,7 +31,19 @@ test("processing preflight resolves an isolated bounded production toolchain", (
     "--preflight",
   ]);
   assert.equal(result.ffmpegTimeoutMs, 10_800_000);
-  assert.equal(result.transcriptTimeoutMs, 7_200_000);
+  assert.equal(result.transcriptTimeoutMs, 18_000_000);
+});
+
+test("the two-hour automatic transcript contract fits its outer command budget", () => {
+  const configuration = resolveMediaProcessingPreflightConfiguration({
+    ...production,
+    MEDIA_TRANSCRIPTION_ENABLED: "false",
+  });
+  assert.equal(configuration.transcriptTimeoutMs, 18_000_000);
+  assert.ok(
+    configuration.transcriptTimeoutMs >=
+      60 * 60_000 + 24 * 3 * 180_000 + 20 * 60_000,
+  );
 });
 
 test("processing preflight never substitutes a help-only transcript probe", () => {
@@ -52,6 +65,16 @@ test("processing preflight supports an explicit fail-closed disabled transcript 
     MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: "",
   });
   assert.equal(result.transcript.mode, "disabled");
+  const missingFlag = { ...production };
+  delete (missingFlag as Partial<typeof production>).MEDIA_TRANSCRIPTION_ENABLED;
+  assert.equal(
+    resolveMediaProcessingPreflightConfiguration({
+      ...missingFlag,
+      MEDIA_TRANSCRIPT_COMMAND: "",
+      MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: "",
+    }).transcript.mode,
+    "disabled",
+  );
   assert.throws(
     () =>
       resolveMediaProcessingPreflightConfiguration({
@@ -67,7 +90,7 @@ test("processing preflight rejects unsafe roots and ambiguous transcript provide
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY: "/tmp/vtt" }), /not allowed|exactly one/);
   assert.throws(() => resolveMediaProcessingPreflightConfiguration({ ...production, Q_ACADEMY_RUNTIME_ROLE: "app" }), /media-worker/);
   assert.throws(
-    () => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_FFMPEG_TIMEOUT_SECONDS: "14400" }),
+    () => resolveMediaProcessingPreflightConfiguration({ ...production, MEDIA_FFMPEG_TIMEOUT_SECONDS: "18001" }),
     /MEDIA_FFMPEG_TIMEOUT_SECONDS/,
   );
   assert.throws(
@@ -122,6 +145,7 @@ test("processing preflight stderr exposes only a stable stage and never child st
           MEDIA_PROCESSING_WORK_ROOT: join(directory, "work"),
           MEDIA_FFMPEG_PATH: successCommand,
           MEDIA_FFPROBE_PATH: successCommand,
+          MEDIA_TRANSCRIPTION_ENABLED: "true",
           MEDIA_TRANSCRIPT_COMMAND: transcriptCommand,
           MEDIA_TRANSCRIPT_PREFLIGHT_ARGS_JSON: JSON.stringify(transcriptArguments),
           MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY: "",

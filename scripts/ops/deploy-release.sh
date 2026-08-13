@@ -107,6 +107,8 @@ app_domain="$(production_env_value "$env_file" APP_DOMAIN)" || fail "production 
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
 verify_ai_api_key_file "$env_file" || fail "AI API key file is invalid"
+verify_openai_transcription_api_key_file "$env_file" || fail "OpenAI transcription API key file is invalid"
+verify_ai_credential_separation "$env_file" || fail "AI credential separation is invalid"
 verify_caddy_sites_directory "$env_file" || fail "external Caddy sites directory is invalid"
 configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 
@@ -292,6 +294,10 @@ for target_image in "${target_release_images[@]}"; do
       fail "target release image is not present locally: $target_image"
   fi
 done
+if [[ "$dry_run" != "true" ]]; then
+  verify_ai_runtime_contract_images "$release_tag" ||
+    fail "target release images do not implement the required AI runtime contracts"
+fi
 
 project_name="$(compose_project_name "${compose[@]}")" || fail "Compose project name is unavailable"
 [[ "$project_name" == "$PRODUCTION_COMPOSE_PROJECT" ]] || fail "production Compose project must be exactly $PRODUCTION_COMPOSE_PROJECT"
@@ -304,6 +310,13 @@ run bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" apply \
   --project "$project_name"
 run bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" verify \
   --project "$project_name"
+
+if ai_api_key_file_is_configured "$env_file"; then
+  run_with_timeout "$AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS" \
+    "${compose[@]}" run --rm --no-deps --no-build --pull never ai-provider-preflight
+else
+  printf 'External AI is disabled; skipping the Terra provider preflight.\n'
+fi
 
 media_bucket="$(production_env_value "$env_file" MEDIA_S3_BUCKET)" || fail "MEDIA_S3_BUCKET is invalid"
 run "${compose[@]}" up -d --no-recreate --wait --wait-timeout 300 postgres

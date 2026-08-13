@@ -56,10 +56,14 @@ test("video description provider caps declared and chunked JSON responses", asyn
   assert.ok(pullCount <= 3);
 });
 
-test("video descriptions prohibit provider-side application storage", () => {
+test("video descriptions use the shared bounded completion controls", () => {
   const provider = readFileSync(
     new URL("../src/lib/ai/video-description-provider.ts", import.meta.url),
     "utf8",
   );
-  assert.match(provider, /max_tokens: 350,\s*store: false,/);
+  assert.match(provider, /const MAX_COMPLETION_TOKENS = 350;/);
+  assert.match(
+    provider,
+    /aiChatCompletionControls\(model,\s*MAX_COMPLETION_TOKENS\)/,
+  );
 });

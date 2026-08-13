@@ -54,7 +54,10 @@ DATABASE_DISPATCHER_WAIT_TIMEOUT_SECONDS=1800
 CADDY_WAIT_TIMEOUT_SECONDS=300
 S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS=1200
 MEDIA_PROCESSING_PREFLIGHT_TIMEOUT_SECONDS=1800
+AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS=90
 STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS=1800
+AI_TEXT_RUNTIME_CONTRACT=gpt-5.6-terra-chat-completions-v1
+TRANSCRIPTION_RUNTIME_CONTRACT=openai-diarized-transcription-v1
 MEDIA_STORAGE_RELEASE_STATE_VARIABLES=(
   MEDIA_S3_COMPATIBILITY_MODE
   MEDIA_S3_ENDPOINT
@@ -62,6 +65,19 @@ MEDIA_STORAGE_RELEASE_STATE_VARIABLES=(
   MEDIA_S3_BUCKET
   MEDIA_S3_FORCE_PATH_STYLE
 )
+
+verify_ai_runtime_contract_images() {
+  local release_tag="$1"
+  local component image text_contract transcript_contract
+  [[ "$release_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  for component in app tenant-ops media-runner media-preflight; do
+    image="q-academy-${component}:${release_tag}"
+    text_contract="$(docker image inspect --format '{{ index .Config.Labels "com.q-academy.ai-text-contract" }}' "$image" 2>/dev/null)" || return 1
+    transcript_contract="$(docker image inspect --format '{{ index .Config.Labels "com.q-academy.transcription-contract" }}' "$image" 2>/dev/null)" || return 1
+    [[ "$text_contract" == "$AI_TEXT_RUNTIME_CONTRACT" ]] || return 1
+    [[ "$transcript_contract" == "$TRANSCRIPTION_RUNTIME_CONTRACT" ]] || return 1
+  done
+}
 
 verify_caddy_sites_directory() {
   local env_file="$1"
@@ -724,7 +740,13 @@ verify_media_work_mount() {
 
 verify_ai_api_key_file() {
   local env_file="$1"
-  local configured resolved owner mode size inline_value
+  local configured resolved owner mode size inline_value model
+
+  model="$(production_env_value "$env_file" AI_MODEL)" || return 1
+  [[ "$model" == "gpt-5.6-terra" ]] || {
+    printf 'AI_MODEL must be exactly gpt-5.6-terra in production.\n' >&2
+    return 1
+  }
 
   configured="$(production_env_value "$env_file" AI_API_KEY_SOURCE_FILE)" || return 1
   [[ "$configured" == /* && -f "$configured" && ! -L "$configured" ]] || {
@@ -752,6 +774,167 @@ verify_ai_api_key_file() {
     printf 'AI_API_KEY must be removed from production; use AI_API_KEY_SOURCE_FILE.\n' >&2
     return 1
   }
+}
+
+ai_api_key_file_is_configured() {
+  local env_file="$1"
+  local configured
+
+  configured="$(production_env_value "$env_file" AI_API_KEY_SOURCE_FILE)" || return 2
+  [[ -s "$configured" ]]
+}
+
+verify_openai_transcription_api_key_file() {
+  local env_file="$1"
+  local configured enabled resolved owner mode size inline_value legacy_value
+
+  enabled="$(production_env_value "$env_file" MEDIA_TRANSCRIPTION_ENABLED)" || return 1
+  [[ "$enabled" == "true" || "$enabled" == "false" ]] || {
+    printf 'MEDIA_TRANSCRIPTION_ENABLED must be exactly true or false.\n' >&2
+    return 1
+  }
+
+  configured="$(production_env_value "$env_file" OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE)" || return 1
+  [[ "$configured" == /* && -f "$configured" && ! -L "$configured" ]] || {
+    printf 'OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE must be an existing regular non-symlink file.\n' >&2
+    return 1
+  }
+  resolved="$(readlink -f -- "$configured")" || return 1
+  [[ "$resolved" == "$configured" ]] || {
+    printf 'OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE must resolve to its exact configured path.\n' >&2
+    return 1
+  }
+  owner="$(stat -c '%u:%g' "$configured")" || return 1
+  mode="$(stat -c '%a' "$configured")" || return 1
+  size="$(stat -c '%s' "$configured")" || return 1
+  [[ "$owner" == "1001:1001" && "$mode" == "400" ]] || {
+    printf 'OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE must be owned by 1001:1001 with mode 0400.\n' >&2
+    return 1
+  }
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size <= 1024 )) || {
+    printf 'OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE must not exceed 1024 bytes.\n' >&2
+    return 1
+  }
+  if [[ "$enabled" == "true" ]]; then
+    (( size >= 8 )) || {
+      printf 'Enabled transcription requires a non-empty bounded provider credential.\n' >&2
+      return 1
+    }
+  else
+    (( size == 0 )) || {
+      printf 'Disabled transcription requires an empty credential placeholder file.\n' >&2
+      return 1
+    }
+  fi
+
+  inline_value="$(awk -F= '$1 == "OPENAI_TRANSCRIPTION_API_KEY" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")" || return 1
+  legacy_value="$(awk -F= '$1 == "OPENAI_API_KEY" { sub(/^[^=]*=/, ""); print; exit }' "$env_file")" || return 1
+  [[ -z "$inline_value" && -z "$legacy_value" ]] || {
+    printf 'Inline OpenAI transcription credentials must be removed from production.\n' >&2
+    return 1
+  }
+}
+
+verify_ai_credential_separation() {
+  local env_file="$1"
+  local enabled ai_key_file transcription_key_file comparison_status
+
+  enabled="$(production_env_value "$env_file" MEDIA_TRANSCRIPTION_ENABLED)" || return 1
+  [[ "$enabled" == "true" || "$enabled" == "false" ]] || return 1
+  if [[ "$enabled" == "false" ]]; then
+    return 0
+  fi
+
+  ai_key_file="$(production_env_value "$env_file" AI_API_KEY_SOURCE_FILE)" || return 1
+  transcription_key_file="$(production_env_value "$env_file" OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE)" || return 1
+
+  if python3 - "$ai_key_file" "$transcription_key_file" <<'PY'
+import hmac
+import os
+import stat
+import sys
+
+
+def fail() -> None:
+    raise SystemExit(2)
+
+
+def open_stable_regular_file(path: str) -> tuple[int, os.stat_result]:
+    if not os.path.isabs(path) or os.path.realpath(path) != path:
+        fail()
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        fail()
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    opened = os.fstat(descriptor)
+    if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(descriptor)
+        fail()
+    return descriptor, opened
+
+
+def read_bounded(descriptor: int, maximum: int) -> bytes:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(descriptor, min(4096, maximum + 1 - total))
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > maximum:
+            fail()
+
+
+def path_still_names_open_file(path: str, opened: os.stat_result) -> bool:
+    current = os.lstat(path)
+    return stat.S_ISREG(current.st_mode) and (
+        current.st_dev,
+        current.st_ino,
+    ) == (opened.st_dev, opened.st_ino)
+
+
+descriptors: list[int] = []
+try:
+    text_path, transcription_path = sys.argv[1:3]
+    if text_path == transcription_path:
+        raise SystemExit(10)
+
+    text_fd, text_opened = open_stable_regular_file(text_path)
+    descriptors.append(text_fd)
+    transcription_fd, transcription_opened = open_stable_regular_file(transcription_path)
+    descriptors.append(transcription_fd)
+
+    if text_opened.st_size > 16384 or not 8 <= transcription_opened.st_size <= 1024:
+        fail()
+
+    text_credential = read_bounded(text_fd, 16384)
+    transcription_credential = read_bounded(transcription_fd, 1024)
+    if not path_still_names_open_file(text_path, text_opened):
+        fail()
+    if not path_still_names_open_file(transcription_path, transcription_opened):
+        fail()
+    if hmac.compare_digest(text_credential, transcription_credential):
+        raise SystemExit(10)
+except (OSError, ValueError):
+    fail()
+finally:
+    for descriptor in descriptors:
+        os.close(descriptor)
+PY
+  then
+    return 0
+  else
+    comparison_status=$?
+  fi
+
+  if (( comparison_status == 10 )); then
+    printf 'Enabled transcription requires a credential distinct from the text AI credential.\n' >&2
+  else
+    printf 'AI credential separation could not be verified safely.\n' >&2
+  fi
+  return 1
 }
 
 verify_release_environment_security() {

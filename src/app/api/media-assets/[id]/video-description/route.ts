@@ -5,6 +5,7 @@ import { db } from "@/db";
 import {
   activityEvents,
   mediaAssetTranscripts,
+  mediaProcessingJobs,
 } from "@/db/schema";
 import { generateVideoDescription } from "@/lib/ai/video-description-provider";
 import { ApiError } from "@/lib/api/errors";
@@ -20,7 +21,13 @@ import {
   assertManageableSharedCourseMedia,
   assertVideoBlockPrimaryAssetContext,
 } from "@/lib/media/shared-course-media";
+import {
+  AUTOMATIC_TRANSCRIPTION_LANGUAGE_PATTERN,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+  automaticTranscriptionDurationSupported,
+} from "@/lib/media/transcription-contract";
 import { logServerError } from "@/lib/server-error-logging";
+import { privacySubjectReference } from "@/lib/privacy/subject-reference";
 import {
   acquireProviderCircuitPermission,
   recordProviderCircuitFailure,
@@ -42,11 +49,7 @@ const requestSchema = z
     locale: z.enum(["de", "en", "it", "es", "fr"]),
     transcriptLanguage: z
       .string()
-      .trim()
-      .min(2)
-      .max(35)
-      .regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/)
-      .transform((value) => value.toLowerCase()),
+      .regex(AUTOMATIC_TRANSCRIPTION_LANGUAGE_PATTERN),
   })
   .strict();
 
@@ -97,7 +100,7 @@ export async function POST(request: Request, { params }: Context) {
         asset.purpose !== "course_content" ||
         asset.kind !== "video" ||
         asset.status !== "ready" ||
-        !asset.durationMilliseconds
+        !automaticTranscriptionDurationSupported(asset.durationMilliseconds)
       ) {
         throw new ApiError(
           422,
@@ -111,12 +114,33 @@ export async function POST(request: Request, { params }: Context) {
           sourceContentSha256: mediaAssetTranscripts.sourceContentSha256,
         })
         .from(mediaAssetTranscripts)
+        .innerJoin(
+          mediaProcessingJobs,
+          and(
+            eq(mediaProcessingJobs.id, mediaAssetTranscripts.processingJobId),
+            eq(
+              mediaProcessingJobs.organizationId,
+              mediaAssetTranscripts.organizationId,
+            ),
+            eq(
+              mediaProcessingJobs.sourceAssetId,
+              mediaAssetTranscripts.sourceAssetId,
+            ),
+            eq(
+              mediaProcessingJobs.sourceContentSha256,
+              mediaAssetTranscripts.sourceContentSha256,
+            ),
+          ),
+        )
         .where(
           and(
             eq(mediaAssetTranscripts.organizationId, user.organizationId),
             eq(mediaAssetTranscripts.sourceAssetId, id),
             eq(mediaAssetTranscripts.sourceContentSha256, asset.contentSha256!),
             eq(mediaAssetTranscripts.language, parsed.data.transcriptLanguage),
+            eq(mediaProcessingJobs.type, "transcript"),
+            eq(mediaProcessingJobs.status, "succeeded"),
+            eq(mediaProcessingJobs.provider, TRANSCRIPT_PROCESSING_PROVIDER),
           ),
         )
         .orderBy(desc(mediaAssetTranscripts.createdAt))
@@ -187,6 +211,10 @@ export async function POST(request: Request, { params }: Context) {
             title: blockTitle,
             originalFileName: asset.originalFileName,
             durationMilliseconds: asset.durationMilliseconds,
+            safetyIdentifier: privacySubjectReference(
+              user.organizationId,
+              user.id,
+            ),
             signal: request.signal,
           });
         } catch (error) {

@@ -25,13 +25,18 @@ import {
   lessons,
   mediaAssets,
   mediaAssetTranscripts,
+  mediaProcessingJobs,
   modules,
   privacyLegalHolds,
   videoDescriptionJobs,
   type ContentBlockData,
   type VideoDescriptionJobStatus,
 } from "@/db/schema";
-import { generateVideoDescription } from "@/lib/ai/video-description-provider";
+import {
+  generateVideoDescription,
+  resolveVideoDescriptionGenerationContract,
+  type VideoDescriptionGenerationContract,
+} from "@/lib/ai/video-description-provider";
 import {
   clearPersistentRateLimit,
   consumeGuardedPersistentRateLimit,
@@ -48,13 +53,17 @@ import { logServerError } from "@/lib/server-error-logging";
 import { lockPrivacyLegalHoldSubjects } from "@/lib/privacy/legal-hold-lock";
 import { privacySubjectReference } from "@/lib/privacy/subject-reference";
 import { enqueueReadyTranscriptInTransaction } from "@/lib/media/processing-worker";
+import {
+  automaticTranscriptionDurationSupported,
+  normalizeAutomaticTranscriptionLanguage,
+  normalizeLegacyAutomaticTranscriptionLanguage,
+  TRANSCRIPT_PROCESSING_PROVIDER,
+} from "@/lib/media/transcription-contract";
 
 const JOB_LEASE_MS = 2 * 60_000;
 const TRANSCRIPT_WAIT_MS = 30_000;
 const MAXIMUM_TRANSCRIPT_WAIT_MS = 24 * 60 * 60_000;
 const FAILURE_DETAIL_LIMIT = 80;
-const TRANSCRIPT_LANGUAGE_PATTERN =
-  /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/;
 
 type VideoDescriptionTransaction = Parameters<
   Parameters<typeof db.transaction>[0]
@@ -65,9 +74,7 @@ function copiedVideoTranscriptLanguage(
   fallback: AppLocale,
 ) {
   const candidate = data.transcriptLanguage ?? data.transcript?.language ?? fallback;
-  if (typeof candidate !== "string") return fallback;
-  const normalized = candidate.trim().toLowerCase();
-  return TRANSCRIPT_LANGUAGE_PATTERN.test(normalized) ? normalized : fallback;
+  return normalizeLegacyAutomaticTranscriptionLanguage(candidate);
 }
 
 function requestKey(input: {
@@ -78,10 +85,120 @@ function requestKey(input: {
   expectedBlockRevision: number;
   locale: AppLocale;
   transcriptLanguage: string;
-}) {
+}, generationContract: VideoDescriptionGenerationContract) {
   return createHash("sha256")
-    .update(JSON.stringify(input))
+    .update(JSON.stringify({ ...input, generationContract }))
     .digest("hex");
+}
+
+function requestKeyForJob(
+  job: Pick<
+    typeof videoDescriptionJobs.$inferSelect,
+    | "organizationId"
+    | "liveBlockId"
+    | "liveSourceAssetId"
+    | "sourceContentSha256"
+    | "expectedBlockRevision"
+    | "locale"
+    | "transcriptLanguage"
+  >,
+  generationContract: VideoDescriptionGenerationContract,
+  transcriptLanguage: string,
+) {
+  if (!job.liveBlockId || !job.liveSourceAssetId) return null;
+  return requestKey(
+    {
+      organizationId: job.organizationId,
+      blockId: job.liveBlockId,
+      sourceAssetId: job.liveSourceAssetId,
+      sourceContentSha256: job.sourceContentSha256,
+      expectedBlockRevision: job.expectedBlockRevision,
+      locale: job.locale as AppLocale,
+      transcriptLanguage,
+    },
+    generationContract,
+  );
+}
+
+async function requeueForCurrentGenerationContract(
+  job: NonNullable<Awaited<ReturnType<typeof claimNextVideoDescriptionJob>>>,
+  generationContract: VideoDescriptionGenerationContract,
+  transcriptLanguage: string,
+) {
+  const currentRequestKey = requestKeyForJob(
+    job,
+    generationContract,
+    transcriptLanguage,
+  );
+  if (
+    transcriptLanguage === job.transcriptLanguage &&
+    currentRequestKey === job.requestKey
+  ) {
+    return false;
+  }
+  const now = new Date();
+  await db.transaction(async (transaction) => {
+    const [ownedJob] = await transaction
+      .select()
+      .from(videoDescriptionJobs)
+      .where(
+        and(
+          eq(videoDescriptionJobs.id, job.id),
+          eq(videoDescriptionJobs.status, "processing"),
+          eq(videoDescriptionJobs.claimToken, job.claimToken!),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!ownedJob) return;
+    await transaction
+      .update(videoDescriptionJobs)
+      .set({
+        status: "superseded",
+        claimToken: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        nextRetryAt: null,
+        completedAt: now,
+        generatedDescription: null,
+        failureCode:
+          transcriptLanguage === ownedJob.transcriptLanguage
+            ? "generation_contract_changed"
+            : "transcript_language_normalized",
+        updatedAt: now,
+      })
+      .where(eq(videoDescriptionJobs.id, ownedJob.id));
+    if (
+      !currentRequestKey ||
+      !ownedJob.originCourseId ||
+      !ownedJob.liveBlockId ||
+      !ownedJob.liveSourceAssetId ||
+      !ownedJob.requestedById
+    ) {
+      return;
+    }
+    await transaction
+      .insert(videoDescriptionJobs)
+      .values({
+        organizationId: ownedJob.organizationId,
+        originCourseId: ownedJob.originCourseId,
+        liveBlockId: ownedJob.liveBlockId,
+        blockReferenceId: ownedJob.blockReferenceId,
+        liveSourceAssetId: ownedJob.liveSourceAssetId,
+        sourceAssetReferenceId: ownedJob.sourceAssetReferenceId,
+        requestedById: ownedJob.requestedById,
+        requesterSubjectReference: ownedJob.requesterSubjectReference,
+        sourceContentSha256: ownedJob.sourceContentSha256,
+        locale: ownedJob.locale,
+        transcriptLanguage,
+        expectedBlockRevision: ownedJob.expectedBlockRevision,
+        requestKey: currentRequestKey,
+        maxAttempts: ownedJob.maxAttempts,
+        deadlineAt: new Date(now.getTime() + MAXIMUM_TRANSCRIPT_WAIT_MS),
+      })
+      .onConflictDoNothing({ target: videoDescriptionJobs.requestKey });
+  });
+  return true;
 }
 
 export async function enqueueVideoDescriptionJobInTransaction(
@@ -149,15 +266,26 @@ export async function enqueueVideoDescriptionJobInTransaction(
   if (!eligible || eligible.blockData.mediaAssetId !== input.sourceAssetId) {
     throw new Error("Video description context is unavailable.");
   }
-  const key = requestKey({
-    organizationId: input.organizationId,
-    blockId: input.blockId,
-    sourceAssetId: input.sourceAssetId,
-    sourceContentSha256: input.sourceContentSha256,
-    expectedBlockRevision: input.expectedBlockRevision,
-    locale: input.locale,
-    transcriptLanguage: input.transcriptLanguage,
-  });
+  const transcriptLanguage =
+    normalizeAutomaticTranscriptionLanguage(input.transcriptLanguage);
+  if (!transcriptLanguage) {
+    throw new Error(
+      "Automatic transcription requires a two-letter ISO-639-1 language.",
+    );
+  }
+  const generationContract = resolveVideoDescriptionGenerationContract();
+  const key = requestKey(
+    {
+      organizationId: input.organizationId,
+      blockId: input.blockId,
+      sourceAssetId: input.sourceAssetId,
+      sourceContentSha256: input.sourceContentSha256,
+      expectedBlockRevision: input.expectedBlockRevision,
+      locale: input.locale,
+      transcriptLanguage,
+    },
+    generationContract,
+  );
   await transaction
     .insert(videoDescriptionJobs)
     .values({
@@ -174,7 +302,7 @@ export async function enqueueVideoDescriptionJobInTransaction(
       ),
       sourceContentSha256: input.sourceContentSha256,
       locale: input.locale,
-      transcriptLanguage: input.transcriptLanguage,
+      transcriptLanguage,
       expectedBlockRevision: input.expectedBlockRevision,
       requestKey: key,
       deadlineAt: new Date(Date.now() + MAXIMUM_TRANSCRIPT_WAIT_MS),
@@ -265,7 +393,11 @@ export async function enqueueCopiedVideoDescriptionJobsInTransaction(
     ...new Set(candidates.map((block) => block.data.mediaAssetId!)),
   ];
   const assets = await transaction
-    .select({ id: mediaAssets.id, contentSha256: mediaAssets.contentSha256 })
+    .select({
+      id: mediaAssets.id,
+      contentSha256: mediaAssets.contentSha256,
+      durationMilliseconds: mediaAssets.durationMilliseconds,
+    })
     .from(mediaAssets)
     .innerJoin(
       courseMediaAssets,
@@ -292,10 +424,16 @@ export async function enqueueCopiedVideoDescriptionJobsInTransaction(
     if (!asset?.contentSha256) {
       throw new Error("Copied automatic video description is unavailable.");
     }
+    if (
+      !automaticTranscriptionDurationSupported(asset.durationMilliseconds)
+    ) {
+      continue;
+    }
     const transcriptLanguage = copiedVideoTranscriptLanguage(
       block.data,
       input.locale,
     );
+    if (!transcriptLanguage) continue;
     await enqueueReadyTranscriptInTransaction(transaction, {
       organizationId: input.organizationId,
       sourceAssetId: asset.id,
@@ -416,8 +554,7 @@ function contextStillEligible(
     context.assetStatus === "ready" &&
     context.assetKind === "video" &&
     context.assetDeletedAt === null &&
-    context.assetContentSha256 === job.sourceContentSha256 &&
-    Boolean(context.assetDurationMilliseconds)
+    context.assetContentSha256 === job.sourceContentSha256
   );
 }
 
@@ -712,11 +849,75 @@ async function applyPersistedDescription(
   }
 }
 
+async function enqueueTranscriptAndReleaseWaitingClaim(
+  job: NonNullable<Awaited<ReturnType<typeof claimNextVideoDescriptionJob>>>,
+) {
+  const now = new Date();
+  return db.transaction(async (transaction) => {
+    const [released] = await transaction
+      .update(videoDescriptionJobs)
+      .set({
+        status: "queued",
+        claimToken: null,
+        claimedAt: null,
+        leaseExpiresAt: null,
+        nextRetryAt: new Date(now.getTime() + TRANSCRIPT_WAIT_MS),
+        completedAt: null,
+        failureCode: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(videoDescriptionJobs.id, job.id),
+          eq(videoDescriptionJobs.status, "processing"),
+          eq(videoDescriptionJobs.claimToken, job.claimToken!),
+        ),
+      )
+      .returning({ id: videoDescriptionJobs.id });
+    if (!released || !job.liveSourceAssetId || !job.requestedById) return false;
+    await enqueueReadyTranscriptInTransaction(transaction, {
+      organizationId: job.organizationId,
+      sourceAssetId: job.liveSourceAssetId,
+      sourceContentSha256: job.sourceContentSha256,
+      requestedById: job.requestedById,
+      language: job.transcriptLanguage,
+    });
+    return true;
+  });
+}
+
 async function processClaimedVideoDescriptionJob(
   job: NonNullable<Awaited<ReturnType<typeof claimNextVideoDescriptionJob>>>,
 ) {
+  const transcriptLanguage = normalizeLegacyAutomaticTranscriptionLanguage(
+    job.transcriptLanguage,
+  );
+  if (!transcriptLanguage) {
+    await releaseClaim(job, {
+      status: "failed",
+      failureCode: "transcript_language_unsupported",
+      completedAt: new Date(),
+      clearGeneratedDescription: true,
+    });
+    return "failed" as const;
+  }
+  const generationContract = resolveVideoDescriptionGenerationContract();
+  if (
+    await requeueForCurrentGenerationContract(
+      job,
+      generationContract,
+      transcriptLanguage,
+    )
+  ) {
+    return "superseded" as const;
+  }
   const context = await readJobContext(job);
-  if (!context || !job.requestedById || !contextStillEligible(job, context)) {
+  if (
+    !context ||
+    !job.requestedById ||
+    !job.requesterSubjectReference ||
+    !contextStillEligible(job, context)
+  ) {
     if (!context || !job.liveBlockId || !job.liveSourceAssetId) {
       await db
         .update(videoDescriptionJobs)
@@ -737,6 +938,19 @@ async function processClaimedVideoDescriptionJob(
     });
     return "superseded" as const;
   }
+  if (
+    !automaticTranscriptionDurationSupported(
+      context.assetDurationMilliseconds,
+    )
+  ) {
+    await releaseClaim(job, {
+      status: "failed",
+      failureCode: "transcript_duration_unsupported",
+      completedAt: new Date(),
+      clearGeneratedDescription: true,
+    });
+    return "failed" as const;
+  }
   if (job.generatedDescription) {
     return applyPersistedDescription(job, job.generatedDescription);
   }
@@ -746,12 +960,27 @@ async function processClaimedVideoDescriptionJob(
       sourceContentSha256: mediaAssetTranscripts.sourceContentSha256,
     })
     .from(mediaAssetTranscripts)
+    .innerJoin(
+      mediaProcessingJobs,
+      and(
+        eq(mediaProcessingJobs.id, mediaAssetTranscripts.processingJobId),
+        eq(mediaProcessingJobs.organizationId, mediaAssetTranscripts.organizationId),
+        eq(mediaProcessingJobs.sourceAssetId, mediaAssetTranscripts.sourceAssetId),
+        eq(
+          mediaProcessingJobs.sourceContentSha256,
+          mediaAssetTranscripts.sourceContentSha256,
+        ),
+      ),
+    )
     .where(
       and(
         eq(mediaAssetTranscripts.organizationId, job.organizationId),
         eq(mediaAssetTranscripts.sourceAssetId, job.liveSourceAssetId!),
         eq(mediaAssetTranscripts.sourceContentSha256, job.sourceContentSha256),
         eq(mediaAssetTranscripts.language, job.transcriptLanguage),
+        eq(mediaProcessingJobs.type, "transcript"),
+        eq(mediaProcessingJobs.status, "succeeded"),
+        eq(mediaProcessingJobs.provider, TRANSCRIPT_PROCESSING_PROVIDER),
       ),
     )
     .orderBy(desc(mediaAssetTranscripts.createdAt))
@@ -766,10 +995,9 @@ async function processClaimedVideoDescriptionJob(
       });
       return "failed" as const;
     }
-    await releaseClaim(job, {
-      nextRetryAt: new Date(Date.now() + TRANSCRIPT_WAIT_MS),
-    });
-    return "waiting" as const;
+    return (await enqueueTranscriptAndReleaseWaitingClaim(job))
+      ? ("waiting" as const)
+      : ("claim_lost" as const);
   }
   if (
     transcript.segments.some(
@@ -880,6 +1108,8 @@ async function processClaimedVideoDescriptionJob(
         title: context.blockTitle ?? "",
         originalFileName: context.assetOriginalFileName,
         durationMilliseconds: context.assetDurationMilliseconds!,
+        safetyIdentifier: job.requesterSubjectReference,
+        generationContract,
         signal: providerController.signal,
       });
     } catch (error) {

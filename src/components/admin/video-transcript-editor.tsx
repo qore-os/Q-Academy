@@ -61,6 +61,11 @@ import {
   TRANSCRIPT_POLLING_MAXIMUM_MS,
   waitForAbortableDelay,
 } from "@/lib/media/browser-async-retry";
+import {
+  automaticTranscriptionDurationSupported,
+  normalizeAutomaticTranscriptionLanguage,
+  normalizeLegacyAutomaticTranscriptionLanguage,
+} from "@/lib/media/transcription-contract";
 
 const inputClass =
   "focus-ring h-10 w-full rounded-md border border-[#d5dde3] bg-white px-3 text-sm";
@@ -139,14 +144,21 @@ export function VideoTranscriptEditor({
     typeof transcript.language === "string"
       ? transcript.language.trim().toLowerCase()
       : "";
-  const initialLanguage = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(
+  const initialLanguageCandidate = /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(
     persistedLanguage ?? "",
   )
     ? persistedLanguage!
     : /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/.test(embeddedLanguage)
       ? embeddedLanguage
       : locale;
+  const initialLanguage =
+    normalizeLegacyAutomaticTranscriptionLanguage(initialLanguageCandidate) ??
+    initialLanguageCandidate;
   const [language, setLanguage] = useState(initialLanguage);
+  const automaticTranscriptLanguage =
+    normalizeAutomaticTranscriptionLanguage(language);
+  const automaticTranscriptionAvailable =
+    automaticTranscriptionDurationSupported(sourceDurationMilliseconds);
   const [webVtt, setWebVtt] = useState(() =>
     serializeWebVttTranscript(transcript),
   );
@@ -453,7 +465,7 @@ export function VideoTranscriptEditor({
 
   const generateTranscript = async () => {
     const assetId = sourceAssetId?.trim() ?? "";
-    if (!serverProcessingEnabled) return;
+    if (!serverProcessingEnabled || !automaticTranscriptionAvailable) return;
     if (!assetId) {
       toast.error(copy.errors.assetRequired);
       return;
@@ -461,7 +473,11 @@ export function VideoTranscriptEditor({
     const scope = asyncAssetScopeRef.current;
     if (!scope || scope.assetId !== assetId || scope.controller.signal.aborted)
       return;
-    const requestedLanguage = language.toLowerCase();
+    const requestedLanguage = automaticTranscriptLanguage;
+    if (!requestedLanguage) {
+      toast.error(copy.errors.queueTranscript);
+      return;
+    }
     const editVersion = transcriptEditVersionRef.current;
     const scopeIsCurrent = () =>
       asyncAssetScopeRef.current === scope &&
@@ -474,7 +490,7 @@ export function VideoTranscriptEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: "transcript",
-          language,
+          language: requestedLanguage,
           courseId,
           blockId,
         }),
@@ -560,6 +576,10 @@ export function VideoTranscriptEditor({
       toast.error(workflowCopy.descriptionTranscriptRequired);
       return;
     }
+    if (!automaticTranscriptLanguage || !automaticTranscriptionAvailable) {
+      toast.error(workflowCopy.descriptionTranscriptRequired);
+      return;
+    }
     const scope = asyncAssetScopeRef.current;
     if (!scope || scope.assetId !== assetId || scope.controller.signal.aborted)
       return;
@@ -580,7 +600,7 @@ export function VideoTranscriptEditor({
             courseId,
             blockId,
             locale,
-            transcriptLanguage: language,
+            transcriptLanguage: automaticTranscriptLanguage,
           }),
           signal: scope.controller.signal,
         },
@@ -619,13 +639,22 @@ export function VideoTranscriptEditor({
       automaticTranscriptRequestedRef.current ||
       parsed ||
       !sourceAssetId ||
-      !serverProcessingEnabled
+      !serverProcessingEnabled ||
+      !automaticTranscriptionAvailable ||
+      !automaticTranscriptLanguage
     ) {
       return;
     }
     automaticTranscriptRequestedRef.current = true;
     void generateTranscriptRef.current?.();
-  }, [automaticallyLoadTranscript, parsed, serverProcessingEnabled, sourceAssetId]);
+  }, [
+    automaticallyLoadTranscript,
+    automaticTranscriptLanguage,
+    automaticTranscriptionAvailable,
+    parsed,
+    serverProcessingEnabled,
+    sourceAssetId,
+  ]);
 
   const queueVideoVariants = async () => {
     if (!serverProcessingEnabled) return;
@@ -1650,7 +1679,9 @@ export function VideoTranscriptEditor({
             descriptionPending ||
             !parsed ||
             !sourceAssetId ||
-            !serverProcessingEnabled
+            !serverProcessingEnabled ||
+            !automaticTranscriptLanguage ||
+            !automaticTranscriptionAvailable
           }
           className="focus-ring inline-flex h-9 items-center gap-2 rounded-md border border-[#b8c7d2] bg-white px-3 text-xs font-bold text-[#365f8d] hover:bg-[#f3f7fa] disabled:opacity-45"
         >
@@ -1714,7 +1745,13 @@ export function VideoTranscriptEditor({
         <button
           type="button"
           onClick={() => void generateTranscript()}
-          disabled={generating || !sourceAssetId || !serverProcessingEnabled}
+          disabled={
+            generating ||
+            !sourceAssetId ||
+            !serverProcessingEnabled ||
+            !automaticTranscriptionAvailable ||
+            !automaticTranscriptLanguage
+          }
           className="focus-ring mb-0 inline-flex h-10 items-center justify-center gap-2 rounded-md border border-[#b8c7d2] bg-white px-3 text-xs font-bold text-[#365f8d] hover:bg-[#f3f7fa] disabled:opacity-60"
         >
           {generating ? (

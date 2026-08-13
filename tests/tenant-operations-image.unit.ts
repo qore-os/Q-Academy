@@ -36,6 +36,7 @@ test("tenant operations image contains only fixed release-bound entrypoints", ()
     "verify-audit-export.ts",
     "export-user-data.ts",
     "http-slo-smoke.ts",
+    "ai-course-provider-preflight.ts",
   ]) {
     assert.match(dockerfile, new RegExp(script.replaceAll(".", "\\.")));
   }
@@ -58,6 +59,7 @@ test("dispatcher allowlist is scope-bound and rejects path escapes", () => {
     "audit:verify",
     "user-data:export",
     "test:http-slo",
+    "ai:provider:preflight",
   ]) {
     assert.match(entrypoint, new RegExp(command.replaceAll(":", "\\:")));
   }
@@ -66,6 +68,7 @@ test("dispatcher allowlist is scope-bound and rejects path escapes", () => {
   assert.match(entrypoint, /erasure:tenant:erase/);
   assert.match(entrypoint, /verify:audit:verify/);
   assert.match(entrypoint, /http-slo:test:http-slo/);
+  assert.match(entrypoint, /ai-provider:ai:provider:preflight/);
   assert.match(entrypoint, /\/operations\/input\/\*/);
   assert.match(entrypoint, /\/operations\/output\/\*/);
   assert.match(entrypoint, /readlink -f --/);
@@ -133,6 +136,28 @@ test("Compose separates tenant admin, export, erasure, verification and SLO priv
   assert.match(slo, /networks:\s+- proxy/);
   assert.doesNotMatch(slo, /DATABASE_URL|ENCRYPTION|AUDIT_EXPORT|MEDIA_S3|database|egress/);
 
+  const aiProvider = composeService(compose, "ai-provider-preflight");
+  assert.match(aiProvider, /pull_policy: never/);
+  assert.match(aiProvider, /command:\s+- ai:provider:preflight/);
+  assert.match(aiProvider, /Q_ACADEMY_OPS_SCOPE: ai-provider/);
+  assert.match(
+    aiProvider,
+    /AI_API_KEY_FILE: \/run\/secrets\/q-academy-ai-api-key/,
+  );
+  assert.match(aiProvider, /AI_BASE_URL:/);
+  assert.match(aiProvider, /AI_MODEL: \$\{AI_MODEL:-gpt-5\.6-terra\}/);
+  assert.match(aiProvider, /AI_API_KEY_SOURCE_FILE/);
+  assert.match(
+    aiProvider,
+    /target: \/run\/secrets\/q-academy-ai-api-key\s+read_only: true/,
+  );
+  assert.match(aiProvider, /create_host_path: false/);
+  assert.match(aiProvider, /networks:\s+- egress/);
+  assert.doesNotMatch(
+    aiProvider,
+    /DATABASE_URL|SESSION_SECRET|OPENAI_TRANSCRIPTION|MEDIA_S3|EMAIL_|WEBHOOK_|DATA_ENCRYPTION|CRON_SECRET|METRICS_SECRET/,
+  );
+
   const caddy = composeService(compose, "caddy");
   assert.match(caddy, /aliases:\s+- \$\{APP_DOMAIN:/);
 });
@@ -172,6 +197,8 @@ test("CI builds and exercises the immutable tenant operations image", () => {
   );
   assert.match(workflow, /definitely-not-allowed/);
   assert.match(workflow, /tenant-ops accepted a command outside its allowlist/);
+  assert.match(workflow, /ai-course-provider-preflight\.ts/);
+  assert.match(workflow, /provider-preflight-core\.ts/);
 });
 
 test("rootserver runbooks use only the immutable operator services", () => {

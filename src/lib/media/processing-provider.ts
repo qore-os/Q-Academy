@@ -10,9 +10,10 @@ import {
   type VideoTranscriptDocument,
 } from "@/lib/content-blocks/video-transcript";
 import { resolveMediaProcessorTimeouts } from "@/lib/media/processing-preflight";
+import { configuredTranscriptionProviderId } from "@/lib/media/transcription-contract";
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60_000;
-const MAX_COMMAND_TIMEOUT_MS = 13_800_000;
+const MAX_COMMAND_TIMEOUT_MS = 18_000_000;
 const MAX_COMMAND_ERROR_BYTES = 16 * 1_024;
 const MAX_TRANSCRIPT_FILE_BYTES = 600_000;
 const EXECUTABLE_PATTERN = /^[^\u0000-\u001f\u007f]{1,1024}$/;
@@ -54,8 +55,6 @@ function boundedCommandArguments() {
       "{output}",
       "--language",
       "{language}",
-      "--temperature",
-      "0",
     ];
   }
   let parsed: unknown;
@@ -219,7 +218,7 @@ async function readTranscript(path: string, language: string) {
 }
 
 export class LocalCommandTranscriptProvider implements TranscriptProvider {
-  readonly id = "local-command-v1";
+  constructor(readonly id = "local-command-v1") {}
 
   async transcribe(input: TranscriptProviderInput) {
     const executable = process.env.MEDIA_TRANSCRIPT_COMMAND?.trim();
@@ -247,9 +246,7 @@ export class LocalCommandTranscriptProvider implements TranscriptProvider {
   }
 }
 
-export class DeterministicSidecarTranscriptProvider
-  implements TranscriptProvider
-{
+export class DeterministicSidecarTranscriptProvider implements TranscriptProvider {
   readonly id = "deterministic-sidecar-v1";
 
   async transcribe(input: TranscriptProviderInput) {
@@ -261,7 +258,10 @@ export class DeterministicSidecarTranscriptProvider
       );
     }
     const root = resolve(directory);
-    const sidecar = resolve(root, `${input.sourceSha256}.${input.language}.vtt`);
+    const sidecar = resolve(
+      root,
+      `${input.sourceSha256}.${input.language}.vtt`,
+    );
     if (!sidecar.startsWith(`${root}\\`) && !sidecar.startsWith(`${root}/`)) {
       throw new MediaProcessingProviderError(
         "provider_unavailable",
@@ -290,10 +290,12 @@ export class DisabledTranscriptProvider implements TranscriptProvider {
 }
 
 export function configuredTranscriptProvider(): TranscriptProvider {
-  if (process.env.MEDIA_TRANSCRIPTION_ENABLED?.trim() === "false") {
+  if (process.env.MEDIA_TRANSCRIPTION_ENABLED?.trim() !== "true") {
     return new DisabledTranscriptProvider();
   }
   return process.env.MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY?.trim()
     ? new DeterministicSidecarTranscriptProvider()
-    : new LocalCommandTranscriptProvider();
+    : new LocalCommandTranscriptProvider(
+        configuredTranscriptionProviderId(process.env),
+      );
 }

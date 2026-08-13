@@ -77,7 +77,7 @@ source "${ROOT_DIR}/scripts/ops/release-common.sh"
 
 [[ -f "$env_file" && ! -L "$env_file" ]] || fail "production environment is missing or unsafe: $env_file"
 [[ -f "$compose_file" && ! -L "$compose_file" ]] || fail "Compose file is missing or unsafe: $compose_file"
-for command in curl findmnt git python3 stat; do
+for command in curl findmnt git python3 stat timeout; do
   command -v "$command" >/dev/null 2>&1 || fail "required command is missing: $command"
 done
 verify_release_environment_security "$env_file" || fail "production environment ownership, mode, parent, or line endings are unsafe"
@@ -88,6 +88,8 @@ configured_project="$(production_env_value "$env_file" COMPOSE_PROJECT_NAME)" ||
 verify_and_export_pinned_images "$env_file" || fail "production image pins are invalid"
 verify_media_work_mount "$env_file" || fail "media work filesystem is invalid"
 verify_ai_api_key_file "$env_file" || fail "AI API key file is invalid"
+verify_openai_transcription_api_key_file "$env_file" || fail "OpenAI transcription API key file is invalid"
+verify_ai_credential_separation "$env_file" || fail "AI credential separation is invalid"
 verify_caddy_sites_directory "$env_file" || fail "external Caddy sites directory is invalid"
 configure_media_s3_release_services "$env_file" || fail "media S3 compatibility mode is invalid"
 
@@ -134,6 +136,7 @@ runtime_images=(
   "$PROMETHEUS_IMAGE"
   "$NODE_EXPORTER_IMAGE"
   "q-academy-app:$current_tag"
+  "q-academy-tenant-ops:$current_tag"
   "q-academy-media-runner:$current_tag"
   "q-academy-dispatcher:$current_tag"
   "q-academy-caddy:$current_tag"
@@ -144,6 +147,8 @@ fi
 for image in "${runtime_images[@]}"; do
   docker image inspect "$image" >/dev/null 2>&1 || fail "active runtime image is missing: $image"
 done
+verify_ai_runtime_contract_images "$current_tag" ||
+  fail "active release images do not implement the required AI runtime contracts"
 
 # A reconcile is fail-closed even when it is requested while the stack is live.
 # Container creation allocates the two controlled bridges but starts no process;
@@ -155,6 +160,14 @@ bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" apply \
   --project "$project_name"
 bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" verify \
   --project "$project_name"
+
+if ai_api_key_file_is_configured "$env_file"; then
+  timeout --foreground --signal=TERM --kill-after=30s \
+    "${AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS}s" \
+    "${compose[@]}" run --rm --no-deps --no-build --pull never ai-provider-preflight
+else
+  printf 'External AI is disabled; skipping the Terra provider preflight.\n'
+fi
 
 "${compose[@]}" run --rm --no-deps database-config-preflight
 "${compose[@]}" up -d --wait --wait-timeout 900 postgres clamav

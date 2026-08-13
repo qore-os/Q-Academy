@@ -87,7 +87,7 @@ test("dispatcher arguments only admit the fixed internal POST contracts", () => 
         "--url",
         "http://q-academy-app:3000/api/internal/jobs/dispatch",
         "--timeout-seconds",
-        "14401",
+        "19901",
       ]),
     /configuration is invalid/,
   );

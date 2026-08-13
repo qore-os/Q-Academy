@@ -1,9 +1,9 @@
 import { isAbsolute, parse, resolve } from "node:path";
 
 const SAFE_EXECUTABLE = /^[^\u0000-\u001f\u007f]{1,1024}$/;
-const MAX_PROCESSOR_TIMEOUT_SECONDS = 13_800;
+const MAX_PROCESSOR_TIMEOUT_SECONDS = 18_000;
 const DEFAULT_FFMPEG_TIMEOUT_SECONDS = 10_800;
-const DEFAULT_TRANSCRIPT_TIMEOUT_SECONDS = 7_200;
+const DEFAULT_TRANSCRIPT_TIMEOUT_SECONDS = 18_000;
 
 export type MediaProcessingPreflightConfiguration = Readonly<{
   workRoot: string;
@@ -109,7 +109,7 @@ export function resolveMediaProcessingPreflightConfiguration(
   const sidecar = environment.MEDIA_TRANSCRIPT_SIDECAR_DIRECTORY?.trim();
   const transcriptCommand = environment.MEDIA_TRANSCRIPT_COMMAND?.trim();
   const transcriptEnabledValue =
-    environment.MEDIA_TRANSCRIPTION_ENABLED?.trim() || "true";
+    environment.MEDIA_TRANSCRIPTION_ENABLED?.trim() || "false";
   if (!/^(?:true|false)$/.test(transcriptEnabledValue)) {
     throw new Error("MEDIA_TRANSCRIPTION_ENABLED must be true or false.");
   }

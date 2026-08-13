@@ -55,6 +55,7 @@ jobs:
       NEXT_PUBLIC_ENABLE_PWA: "false"
       API_ALLOWED_ORIGIN: http://127.0.0.1:3000
       DEFAULT_ORGANIZATION_SLUG: q-academy
+      AI_MODEL: gpt-5.6-terra
       ENABLE_DEMO_LOGIN: "false"
       DEMO_API_KEY: qak_ci_release_smoke_qacademy_2026_7f4e2d8c9a1b
       TRUST_PROXY_HEADERS: "false"
@@ -611,15 +612,16 @@ jobs:
           test "$(dpkg-query -W -f='${Version}' ffmpeg)" = "$EXPECTED_FFMPEG_VERSION"
           test "$(dpkg-query -W -f='${Version}' ca-certificates)" = "$EXPECTED_CA_CERTIFICATES_VERSION"
           test -x /app/node_modules/.bin/tsx
-          test -r /app/scripts/openai-whisper-transcribe-core.ts
-          test -r /app/scripts/openai-whisper-transcribe.ts
+          test -r /app/scripts/openai-transcribe-core.ts
+          test -r /app/scripts/openai-transcribe.ts
+          test -r /app/src/lib/media/transcription-contract.ts
           SH
           done
 
           for component in app dispatcher; do
             docker run --rm --entrypoint /bin/sh \
               "q-academy-$component:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
-              'test ! -e /app/scripts/openai-whisper-transcribe-core.ts && test ! -e /app/scripts/openai-whisper-transcribe.ts'
+              'test ! -e /app/scripts/openai-transcribe-core.ts && test ! -e /app/scripts/openai-transcribe.ts && test ! -e /app/src/lib/media/transcription-contract.ts'
           done
 
           docker run --rm --entrypoint /bin/sh \
@@ -648,6 +650,9 @@ jobs:
             scripts/strato-privacy-export-sweeper.ts --help >/dev/null
           docker run --rm \
             "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" help
+          docker run --rm --entrypoint /bin/sh \
+            "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" -ec \
+            'test -r /app/scripts/ai-course-provider-preflight.ts && test -r /app/src/lib/ai/provider-preflight-core.ts'
           if docker run --rm \
             "q-academy-tenant-ops:$Q_ACADEMY_CI_RELEASE_TAG" definitely-not-allowed; then
             echo "tenant-ops accepted a command outside its allowlist" >&2
@@ -789,6 +794,7 @@ jobs:
             -e NEXT_PUBLIC_APP_URL="$RUNTIME_APP_URL" \
             -e APP_DOMAIN=academy.ci.q-academy.de \
             -e DEFAULT_ORGANIZATION_SLUG=q-academy \
+            -e AI_MODEL="$AI_MODEL" \
             -e API_ALLOWED_ORIGIN="$RUNTIME_SMOKE_ORIGIN" \
             -e SESSION_SECRET="$SESSION_SECRET" \
             -e AUTH_RATE_LIMIT_SECRET="$AUTH_RATE_LIMIT_SECRET" \

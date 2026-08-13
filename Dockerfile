@@ -32,6 +32,8 @@ RUN groupadd --system --gid 1001 nodejs \
     && useradd --system --uid 1001 --gid nodejs --create-home --home-dir /home/nextjs nextjs
 
 FROM base AS runtime-base
+LABEL com.q-academy.ai-text-contract="gpt-5.6-terra-chat-completions-v1" \
+      com.q-academy.transcription-contract="openai-diarized-transcription-v1"
 RUN rm -rf -- \
       /usr/local/lib/node_modules/npm \
       /usr/local/lib/node_modules/corepack \
@@ -372,6 +374,7 @@ COPY --from=production-dependencies --chown=nextjs:nodejs /app/node_modules ./no
 COPY --chown=nextjs:nodejs package.json ./package.json
 COPY --chown=nextjs:nodejs scripts/migrate.ts scripts/load-environment.ts ./scripts/
 COPY --chown=nextjs:nodejs src/lib/branding-host-policy.ts src/lib/database-encoding.ts src/lib/encryption-keyring.ts src/lib/migration-history-validation.ts src/lib/server-environment-validation.ts src/lib/operational-cleanup-policy.ts ./src/lib/
+COPY --chown=nextjs:nodejs src/lib/ai/chat-completion-config.ts ./src/lib/ai/chat-completion-config.ts
 COPY --chown=nextjs:nodejs src/lib/media/s3-browser-upload-origins.ts src/lib/media/storage-configuration.ts ./src/lib/media/
 COPY --chown=nextjs:nodejs src/lib/push/configuration.ts ./src/lib/push/
 COPY --chown=nextjs:nodejs drizzle ./drizzle
@@ -391,7 +394,7 @@ FROM runtime-base AS tenant-ops
 ENV NODE_ENV=production
 COPY --from=production-dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --chown=nextjs:nodejs package.json tsconfig.json ./
-COPY --chown=nextjs:nodejs scripts/provision-tenant.ts scripts/set-tenant-status.ts scripts/set-tenant-contract.ts scripts/erase-tenant.ts scripts/verify-tenant-erasure-archive.ts scripts/export-audit-events.ts scripts/verify-audit-export.ts scripts/export-user-data.ts scripts/http-slo-smoke.ts scripts/load-environment.ts ./scripts/
+COPY --chown=nextjs:nodejs scripts/provision-tenant.ts scripts/set-tenant-status.ts scripts/set-tenant-contract.ts scripts/erase-tenant.ts scripts/verify-tenant-erasure-archive.ts scripts/export-audit-events.ts scripts/verify-audit-export.ts scripts/export-user-data.ts scripts/http-slo-smoke.ts scripts/ai-course-provider-preflight.ts scripts/load-environment.ts ./scripts/
 COPY --chown=nextjs:nodejs src/db ./src/db
 COPY --chown=nextjs:nodejs src/lib ./src/lib
 COPY --chown=nextjs:nodejs scripts/ops/tenant-ops-entrypoint.sh /usr/local/bin/q-academy-tenant-ops
@@ -450,7 +453,7 @@ RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
     done \
     && rm -rf /var/lib/apt/lists/*
 COPY --chown=nextjs:nodejs tsconfig.json ./tsconfig.json
-COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/clamav-preflight.ts scripts/media-processing-preflight.ts scripts/webm-duration-preflight.ts scripts/openai-whisper-transcribe-core.ts scripts/openai-whisper-transcribe.ts ./scripts/
+COPY --chown=nextjs:nodejs scripts/load-environment.ts scripts/clamav-preflight.ts scripts/media-processing-preflight.ts scripts/webm-duration-preflight.ts scripts/openai-transcribe-core.ts scripts/openai-transcribe.ts ./scripts/
 COPY --chown=nextjs:nodejs src/lib ./src/lib
 USER nextjs
 ENTRYPOINT ["node", "--conditions=react-server", "--import", "tsx", "scripts/media-processing-preflight.ts"]
@@ -498,7 +501,8 @@ RUN test -r /usr/share/keyrings/debian-archive-keyring.gpg \
       test "$actual" = "$MESA_VERSION" || exit 1; \
     done \
     && rm -rf /var/lib/apt/lists/*
-COPY --chown=nextjs:nodejs scripts/openai-whisper-transcribe-core.ts scripts/openai-whisper-transcribe.ts ./scripts/
+COPY --chown=nextjs:nodejs scripts/openai-transcribe-core.ts scripts/openai-transcribe.ts ./scripts/
+COPY --chown=nextjs:nodejs src/lib/media/transcription-contract.ts ./src/lib/media/transcription-contract.ts
 COPY --chown=nextjs:nodejs scripts/ops/media-runner-entrypoint.sh /usr/local/bin/q-academy-media-runner
 RUN chmod 0755 /usr/local/bin/q-academy-media-runner
 USER nextjs

@@ -173,6 +173,7 @@ function validProductionEnvironment(): EnvironmentSource {
     MEDIA_S3_STRATO_LIMITATIONS_ACCEPTED: "false",
     MEDIA_CLAMAV_HOST: "clamav.internal.q-academy.de",
     MEDIA_CLAMAV_PORT: "3310",
+    AI_MODEL: "gpt-5.6-terra",
   };
 }
 
@@ -230,6 +231,22 @@ test("production accepts only the fixed file-backed AI credential contract", () 
       }),
     /AI_API_KEY_FILE must be '\/run\/secrets\/q-academy-ai-api-key'/,
   );
+  assert.throws(
+    () =>
+      validateProductionServerEnvironment({
+        ...configured,
+        AI_MODEL: "gpt-4.1-mini",
+      }),
+    /AI_MODEL must be 'gpt-5\.6-terra' in production/,
+  );
+  assert.throws(
+    () => {
+      const missingModel: EnvironmentSource = { ...configured };
+      delete missingModel.AI_MODEL;
+      validateProductionServerEnvironment(missingModel);
+    },
+    /AI_MODEL must be 'gpt-5\.6-terra' in production/,
+  );
 });
 
 test("every production release path validates the file-backed AI credential", () => {
@@ -241,9 +258,59 @@ test("every production release path validates the file-backed AI credential", ()
   }
 
   assert.match(releaseCommon, /-f "\$configured" && ! -L "\$configured"/);
+  assert.match(
+    releaseCommon,
+    /\[\[ "\$model" == "gpt-5\.6-terra" \]\]/,
+  );
   assert.match(releaseCommon, /"\$owner" == "1001:1001" && "\$mode" == "400"/);
   assert.match(releaseCommon, /size <= 16384/);
   assert.match(releaseCommon, /AI_API_KEY must be removed from production/);
+});
+
+test("production validates the dedicated transcription credential before use", () => {
+  for (const releasePath of productionReleasePaths) {
+    assert.match(
+      releasePath,
+      /verify_openai_transcription_api_key_file "\$env_file" \|\| fail "OpenAI transcription API key file is invalid"/,
+    );
+  }
+
+  assert.match(
+    releaseCommon,
+    /verify_openai_transcription_api_key_file\(\)/,
+  );
+  assert.match(
+    releaseCommon,
+    /OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE must be an existing regular non-symlink file/,
+  );
+  assert.match(
+    releaseCommon,
+    /"\$owner" == "1001:1001" && "\$mode" == "400"/,
+  );
+  assert.match(releaseCommon, /size <= 1024/);
+  assert.match(releaseCommon, /enabled" == "true"[\s\S]*size >= 8/);
+  assert.match(releaseCommon, /size == 0/);
+  assert.match(
+    releaseCommon,
+    /Inline OpenAI transcription credentials must be removed from production/,
+  );
+});
+
+test("enabled external AI runs a bounded Terra canary before runtime activation", () => {
+  assert.match(
+    releaseCommon,
+    /AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS=90/,
+  );
+  assert.match(releaseCommon, /ai_api_key_file_is_configured\(\)/);
+  for (const operation of productionReleasePaths) {
+    assert.match(operation, /ai_api_key_file_is_configured "\$env_file"/);
+    assert.match(operation, /ai-provider-preflight/);
+    assert.match(operation, /AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS/);
+    assert.match(
+      operation,
+      /External AI is disabled; skipping the Terra provider preflight/,
+    );
+  }
 });
 
 test("canonical production tenant configuration is explicit and fail-closed", () => {
@@ -787,6 +854,7 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(app, /PRIVACY_SUBJECT_HMAC_SECRET/);
   assert.match(app, /EXAM_SELECTION_SECRET/);
   assert.match(app, /AI_API_KEY_FILE: \/run\/secrets\/q-academy-ai-api-key/);
+  assert.match(app, /AI_MODEL: \$\{AI_MODEL:-gpt-5\.6-terra\}/);
   assert.match(app, /target: \/run\/secrets\/q-academy-ai-api-key/);
   assert.match(app, /AI_API_KEY_SOURCE_FILE:-\/etc\/q-academy\/ai-api-key/);
   assert.doesNotMatch(app, /^\s+AI_API_KEY:/m);
@@ -838,9 +906,9 @@ test("production isolates media scans from the public app runtime", () => {
     /http:\/\/app:3000\/api\/internal\/jobs\/media/,
   );
   assert.doesNotMatch(mediaWorker, /\/media\/maintenance/);
-  assert.match(mediaWorker, /--timeout-seconds 14400/);
-  assert.match(mediaWorker, /MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-15000/);
-  assert.match(mediaWorker, /MEDIA_WORKER_POLL_SECONDS \+ 14400 \+ 60/);
+  assert.match(mediaWorker, /--timeout-seconds 19900/);
+  assert.match(mediaWorker, /MEDIA_WORKER_HEARTBEAT_STALE_SECONDS:-20000/);
+  assert.match(mediaWorker, /MEDIA_WORKER_POLL_SECONDS \+ 19900 \+ 60/);
   assert.match(mediaWorker, /\/tmp\/media-worker[.]in-progress/);
   assert.match(mediaWorker, /test "\$\$\(\(now - in_progress\)\)" -le 120/);
 
@@ -1214,6 +1282,20 @@ test("direct CI app runtime forwards an exact validator-approved browser upload 
   )?.[0];
   assert.ok(appRun, "Missing direct production app container run.");
   assert.match(appRun, /-e NEXT_PUBLIC_APP_URL="\$RUNTIME_APP_URL"/);
+  assert.match(appRun, /-e AI_MODEL="\$AI_MODEL"/);
+  assert.match(continuousIntegration, /^      AI_MODEL: gpt-5\.6-terra$/m);
+  assert.match(
+    dockerfile,
+    /COPY --chown=nextjs:nodejs src\/lib\/ai\/chat-completion-config\.ts \.\/src\/lib\/ai\/chat-completion-config\.ts/,
+  );
+  assert.match(
+    dockerfile,
+    /com\.q-academy\.ai-text-contract="gpt-5\.6-terra-chat-completions-v1"/,
+  );
+  assert.match(
+    dockerfile,
+    /com\.q-academy\.transcription-contract="openai-diarized-transcription-v1"/,
+  );
   assert.match(
     appRun,
     /-e MEDIA_S3_BROWSER_ALLOWED_ORIGINS_JSON="\[\\"\$RUNTIME_APP_URL\\"\]"/,
