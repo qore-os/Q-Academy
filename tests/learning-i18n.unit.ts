@@ -24,7 +24,7 @@ test("learning dictionaries are complete, nonempty, and placeholder-compatible",
     learningUiDictionaries.de,
   ) as LearningUiKey[];
 
-  assert.equal(referenceKeys.length, 241);
+  assert.equal(referenceKeys.length, 243);
   for (const locale of SUPPORTED_LOCALES) {
     const dictionary = learningUiDictionaries[locale];
     assert.deepEqual(Object.keys(dictionary).sort(), [...referenceKeys].sort());
