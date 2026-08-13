@@ -606,7 +606,12 @@ test("admin toggles bidirectional lesson and page title sync", async ({
         return row.status;
       })
       .toBe("published");
-    await page.getByRole("button", { name: new RegExp(`1\\. ${renamedFromPage}`) }).click();
+    await page
+      .getByRole("button", {
+        name: `1. ${renamedFromPage} 2 Seiten`,
+        exact: true,
+      })
+      .click();
     lessonTitleInput = page.getByRole("textbox", {
       name: "Lektionstitel",
       exact: true,

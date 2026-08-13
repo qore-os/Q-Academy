@@ -177,7 +177,7 @@ test("course builder pages styles and presence render without runtime errors", a
   expect(tabLabelsAreContained).toBe(true);
 
   const pagedLesson = page.getByRole("button", {
-    name: "Was ein Sprachmodell wirklich tut",
+    name: /^1\. Was ein Sprachmodell wirklich tut/,
   });
   await expect(pagedLesson).toHaveCount(1);
   await pagedLesson.click();
