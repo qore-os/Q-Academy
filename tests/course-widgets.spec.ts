@@ -504,7 +504,7 @@ test("course widgets are tenant-safe, versioned, and manageable through UI and R
     `;
     expect(published).toEqual({
       widget_count: 3,
-      schema_version: 5,
+      schema_version: 6,
       first_type: "image_link",
       media_asset_id: widgetMediaAssetId,
       image_url: `/api/media-assets/${widgetMediaAssetId}/download`,

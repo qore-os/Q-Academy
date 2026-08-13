@@ -419,7 +419,7 @@ test("course information is ordered, tenant-safe, snapshot-stable, and hidden on
       where c.id = ${courseId}
     `;
     expect(snapshot).toEqual({
-      schema_version: 5,
+      schema_version: 6,
       visible_in_catalog: false,
       show_progress_percentage: false,
       goal_texts: [draftGoal, firstGoal],
