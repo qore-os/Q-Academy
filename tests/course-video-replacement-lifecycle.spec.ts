@@ -291,7 +291,7 @@ test("a new video replacement defers server processing until it is saved", async
       /Gespeicherter Lerninhalt\./,
       { timeout: 10_000 },
     );
-    await expect(reopenedTranscriptButton).toBeDisabled();
+    await expect(reopenedTranscriptButton).toBeEnabled();
     expect(processingRequests).toBeGreaterThanOrEqual(1);
     expect(processingMethods).not.toContain("POST");
     expect(processingMethods.every((method) => method === "GET")).toBe(true);
@@ -299,7 +299,9 @@ test("a new video replacement defers server processing until it is saved", async
     const reopenedDescriptionButton = dialog.getByRole("button", {
       name: workflowCopy.descriptionGenerate,
     });
-    await expect(reopenedDescriptionButton).toBeDisabled();
+    await expect(reopenedDescriptionButton).toBeEnabled();
+    await reopenedDescriptionButton.click();
+    await expect.poll(() => descriptionRequests).toBe(1);
 
     await dialog
       .getByRole("button", { name: builderCopy.common.closeDialog })
