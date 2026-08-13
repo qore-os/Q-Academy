@@ -321,7 +321,21 @@ test("a newly selected primary video drives and resets the unsaved editor", () =
   );
   assert.match(
     editor,
-    /!automaticTranscriptionAvailable \|\|[\s\S]*!automaticTranscriptLanguage[\s\S]*automaticTranscriptRequestedRef\.current = true/,
+    /!automaticTranscriptLanguage[\s\S]*automaticTranscriptRequestedRef\.current = true/,
+  );
+  const loadExistingTranscript = editor.slice(
+    editor.indexOf("  const loadExistingTranscript = async"),
+    editor.indexOf(
+      "  loadExistingTranscriptRef.current = loadExistingTranscript;",
+    ),
+  );
+  assert.doesNotMatch(
+    loadExistingTranscript,
+    /automaticTranscriptionDurationSupported|automaticTranscriptionAvailable/,
+  );
+  assert.match(
+    loadExistingTranscript,
+    /editVersion !== transcriptEditVersionRef\.current\) return "unavailable";\s*if \(!result\.transcript\?\.webVtt\) return "missing";/,
   );
   assert.match(builder, /sourceAssetId=\{activeVideoAssetId\}/);
   assert.match(
@@ -331,7 +345,7 @@ test("a newly selected primary video drives and resets the unsaved editor", () =
   assert.match(editor, /return sourceAssetId\?\.trim\(\) \?\? ""/);
   assert.match(
     editor,
-    /automaticTranscriptRequestedRef\.current = true;\s*void generateTranscriptRef\.current\?\.\(\)/,
+    /automaticTranscriptRequestedRef\.current = true;[\s\S]*await loadExistingTranscriptRef\.current\?\.\(\);[\s\S]*!automaticTranscriptionAvailable[\s\S]*await generateTranscriptRef\.current\?\.\(\)/,
   );
   assert.match(
     editor,

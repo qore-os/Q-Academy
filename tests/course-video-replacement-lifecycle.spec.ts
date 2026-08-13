@@ -70,6 +70,11 @@ test("a new video replacement defers server processing until it is saved", async
   let uploadedPosterId = "";
   let processingRequests = 0;
   const processingMethods: string[] = [];
+  let processingResponse: "stored" | "delayed-missing" = "stored";
+  let releaseMissingTranscript: (() => void) | undefined;
+  const missingTranscriptGate = new Promise<void>((resolve) => {
+    releaseMissingTranscript = resolve;
+  });
   let descriptionRequests = 0;
   const storageKeys: string[] = [];
 
@@ -137,6 +142,15 @@ test("a new video replacement defers server processing until it is saved", async
             type: "transcript",
             status: "queued",
           }),
+        });
+        return;
+      }
+      if (processingResponse === "delayed-missing") {
+        await missingTranscriptGate;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ jobs: [], transcript: null }),
         });
         return;
       }
@@ -277,17 +291,42 @@ test("a new video replacement defers server processing until it is saved", async
       /Gespeicherter Lerninhalt\./,
       { timeout: 10_000 },
     );
-    await expect(reopenedTranscriptButton).toBeEnabled();
-    expect(processingRequests).toBeGreaterThanOrEqual(2);
-    expect(processingMethods).toEqual(expect.arrayContaining(["POST", "GET"]));
+    await expect(reopenedTranscriptButton).toBeDisabled();
+    expect(processingRequests).toBeGreaterThanOrEqual(1);
+    expect(processingMethods).not.toContain("POST");
+    expect(processingMethods.every((method) => method === "GET")).toBe(true);
     expect(descriptionRequests).toBe(0);
     const reopenedDescriptionButton = dialog.getByRole("button", {
       name: workflowCopy.descriptionGenerate,
     });
-    await expect(reopenedDescriptionButton).toBeEnabled();
-    await reopenedDescriptionButton.click();
-    await expect.poll(() => descriptionRequests).toBe(1);
+    await expect(reopenedDescriptionButton).toBeDisabled();
+
+    await dialog
+      .getByRole("button", { name: builderCopy.common.closeDialog })
+      .click();
+    await expect(dialog).toBeHidden();
+    processingResponse = "delayed-missing";
+    const requestsBeforeLocalEdit = processingRequests;
+    await page
+      .getByRole("button", { name: `${blockTitle}: Bearbeiten` })
+      .click();
+    dialog = page.getByRole("dialog", {
+      name: "Inhaltselement bearbeiten",
+    });
+    const locallyEditedTranscript =
+      "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nManuell bearbeiteter Inhalt.";
+    const transcriptTextarea = dialog.locator('textarea[name="transcriptVtt"]');
+    await expect.poll(() => processingRequests).toBeGreaterThan(
+      requestsBeforeLocalEdit,
+    );
+    await transcriptTextarea.fill(locallyEditedTranscript);
+    releaseMissingTranscript?.();
+    await expect(transcriptTextarea).toHaveValue(locallyEditedTranscript);
+    await page.waitForTimeout(500);
+    await expect(transcriptTextarea).toHaveValue(locallyEditedTranscript);
+    expect(processingMethods).not.toContain("POST");
   } finally {
+    releaseMissingTranscript?.();
     const assetIds = [uploadedVideoId, uploadedPosterId].filter(Boolean);
     if (assetIds.length) {
       const rows = await sql<

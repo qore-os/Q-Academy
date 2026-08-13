@@ -81,6 +81,16 @@ type PosterFrameState = {
   jobId: string | null;
   status: ExactVideoThumbnailJobStatus;
 };
+type TranscriptProcessingPayload = {
+  transcript?: { language?: string; webVtt?: string } | null;
+  jobs?: Array<{
+    type?: string;
+    status?: string;
+    failureCode?: string | null;
+    language?: string | null;
+  }>;
+};
+type ExistingTranscriptLoadResult = "loaded" | "missing" | "unavailable";
 
 export function VideoTranscriptEditor({
   transcript,
@@ -177,6 +187,9 @@ export function VideoTranscriptEditor({
   const descriptionRequestRef = useRef(0);
   const automaticTranscriptRequestedRef = useRef(false);
   const asyncAssetScopeRef = useRef<AsyncAssetScope | null>(null);
+  const loadExistingTranscriptRef = useRef<
+    (() => Promise<ExistingTranscriptLoadResult>) | null
+  >(null);
   const generateTranscriptRef = useRef<(() => Promise<void>) | null>(null);
   const [variantsPending, setVariantsPending] = useState(false);
   const posterFrameControllerRef = useRef<AbortController | null>(null);
@@ -463,6 +476,53 @@ export function VideoTranscriptEditor({
     window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
   };
 
+  const loadExistingTranscript = async (): Promise<
+    ExistingTranscriptLoadResult
+  > => {
+    const assetId = sourceAssetId?.trim() ?? "";
+    const requestedLanguage = automaticTranscriptLanguage;
+    if (!serverProcessingEnabled || !assetId || !requestedLanguage) {
+      return "unavailable";
+    }
+    const scope = asyncAssetScopeRef.current;
+    if (!scope || scope.assetId !== assetId || scope.controller.signal.aborted) {
+      return "unavailable";
+    }
+    const editVersion = transcriptEditVersionRef.current;
+    const scopeIsCurrent = () =>
+      asyncAssetScopeRef.current === scope &&
+      !scope.controller.signal.aborted;
+    setGenerating(true);
+    try {
+      const status = await fetch(
+        `/api/media-assets/${assetId}/processing?language=${encodeURIComponent(requestedLanguage)}`,
+        {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: scope.controller.signal,
+        },
+      );
+      if (!status.ok) throw new Error(copy.errors.transcriptStatus);
+      const result = (await status.json()) as TranscriptProcessingPayload;
+      if (!scopeIsCurrent()) return "unavailable";
+      if (editVersion !== transcriptEditVersionRef.current) return "unavailable";
+      if (!result.transcript?.webVtt) return "missing";
+      setLanguage(result.transcript.language ?? language);
+      setWebVtt(result.transcript.webVtt);
+      toast.success(copy.success.transcriptLoaded);
+      return "loaded";
+    } catch (error) {
+      if (!scopeIsCurrent()) return "unavailable";
+      toast.error(
+        error instanceof Error ? error.message : copy.errors.transcriptGeneric,
+      );
+      return "unavailable";
+    } finally {
+      if (scopeIsCurrent()) setGenerating(false);
+    }
+  };
+  loadExistingTranscriptRef.current = loadExistingTranscript;
+
   const generateTranscript = async () => {
     const assetId = sourceAssetId?.trim() ?? "";
     if (!serverProcessingEnabled || !automaticTranscriptionAvailable) return;
@@ -513,15 +573,7 @@ export function VideoTranscriptEditor({
           },
         );
         if (!status.ok) throw new Error(copy.errors.transcriptStatus);
-        const result = (await status.json()) as {
-          transcript?: { language?: string; webVtt?: string } | null;
-          jobs?: Array<{
-            type?: string;
-            status?: string;
-            failureCode?: string | null;
-            language?: string | null;
-          }>;
-        };
+        const result = (await status.json()) as TranscriptProcessingPayload;
         if (result.transcript?.webVtt) {
           if (!scopeIsCurrent()) return;
           if (editVersion !== transcriptEditVersionRef.current) {
@@ -640,13 +692,25 @@ export function VideoTranscriptEditor({
       parsed ||
       !sourceAssetId ||
       !serverProcessingEnabled ||
-      !automaticTranscriptionAvailable ||
       !automaticTranscriptLanguage
     ) {
       return;
     }
     automaticTranscriptRequestedRef.current = true;
-    void generateTranscriptRef.current?.();
+    const scope = asyncAssetScopeRef.current;
+    void (async () => {
+      const loadResult = await loadExistingTranscriptRef.current?.();
+      if (
+        loadResult !== "missing" ||
+        !automaticTranscriptionAvailable ||
+        !scope ||
+        asyncAssetScopeRef.current !== scope ||
+        scope.controller.signal.aborted
+      ) {
+        return;
+      }
+      await generateTranscriptRef.current?.();
+    })();
   }, [
     automaticallyLoadTranscript,
     automaticTranscriptLanguage,
