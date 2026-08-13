@@ -16,8 +16,8 @@ const mediaAssetId = "10000000-0000-4000-8000-000000000001";
 function lesson(overrides: Partial<SnapshotLesson> = {}): SnapshotLesson {
   return {
     id: "20000000-0000-4000-8000-000000000002",
+    organizationId: "70000000-0000-4000-8000-000000000007",
     moduleId: "60000000-0000-4000-8000-000000000006",
-    sectionId: null,
     title: "Medienlektion",
     slug: "medienlektion",
     summary: null,
@@ -33,6 +33,9 @@ function lesson(overrides: Partial<SnapshotLesson> = {}): SnapshotLesson {
     examContentAccessMode: "allow",
     sortOrder: 0,
     status: "published",
+    visibility: "visible",
+    unlockAfterPrevious: false,
+    dripDays: 0,
     availableAt: null,
     createdAt: "2026-07-11T09:00:00.000Z",
     updatedAt: "2026-07-11T09:00:00.000Z",
@@ -84,7 +87,11 @@ test("lesson media references include direct blocks and page galleries", () => {
                 title: null,
                 sortOrder: 0,
                 required: false,
-                style: { width: "content", alignment: "left", surface: "plain" },
+                style: {
+                  width: "content",
+                  alignment: "left",
+                  surface: "plain",
+                },
                 data: {
                   gallery: {
                     version: 1,
@@ -238,7 +245,13 @@ test("composition derivatives require the exact job inside an accessible lesson"
   };
   const openPrimary = {
     lesson: lesson({
-      blocks: [{ ...compositionBlock, id: "40000000-0000-4000-8000-000000000004", data: { mediaAssetId: videoId } }],
+      blocks: [
+        {
+          ...compositionBlock,
+          id: "40000000-0000-4000-8000-000000000004",
+          data: { mediaAssetId: videoId },
+        },
+      ],
     }),
     access: { accessible: true },
   };
@@ -291,7 +304,11 @@ test("composition derivatives ignore blocks on draft pages", () => {
         title: "Mischung",
         sortOrder: 0,
         required: false,
-        style: { width: "content", alignment: "left", surface: "plain" } as const,
+        style: {
+          width: "content",
+          alignment: "left",
+          surface: "plain",
+        } as const,
         data: {
           mediaAssetId: videoId,
           videoComposition: {
@@ -315,14 +332,27 @@ test("composition derivatives ignore blocks on draft pages", () => {
   const input = { renderJobId: jobId, primaryAssetId: videoId, blockId };
   assert.equal(
     accessibleLessonsReferenceVideoComposition(
-      [{ lesson: lesson({ blocks: [], pages: [page] }), access: { accessible: true } }],
+      [
+        {
+          lesson: lesson({ blocks: [], pages: [page] }),
+          access: { accessible: true },
+        },
+      ],
       input,
     ),
     false,
   );
   assert.equal(
     accessibleLessonsReferenceVideoComposition(
-      [{ lesson: lesson({ blocks: [], pages: [{ ...page, status: "published" }] }), access: { accessible: true } }],
+      [
+        {
+          lesson: lesson({
+            blocks: [],
+            pages: [{ ...page, status: "published" }],
+          }),
+          access: { accessible: true },
+        },
+      ],
       input,
     ),
     true,

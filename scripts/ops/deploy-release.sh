@@ -89,7 +89,7 @@ release_lock_acquired=true
 [[ -f "$compose_file" ]] || fail "Compose file not found: $compose_file"
 [[ -x scripts/ops/postgres-backup.sh ]] || fail "backup script is not executable"
 
-for command in docker curl findmnt flock git python3 sync timeout; do
+for command in docker curl findmnt flock git python3 readlink sha256sum sync timeout; do
   command -v "$command" >/dev/null 2>&1 || fail "required command is missing: $command"
 done
 repository_root="$(git rev-parse --show-toplevel 2>/dev/null)" || fail "working directory is not a Git repository"
@@ -155,11 +155,21 @@ configured_tag="$(production_env_value "$env_file" APP_IMAGE_TAG)" || fail "APP_
 
 resume_failed_release=false
 pending_from_tag=""
+predeploy_backup_required=""
+predeploy_backup_path=""
+predeploy_backup_sha256=""
+predeploy_backup_restore_verified=""
+predeploy_backup_evidence_sha256=""
 if [[ -e "$pending_file" || -L "$pending_file" ]]; then
   validate_pending_release_marker "$pending_file" || fail "pending release marker is invalid"
   pending_from_tag="$(production_env_value "$pending_file" FROM_TAG)" || fail "pending release FROM_TAG is invalid"
   pending_to_tag="$(production_env_value "$pending_file" TO_TAG)" || fail "pending release TO_TAG is invalid"
   pending_controller_commit="$(production_env_value "$pending_file" CONTROLLER_COMMIT)" || fail "pending release CONTROLLER_COMMIT is invalid"
+  predeploy_backup_required="$(production_env_value "$pending_file" PREDEPLOY_BACKUP_REQUIRED)" || fail "pending release backup requirement is invalid"
+  predeploy_backup_path="$(production_env_value "$pending_file" PREDEPLOY_BACKUP_PATH)" || fail "pending release backup path is invalid"
+  predeploy_backup_sha256="$(production_env_value "$pending_file" PREDEPLOY_BACKUP_SHA256)" || fail "pending release backup digest is invalid"
+  predeploy_backup_restore_verified="$(production_env_value "$pending_file" PREDEPLOY_BACKUP_RESTORE_VERIFIED)" || fail "pending release backup verification state is invalid"
+  predeploy_backup_evidence_sha256="$(production_env_value "$pending_file" PREDEPLOY_BACKUP_EVIDENCE_SHA256)" || fail "pending release backup evidence digest is invalid"
   [[ "$pending_to_tag" == "$release_tag" ]] || fail "pending release belongs to a different target"
   [[ "$pending_controller_commit" == "$head_commit" ]] || fail "pending release belongs to a different controller checkout"
   [[ "${CONFIRM_RESUME_FAILED_RELEASE:-}" == "$pending_to_tag" ]] ||
@@ -297,6 +307,8 @@ done
 if [[ "$dry_run" != "true" ]]; then
   verify_ai_runtime_contract_images "$release_tag" ||
     fail "target release images do not implement the required AI runtime contracts"
+  verify_database_schema_contract_images "$release_tag" ||
+    fail "target release images do not implement the required flat course lesson database contract"
 fi
 
 project_name="$(compose_project_name "${compose[@]}")" || fail "Compose project name is unavailable"
@@ -326,41 +338,10 @@ run_with_timeout "$S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS" \
   "${compose[@]}" run --rm --no-deps s3-app-principal-preflight \
   --confirm-bucket "$media_bucket"
 
-application_relation_count=1
-if [[ "$initial_install" == "true" ]]; then
-  if [[ "$dry_run" == "true" ]]; then
-    printf 'DRY-RUN: inspect the fresh database for application relations before deciding whether a backup is required\n'
-    application_relation_count=0
-  else
-    application_relation_count="$(
-      "${compose[@]}" exec -T postgres sh -euc '
-        export PGPASSWORD="$POSTGRES_PASSWORD"
-        psql \
-          --host=127.0.0.1 \
-          --username="$POSTGRES_USER" \
-          --dbname="$POSTGRES_DB" \
-          --set=ON_ERROR_STOP=1 \
-          --tuples-only \
-          --no-align \
-          --command="select count(*) from pg_class relation_record join pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace where namespace_record.nspname in ('\''public'\'', '\''drizzle'\'') and relation_record.relkind in ('\''r'\'', '\''p'\'', '\''S'\'', '\''v'\'', '\''m'\'', '\''f'\'')"
-      ' | tr -d '[:space:]'
-    )"
-  fi
-fi
-backup_decision="$(predeploy_backup_decision "$initial_install" "$application_relation_count")" || fail "could not determine the pre-deployment backup requirement"
 mkdir -p "$(dirname "$backup_lock_file")"
 exec 8>"$backup_lock_file"
 [[ -f "$backup_lock_file" && ! -L "$backup_lock_file" ]] || fail "backup lock must be a regular non-symlink file"
 flock -n 8 || fail "another backup or restore operation is active"
-if [[ "$backup_decision" == "required" ]]; then
-  run env \
-    Q_ACADEMY_APP_IMAGE_TAG_OVERRIDE="$release_tag" \
-    Q_ACADEMY_BACKUP_LOCK_FD=8 \
-    BACKUP_LOCK_FILE="$backup_lock_file" \
-    scripts/ops/postgres-backup.sh
-else
-  printf 'Fresh database has no application relations; no pre-deployment backup is required.\n'
-fi
 
 if [[ "$dry_run" != "true" ]]; then
   writers_stopped=true
@@ -368,6 +349,123 @@ fi
 run "${compose[@]}" stop -t 30 caddy
 run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"
 run "${strato_compose[@]}" rm --force --stop "$STRATO_PRIVACY_SWEEPER_SERVICE"
+
+if [[ "$resume_failed_release" == "true" ]]; then
+  verify_release_backup_evidence \
+    "$pending_from_tag" \
+    "$release_tag" \
+    "$head_commit" \
+    "$predeploy_backup_required" \
+    "$predeploy_backup_path" \
+    "$predeploy_backup_sha256" \
+    "$predeploy_backup_restore_verified" \
+    "$predeploy_backup_evidence_sha256" ||
+    fail "pending release backup evidence is missing or does not match"
+  printf 'Reusing target-bound pre-deployment backup evidence for %s: %s\n' \
+    "$release_tag" "${predeploy_backup_path:-empty-initial-database}"
+else
+  application_relation_count=1
+  if [[ "$initial_install" == "true" ]]; then
+    if [[ "$dry_run" == "true" ]]; then
+      printf 'DRY-RUN: inspect the stopped fresh database for application relations before deciding whether a backup is required\n'
+      application_relation_count=0
+    else
+      application_relation_count="$(
+        "${compose[@]}" exec -T postgres sh -euc '
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          psql \
+            --host=127.0.0.1 \
+            --username="$POSTGRES_USER" \
+            --dbname="$POSTGRES_DB" \
+            --set=ON_ERROR_STOP=1 \
+            --tuples-only \
+            --no-align \
+            --command="select count(*) from pg_class relation_record join pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace where namespace_record.nspname in ('\''public'\'', '\''drizzle'\'') and relation_record.relkind in ('\''r'\'', '\''p'\'', '\''S'\'', '\''v'\'', '\''m'\'', '\''f'\'')"
+        ' | tr -d '[:space:]'
+      )"
+    fi
+  fi
+  backup_decision="$(predeploy_backup_decision "$initial_install" "$application_relation_count")" || fail "could not determine the pre-deployment backup requirement"
+  if [[ "$backup_decision" == "required" ]]; then
+    predeploy_backup_required=true
+    predeploy_backup_restore_verified=true
+    predeploy_backup_command=(
+      env
+      BACKUP_VERIFY_RESTORE=true
+      Q_ACADEMY_APP_IMAGE_TAG_OVERRIDE="$release_tag"
+      Q_ACADEMY_BACKUP_LOCK_FD=8
+      BACKUP_LOCK_FILE="$backup_lock_file"
+      scripts/ops/postgres-backup.sh
+    )
+    if [[ "$dry_run" == "true" ]]; then
+      run "${predeploy_backup_command[@]}"
+      predeploy_backup_path=/var/backups/q-academy/q-academy-19700101T000000Z.dump
+      predeploy_backup_sha256=0000000000000000000000000000000000000000000000000000000000000000
+    else
+      if ! predeploy_backup_output="$("${predeploy_backup_command[@]}")"; then
+        fail "restore-verified pre-deployment backup failed"
+      fi
+      printf '%s\n' "$predeploy_backup_output"
+      predeploy_backup_path_count="$(
+        printf '%s\n' "$predeploy_backup_output" |
+          awk '/^Verified PostgreSQL backup created: / { count += 1 } END { print count + 0 }'
+      )"
+      [[ "$predeploy_backup_path_count" == "1" ]] ||
+        fail "backup did not report exactly one restore-verified dump"
+      predeploy_backup_path="$(
+        printf '%s\n' "$predeploy_backup_output" |
+          sed -n 's/^Verified PostgreSQL backup created: //p'
+      )"
+      [[ -n "$predeploy_backup_path" && "$predeploy_backup_path" != *$'\n'* ]] ||
+        fail "backup reported an invalid restore-verified dump path"
+      predeploy_backup_output_sha256="$(sha256sum -- "$predeploy_backup_path")" ||
+        fail "restore-verified backup digest could not be calculated"
+      predeploy_backup_sha256="${predeploy_backup_output_sha256%% *}"
+    fi
+  else
+    predeploy_backup_required=false
+    predeploy_backup_path=""
+    predeploy_backup_sha256=""
+    predeploy_backup_restore_verified=false
+    printf 'Fresh database has no application relations; no pre-deployment backup is required.\n'
+  fi
+  predeploy_backup_evidence_sha256="$(
+    release_backup_evidence_sha256 \
+      "$previous_tag" \
+      "$release_tag" \
+      "$head_commit" \
+      "$predeploy_backup_required" \
+      "$predeploy_backup_path" \
+      "$predeploy_backup_sha256" \
+      "$predeploy_backup_restore_verified"
+  )" || fail "pre-deployment backup evidence could not be bound to the release target"
+  if [[ "$dry_run" != "true" ]]; then
+    verify_release_backup_evidence \
+      "$previous_tag" \
+      "$release_tag" \
+      "$head_commit" \
+      "$predeploy_backup_required" \
+      "$predeploy_backup_path" \
+      "$predeploy_backup_sha256" \
+      "$predeploy_backup_restore_verified" \
+      "$predeploy_backup_evidence_sha256" ||
+      fail "pre-deployment backup evidence is invalid"
+  fi
+  run write_pending_release_marker \
+    "$pending_file" \
+    "$previous_tag" \
+    "$release_tag" \
+    "$head_commit" \
+    "$predeploy_backup_required" \
+    "$predeploy_backup_path" \
+    "$predeploy_backup_sha256" \
+    "$predeploy_backup_restore_verified" \
+    "$predeploy_backup_evidence_sha256"
+  if [[ "$dry_run" != "true" ]]; then
+    pending_release_guarded=true
+  fi
+fi
+
 if [[ "$media_storage_identity_changed" == "true" ]]; then
   if [[ "$dry_run" == "true" ]]; then
     printf 'DRY-RUN: verify that no S3 media object, derivative, privacy export, or multipart session remains after stopping every writer before changing media storage identity\n'
@@ -393,11 +491,6 @@ fi
 if [[ "$resume_failed_release" == "true" ]]; then
   printf 'Explicitly resuming pending release %s from %s; migrations may already have run.\n' \
     "$release_tag" "${previous_tag:-initial-install}"
-else
-  run write_pending_release_marker "$pending_file" "$previous_tag" "$release_tag" "$head_commit"
-  if [[ "$dry_run" != "true" ]]; then
-    pending_release_guarded=true
-  fi
 fi
 run "${compose[@]}" up -d --wait --wait-timeout 900 postgres clamav
 run_with_timeout "$MEDIA_PROCESSING_PREFLIGHT_TIMEOUT_SECONDS" \
@@ -406,6 +499,8 @@ run_with_timeout "$MEDIA_PROCESSING_PREFLIGHT_TIMEOUT_SECONDS" \
 run "${compose[@]}" run --rm --no-deps database-config-preflight
 run "${compose[@]}" run --rm --no-deps database-role
 run "${compose[@]}" run --rm --no-deps migrate
+run verify_release_database_schema_contract "$release_tag" "${compose[@]}" ||
+  fail "target release is incompatible with the applied database schema contract"
 run "${compose[@]}" run --rm --no-deps database-permissions
 run "${compose[@]}" up -d --no-deps --wait --wait-timeout 300 "${DATABASE_RUNTIME_SERVICES[@]}"
 for runtime_service in "${DATABASE_RUNTIME_SERVICES[@]}"; do
@@ -444,6 +539,11 @@ if [[ "$dry_run" != "true" ]]; then
     printf 'CURRENT_TAG=%s\n' "$release_tag"
     printf 'PREVIOUS_TAG=%s\n' "$previous_tag"
     printf 'DEPLOYED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'PREDEPLOY_BACKUP_REQUIRED=%s\n' "$predeploy_backup_required"
+    printf 'PREDEPLOY_BACKUP_PATH=%s\n' "$predeploy_backup_path"
+    printf 'PREDEPLOY_BACKUP_SHA256=%s\n' "$predeploy_backup_sha256"
+    printf 'PREDEPLOY_BACKUP_RESTORE_VERIFIED=%s\n' "$predeploy_backup_restore_verified"
+    printf 'PREDEPLOY_BACKUP_EVIDENCE_SHA256=%s\n' "$predeploy_backup_evidence_sha256"
     write_media_storage_release_state "$env_file"
   } >"$temporary_state"
   sync "$temporary_state"
@@ -452,6 +552,21 @@ if [[ "$dry_run" != "true" ]]; then
   [[ "$(production_env_value "$env_file" APP_IMAGE_TAG)" == "$release_tag" ]] || fail "persisted APP_IMAGE_TAG is inconsistent"
   [[ "$(production_env_value "$state_file" CURRENT_TAG)" == "$release_tag" ]] || fail "persisted release state is inconsistent"
   [[ "$(production_env_value "$state_file" CONTROLLER_COMMIT)" == "$head_commit" ]] || fail "persisted release controller is inconsistent"
+  [[ "$(production_env_value "$state_file" PREDEPLOY_BACKUP_REQUIRED)" == "$predeploy_backup_required" ]] || fail "persisted backup requirement is inconsistent"
+  [[ "$(production_env_value "$state_file" PREDEPLOY_BACKUP_PATH)" == "$predeploy_backup_path" ]] || fail "persisted backup path is inconsistent"
+  [[ "$(production_env_value "$state_file" PREDEPLOY_BACKUP_SHA256)" == "$predeploy_backup_sha256" ]] || fail "persisted backup digest is inconsistent"
+  [[ "$(production_env_value "$state_file" PREDEPLOY_BACKUP_RESTORE_VERIFIED)" == "$predeploy_backup_restore_verified" ]] || fail "persisted backup verification state is inconsistent"
+  [[ "$(production_env_value "$state_file" PREDEPLOY_BACKUP_EVIDENCE_SHA256)" == "$predeploy_backup_evidence_sha256" ]] || fail "persisted backup evidence digest is inconsistent"
+  verify_release_backup_evidence \
+    "$previous_tag" \
+    "$release_tag" \
+    "$head_commit" \
+    "$predeploy_backup_required" \
+    "$predeploy_backup_path" \
+    "$predeploy_backup_sha256" \
+    "$predeploy_backup_restore_verified" \
+    "$predeploy_backup_evidence_sha256" ||
+    fail "persisted release backup evidence is invalid"
   remove_pending_release_marker "$pending_file" || fail "could not clear the completed pending release marker"
 fi
 

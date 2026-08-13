@@ -18,7 +18,6 @@ import {
   lessonUpdateSchema,
   moduleUpdateSchema,
   postUpdateSchema,
-  sectionUpdateSchema,
   webhookUpdateSchema,
 } from "@/lib/api/schemas";
 
@@ -36,7 +35,6 @@ const partialUpdateSchemas = [
   hubUpdateSchema,
   lessonUpdateSchema,
   moduleUpdateSchema,
-  sectionUpdateSchema,
   webhookUpdateSchema,
 ] as const;
 
@@ -64,8 +62,14 @@ test("partial update schemas preserve only explicitly supplied fields", () => {
 });
 
 test("lesson page updates require a current revision and a real change", () => {
-  assert.equal(lessonPageUpdateSchema.safeParse({ title: "Neu" }).success, false);
-  assert.equal(lessonPageUpdateSchema.safeParse({ revision: 1 }).success, false);
+  assert.equal(
+    lessonPageUpdateSchema.safeParse({ title: "Neu" }).success,
+    false,
+  );
+  assert.equal(
+    lessonPageUpdateSchema.safeParse({ revision: 1 }).success,
+    false,
+  );
   assert.equal(
     lessonPageUpdateSchema.safeParse({ revision: 1, title: "Neu" }).success,
     true,
@@ -73,8 +77,14 @@ test("lesson page updates require a current revision and a real change", () => {
 });
 
 test("content block updates require a current revision and a real change", () => {
-  assert.equal(contentBlockUpdateSchema.safeParse({ required: true }).success, false);
-  assert.equal(contentBlockUpdateSchema.safeParse({ revision: 1 }).success, false);
+  assert.equal(
+    contentBlockUpdateSchema.safeParse({ required: true }).success,
+    false,
+  );
+  assert.equal(
+    contentBlockUpdateSchema.safeParse({ revision: 1 }).success,
+    false,
+  );
   assert.equal(
     contentBlockUpdateSchema.safeParse({ revision: 1, title: "Neu" }).success,
     true,

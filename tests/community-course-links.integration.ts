@@ -77,8 +77,8 @@ test("community course links enforce tenant, publication, viewer access and dele
       })
       .returning();
     const snapshot: CourseVersionSnapshot = {
-      schemaVersion: 4,
-      accessPolicyVersion: 1,
+      schemaVersion: 6,
+      accessPolicyVersion: 2,
       moduleKindVersion: 1,
       courseOutlineVersion: 1,
       capturedAt: publishedAt.toISOString(),

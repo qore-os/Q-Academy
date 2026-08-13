@@ -41,9 +41,7 @@ export type LessonAvailabilityTransaction = Parameters<
 >[0];
 
 export type LessonAvailabilitySubscriptionStatus =
-  | "active"
-  | "cancelled"
-  | "fulfilled";
+  "active" | "cancelled" | "fulfilled";
 
 export function lessonAvailabilitySubscriptionStatus(
   subscription: Pick<
@@ -205,7 +203,10 @@ export async function subscribeToLessonAvailability(
     .from(lessonAvailabilitySubscriptions)
     .where(
       and(
-        eq(lessonAvailabilitySubscriptions.organizationId, input.organizationId),
+        eq(
+          lessonAvailabilitySubscriptions.organizationId,
+          input.organizationId,
+        ),
         eq(lessonAvailabilitySubscriptions.userId, input.userId),
         eq(lessonAvailabilitySubscriptions.courseId, input.courseId),
         eq(lessonAvailabilitySubscriptions.lessonId, input.lessonId),
@@ -258,7 +259,10 @@ export async function unsubscribeFromLessonAvailability(
     .set({ cancelledAt: now, updatedAt: now })
     .where(
       and(
-        eq(lessonAvailabilitySubscriptions.organizationId, input.organizationId),
+        eq(
+          lessonAvailabilitySubscriptions.organizationId,
+          input.organizationId,
+        ),
         eq(lessonAvailabilitySubscriptions.userId, input.userId),
         eq(lessonAvailabilitySubscriptions.courseId, input.courseId),
         eq(lessonAvailabilitySubscriptions.lessonId, input.lessonId),
@@ -286,10 +290,14 @@ export async function listLessonAvailabilitySubscriptions(input: {
     conditions.push(eq(lessonAvailabilitySubscriptions.userId, input.userId));
   }
   if (input.courseId) {
-    conditions.push(eq(lessonAvailabilitySubscriptions.courseId, input.courseId));
+    conditions.push(
+      eq(lessonAvailabilitySubscriptions.courseId, input.courseId),
+    );
   }
   if (input.lessonId) {
-    conditions.push(eq(lessonAvailabilitySubscriptions.lessonId, input.lessonId));
+    conditions.push(
+      eq(lessonAvailabilitySubscriptions.lessonId, input.lessonId),
+    );
   }
   if (input.status === "active") {
     conditions.push(isNull(lessonAvailabilitySubscriptions.cancelledAt));
@@ -330,12 +338,35 @@ function lessonAvailabilityCopy(
   input: { lessonTitle: string; courseTitle: string },
 ) {
   const copy = {
-    de: { title: "Neue Lektion verfuegbar", subject: `${input.lessonTitle} ist jetzt verfuegbar`, message: `Deine vorgemerkte Lektion im Kurs ${input.courseTitle} kann jetzt geoeffnet werden.` },
-    en: { title: "New lesson available", subject: `${input.lessonTitle} is now available`, message: `Your saved lesson in ${input.courseTitle} can now be opened.` },
-    it: { title: "Nuova lezione disponibile", subject: `${input.lessonTitle} è ora disponibile`, message: `La lezione salvata nel corso ${input.courseTitle} può ora essere aperta.` },
-    es: { title: "Nueva lección disponible", subject: `${input.lessonTitle} ya está disponible`, message: `Ya puedes abrir la lección guardada del curso ${input.courseTitle}.` },
-    fr: { title: "Nouvelle leçon disponible", subject: `${input.lessonTitle} est maintenant disponible`, message: `Votre leçon enregistrée dans le cours ${input.courseTitle} peut maintenant être ouverte.` },
-  } satisfies Record<AppLocale, { title: string; subject: string; message: string }>;
+    de: {
+      title: "Neue Lektion verfuegbar",
+      subject: `${input.lessonTitle} ist jetzt verfuegbar`,
+      message: `Deine vorgemerkte Lektion im Kurs ${input.courseTitle} kann jetzt geoeffnet werden.`,
+    },
+    en: {
+      title: "New lesson available",
+      subject: `${input.lessonTitle} is now available`,
+      message: `Your saved lesson in ${input.courseTitle} can now be opened.`,
+    },
+    it: {
+      title: "Nuova lezione disponibile",
+      subject: `${input.lessonTitle} è ora disponibile`,
+      message: `La lezione salvata nel corso ${input.courseTitle} può ora essere aperta.`,
+    },
+    es: {
+      title: "Nueva lección disponible",
+      subject: `${input.lessonTitle} ya está disponible`,
+      message: `Ya puedes abrir la lección guardada del curso ${input.courseTitle}.`,
+    },
+    fr: {
+      title: "Nouvelle leçon disponible",
+      subject: `${input.lessonTitle} est maintenant disponible`,
+      message: `Votre leçon enregistrée dans le cours ${input.courseTitle} peut maintenant être ouverte.`,
+    },
+  } satisfies Record<
+    AppLocale,
+    { title: string; subject: string; message: string }
+  >;
   return copy[locale];
 }
 
@@ -357,7 +388,10 @@ export async function fulfillLessonAvailabilitySubscriptions(
     .from(lessonAvailabilitySubscriptions)
     .where(
       and(
-        eq(lessonAvailabilitySubscriptions.organizationId, input.organizationId),
+        eq(
+          lessonAvailabilitySubscriptions.organizationId,
+          input.organizationId,
+        ),
         eq(lessonAvailabilitySubscriptions.courseId, input.courseId),
         isNull(lessonAvailabilitySubscriptions.cancelledAt),
         isNull(lessonAvailabilitySubscriptions.fulfilledAt),
@@ -372,15 +406,9 @@ export async function fulfillLessonAvailabilitySubscriptions(
     ...new Set([
       ...input.previousPublished.snapshot.modules.flatMap((learningModule) => [
         ...learningModule.lessons.map(({ id }) => id),
-        ...learningModule.sections.flatMap((section) =>
-          section.lessons.map(({ id }) => id),
-        ),
       ]),
       ...input.nextPublished.snapshot.modules.flatMap((learningModule) => [
         ...learningModule.lessons.map(({ id }) => id),
-        ...learningModule.sections.flatMap((section) =>
-          section.lessons.map(({ id }) => id),
-        ),
       ]),
     ]),
   ];
@@ -419,7 +447,10 @@ export async function fulfillLessonAvailabilitySubscriptions(
       ),
     lessonIds.length
       ? tx
-          .select({ userId: lessonProgress.userId, lessonId: lessonProgress.lessonId })
+          .select({
+            userId: lessonProgress.userId,
+            lessonId: lessonProgress.lessonId,
+          })
           .from(lessonProgress)
           .where(
             and(
@@ -576,7 +607,10 @@ export async function fulfillLessonAvailabilitySubscriptions(
       .where(
         and(
           eq(lessonAvailabilitySubscriptions.id, subscription.id),
-          eq(lessonAvailabilitySubscriptions.organizationId, input.organizationId),
+          eq(
+            lessonAvailabilitySubscriptions.organizationId,
+            input.organizationId,
+          ),
           isNull(lessonAvailabilitySubscriptions.cancelledAt),
           isNull(lessonAvailabilitySubscriptions.fulfilledAt),
         ),

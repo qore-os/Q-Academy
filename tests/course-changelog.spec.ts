@@ -69,21 +69,12 @@ test("course changelog reviews safe diffs and resets after republishing", async 
         organization_id, course_id, module_id, sort_order
       ) values (${admin.organization_id}, ${courseId}, ${moduleId}, 0)
     `;
-    const [section] = await client<Array<{ id: string }>>`
-      insert into module_sections (
-        organization_id, module_id, title, description, sort_order
-      ) values (
-        ${admin.organization_id}, ${moduleId}, 'Start',
-        'Einstieg in den Kurs.', 0
-      )
-      returning id
-    `;
     const [lesson] = await client<Array<{ id: string }>>`
       insert into lessons (
-        organization_id, module_id, section_id, title, slug, summary,
+        organization_id, module_id, title, slug, summary,
         type, duration_minutes, sort_order
       ) values (
-        ${admin.organization_id}, ${moduleId}, ${section.id},
+        ${admin.organization_id}, ${moduleId},
         'Sicherer Einstieg', ${`sicherer-einstieg-${suffix}`},
         'Erste Zusammenfassung.', 'quiz', 12, 0
       )

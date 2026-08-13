@@ -37,7 +37,7 @@ function state(warnings: string[] = ["tenant_dependency_removed"]) {
       {
         courseId: request.sourceCourseIds[0]!,
         versionId: "77777777-7777-4777-8777-777777777777",
-        snapshot: { schemaVersion: 5, tenantDependency: true },
+        snapshot: { schemaVersion: 6, tenantDependency: true },
       },
     ],
     mediaAssets: [],

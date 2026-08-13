@@ -55,7 +55,6 @@ import {
   lessons,
   memberDataProfiles,
   memberBundles,
-  moduleSections,
   modules,
   memberWelcomeSettings,
   notifications,
@@ -246,22 +245,6 @@ async function createPublishedSeedVersion(course: typeof courses.$inferSelect) {
       );
     }
   }
-  const sectionRows = moduleIds.length
-    ? await db
-        .select()
-        .from(moduleSections)
-        .where(
-          and(
-            eq(moduleSections.organizationId, course.organizationId),
-            inArray(moduleSections.moduleId, moduleIds),
-          ),
-        )
-        .orderBy(
-          asc(moduleSections.moduleId),
-          asc(moduleSections.sortOrder),
-          asc(moduleSections.id),
-        )
-    : [];
   const lessonRows = moduleIds.length
     ? await db
         .select()
@@ -337,26 +320,10 @@ async function createPublishedSeedVersion(course: typeof courses.$inferSelect) {
     });
     lessonsByModule.set(lesson.moduleId, moduleLessonRows);
   }
-  const sectionsByModule = new Map<
-    string,
-    CourseVersionSnapshot["modules"][number]["sections"]
-  >();
-  for (const section of sectionRows) {
-    const sections = sectionsByModule.get(section.moduleId) ?? [];
-    sections.push({
-      ...section,
-      createdAt: section.createdAt.toISOString(),
-      updatedAt: section.updatedAt.toISOString(),
-      lessons: (lessonsByModule.get(section.moduleId) ?? []).filter(
-        (lesson) => lesson.sectionId === section.id,
-      ),
-    });
-    sectionsByModule.set(section.moduleId, sections);
-  }
   const publishedAt = new Date();
   const snapshot: CourseVersionSnapshot = {
-    schemaVersion: 4,
-    accessPolicyVersion: 1,
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
     moduleKindVersion: 1,
     courseOutlineVersion: 1,
     capturedAt: publishedAt.toISOString(),
@@ -394,10 +361,7 @@ async function createPublishedSeedVersion(course: typeof courses.$inferSelect) {
       availableUntil: learningModule.availableUntil?.toISOString() ?? null,
       createdAt: learningModule.createdAt.toISOString(),
       updatedAt: learningModule.updatedAt.toISOString(),
-      lessons: (lessonsByModule.get(learningModule.id) ?? []).filter(
-        (lesson) => !lesson.sectionId,
-      ),
-      sections: sectionsByModule.get(learningModule.id) ?? [],
+      lessons: lessonsByModule.get(learningModule.id) ?? [],
     })),
   };
   const [version] = await db
@@ -1463,27 +1427,6 @@ for (const [moduleTitle, templates] of Object.entries(lessonTemplates)) {
   insertedLessons.push(...rows);
 }
 
-for (const learningModule of insertedModules) {
-  const [section] = await db
-    .insert(moduleSections)
-    .values({
-      organizationId: organization.id,
-      moduleId: learningModule.id,
-      title: "Lernpfad",
-      description: "Die Inhalte dieses Moduls in empfohlener Reihenfolge.",
-      sortOrder: 1,
-      unlockAfterPrevious: learningModule.title === "Prompting Basics",
-    })
-    .returning();
-  await db
-    .update(lessons)
-    .set({ sectionId: section.id })
-    .where(eq(lessons.moduleId, learningModule.id));
-  for (const lesson of insertedLessons) {
-    if (lesson.moduleId === learningModule.id) lesson.sectionId = section.id;
-  }
-}
-
 for (const lesson of insertedLessons) {
   const isQuiz = lesson.type === "quiz" || lesson.type === "exam";
   const isAssignment = lesson.type === "assignment";
@@ -1596,7 +1539,6 @@ const responsibleExamFixture = await db.transaction(async (tx) => {
     .values({
       organizationId: organization.id,
       moduleId: examModule.id,
-      sectionId: null,
       title: examModule.title,
       slug: "abschlusspruefung-responsible-ai",
       summary:

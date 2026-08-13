@@ -21,7 +21,7 @@ test("fallback course drafts localize all generated learner structures", () => {
 
   for (const locale of SUPPORTED_LOCALES) {
     const draft = fallbackCourseDraft(brief, locale);
-    const finalLesson = draft.modules.at(-1)?.sections[0]?.lessons.at(-1);
+    const finalLesson = draft.modules.at(-1)?.lessons.at(-1);
     const assessmentPage = finalLesson?.pages.at(-1);
 
     assert.equal(draft.modules.length, 2);

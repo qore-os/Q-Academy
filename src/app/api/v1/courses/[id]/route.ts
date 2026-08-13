@@ -1,6 +1,14 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "@/db";
-import { activityEvents, contentBlocks, courseModules, courses, lessonPages, lessons, moduleSections, modules } from "@/db/schema";
+import {
+  activityEvents,
+  contentBlocks,
+  courseModules,
+  courses,
+  lessonPages,
+  lessons,
+  modules,
+} from "@/db/schema";
 import { ApiError } from "@/lib/api/errors";
 import { requireActiveApiKeyCreator } from "@/lib/api/api-key-actor";
 import {
@@ -37,64 +45,110 @@ async function courseForOrganization(id: string, organizationId: string) {
   return course;
 }
 
-export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { id } = await params;
-  return handleApi(request, { scopes: ["courses:read"], action: "course.read", resourceType: "course" }, async (context) => {
-    const course = await courseForOrganization(id, context.organizationId);
-    const moduleRows = await db
-      .select({
-        id: modules.id,
-        title: modules.title,
-        kind: modules.kind,
-        description: modules.description,
-        folder: modules.folder,
-        isReusable: modules.isReusable,
-        estimatedMinutes: modules.estimatedMinutes,
-        sortOrder: courseModules.sortOrder,
-        dripDays: courseModules.dripDays,
-        isRequired: courseModules.isRequired,
-      })
-      .from(courseModules)
-      .innerJoin(modules, eq(modules.id, courseModules.moduleId))
-      .where(eq(courseModules.courseId, id))
-      .orderBy(asc(courseModules.sortOrder));
-    const structure = await Promise.all(
-      moduleRows.map(async (learningModule) => {
-        const sectionRows = await db.select().from(moduleSections).where(eq(moduleSections.moduleId, learningModule.id)).orderBy(asc(moduleSections.sortOrder));
-        const lessonRows = await db.select().from(lessons).where(eq(lessons.moduleId, learningModule.id)).orderBy(asc(lessons.sortOrder));
-        const lessonStructure = await Promise.all(lessonRows.map(async (lesson) => {
-          const pages = await db.select().from(lessonPages).where(eq(lessonPages.lessonId, lesson.id)).orderBy(asc(lessonPages.sortOrder), asc(lessonPages.id));
-          return {
-            ...lesson,
-            blocks: (await db.select().from(contentBlocks).where(and(eq(contentBlocks.lessonId, lesson.id), isNull(contentBlocks.pageId))).orderBy(asc(contentBlocks.sortOrder))).map(publicApiContentBlock),
-            pages: await Promise.all(pages.map(async (page) => ({ ...page, blocks: (await db.select().from(contentBlocks).where(eq(contentBlocks.pageId, page.id)).orderBy(asc(contentBlocks.sortOrder))).map(publicApiContentBlock) }))),
-          };
-        }));
-        return { ...learningModule, lessons: lessonStructure, sections: sectionRows.map((section) => ({ ...section, lessons: lessonStructure.filter((lesson) => lesson.sectionId === section.id) })) };
-      }),
-    );
-    const [learningGoals, authors] = await Promise.all([
-      getCourseLearningGoals(id, context.organizationId),
-      getCourseAuthors(id, context.organizationId),
-    ]);
-    return {
-      data: {
-        ...course,
-        coverImage: safeCourseCoverSource(course.coverImage),
-        learningGoals,
-        authors,
-        modules: structure,
-      },
-      resourceId: course.id,
-    };
-  });
-}
-
-export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const { id } = await params;
   return handleApi(
     request,
-    { scopes: ["courses:write"], action: "course.update", resourceType: "course", idempotent: true },
+    { scopes: ["courses:read"], action: "course.read", resourceType: "course" },
+    async (context) => {
+      const course = await courseForOrganization(id, context.organizationId);
+      const moduleRows = await db
+        .select({
+          id: modules.id,
+          title: modules.title,
+          kind: modules.kind,
+          description: modules.description,
+          folder: modules.folder,
+          isReusable: modules.isReusable,
+          estimatedMinutes: modules.estimatedMinutes,
+          sortOrder: courseModules.sortOrder,
+          dripDays: courseModules.dripDays,
+          isRequired: courseModules.isRequired,
+        })
+        .from(courseModules)
+        .innerJoin(modules, eq(modules.id, courseModules.moduleId))
+        .where(eq(courseModules.courseId, id))
+        .orderBy(asc(courseModules.sortOrder));
+      const structure = await Promise.all(
+        moduleRows.map(async (learningModule) => {
+          const lessonRows = await db
+            .select()
+            .from(lessons)
+            .where(eq(lessons.moduleId, learningModule.id))
+            .orderBy(asc(lessons.sortOrder));
+          const lessonStructure = await Promise.all(
+            lessonRows.map(async (lesson) => {
+              const pages = await db
+                .select()
+                .from(lessonPages)
+                .where(eq(lessonPages.lessonId, lesson.id))
+                .orderBy(asc(lessonPages.sortOrder), asc(lessonPages.id));
+              return {
+                ...lesson,
+                blocks: (
+                  await db
+                    .select()
+                    .from(contentBlocks)
+                    .where(
+                      and(
+                        eq(contentBlocks.lessonId, lesson.id),
+                        isNull(contentBlocks.pageId),
+                      ),
+                    )
+                    .orderBy(asc(contentBlocks.sortOrder))
+                ).map(publicApiContentBlock),
+                pages: await Promise.all(
+                  pages.map(async (page) => ({
+                    ...page,
+                    blocks: (
+                      await db
+                        .select()
+                        .from(contentBlocks)
+                        .where(eq(contentBlocks.pageId, page.id))
+                        .orderBy(asc(contentBlocks.sortOrder))
+                    ).map(publicApiContentBlock),
+                  })),
+                ),
+              };
+            }),
+          );
+          return { ...learningModule, lessons: lessonStructure };
+        }),
+      );
+      const [learningGoals, authors] = await Promise.all([
+        getCourseLearningGoals(id, context.organizationId),
+        getCourseAuthors(id, context.organizationId),
+      ]);
+      return {
+        data: {
+          ...course,
+          coverImage: safeCourseCoverSource(course.coverImage),
+          learningGoals,
+          authors,
+          modules: structure,
+        },
+        resourceId: course.id,
+      };
+    },
+  );
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+  return handleApi(
+    request,
+    {
+      scopes: ["courses:write"],
+      action: "course.update",
+      resourceType: "course",
+      idempotent: true,
+    },
     async (context) => {
       const current = await courseForOrganization(id, context.organizationId);
       const input = await parseJson(request, courseUpdateSchema);
@@ -102,9 +156,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         const [duplicate] = await db
           .select({ id: courses.id })
           .from(courses)
-          .where(and(eq(courses.organizationId, context.organizationId), eq(courses.slug, input.slug)))
+          .where(
+            and(
+              eq(courses.organizationId, context.organizationId),
+              eq(courses.slug, input.slug),
+            ),
+          )
           .limit(1);
-        if (duplicate) throw new ApiError(409, "conflict", "Ein Kurs mit diesem Slug existiert bereits.");
+        if (duplicate)
+          throw new ApiError(
+            409,
+            "conflict",
+            "Ein Kurs mit diesem Slug existiert bereits.",
+          );
       }
       const result = await db.transaction(async (transaction) => {
         const actor =
@@ -121,11 +185,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         );
         const updatedAt = new Date();
         const { status, learningGoals, authorIds, ...changes } = input;
-        if (
-          locked.status === "published" &&
-          status &&
-          status !== "published"
-        ) {
+        if (locked.status === "published" && status && status !== "published") {
           await assertCourseCanBecomeUnavailable(transaction, {
             organizationId: context.organizationId,
             courseId: id,
@@ -149,7 +209,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
             ),
           )
           .returning();
-        if (!draft) throw new ApiError(404, "not_found", "Kurs nicht gefunden.");
+        if (!draft)
+          throw new ApiError(404, "not_found", "Kurs nicht gefunden.");
         await replaceCourseInformationCollections(transaction, {
           organizationId: context.organizationId,
           courseId: id,
@@ -181,8 +242,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           await transaction.insert(activityEvents).values({
             organizationId: context.organizationId,
             userId: null,
-            type:
-              status === "archived" ? "course.archived" : "course.restored",
+            type: status === "archived" ? "course.archived" : "course.restored",
             entityType: "course",
             entityId: id,
             metadata: {
@@ -215,9 +275,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
             "course.published",
             {
               ...publication.course,
-              coverImage: safeCourseCoverSource(
-                publication.course.coverImage,
-              ),
+              coverImage: safeCourseCoverSource(publication.course.coverImage),
               versionId: publication.version.id,
               version: publication.version.version,
             },
@@ -225,9 +283,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
           );
           return {
             ...publication.course,
-            coverImage: safeCourseCoverSource(
-              publication.course.coverImage,
-            ),
+            coverImage: safeCourseCoverSource(publication.course.coverImage),
           };
         }
 
@@ -250,11 +306,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   );
 }
 
-export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
   const { id } = await params;
   return handleApi(
     request,
-    { scopes: ["courses:write"], action: "course.archive", resourceType: "course", idempotent: true },
+    {
+      scopes: ["courses:write"],
+      action: "course.archive",
+      resourceType: "course",
+      idempotent: true,
+    },
     async (context) => {
       const course = await db.transaction(async (tx) => {
         await lockCourseLinkGraph(tx, context.organizationId);

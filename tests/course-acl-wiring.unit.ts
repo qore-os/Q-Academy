@@ -29,7 +29,6 @@ test("every course builder mutation requires edit", () => {
     "updateCourseModuleOutlineAction",
     "updateCourseLinkModuleAction",
     "detachCourseModuleAction",
-    "createModuleSectionAction",
     "createModuleLessonAction",
     "createLessonPageAction",
     "updateCourseLessonTitleAction",
@@ -40,7 +39,6 @@ test("every course builder mutation requires edit", () => {
     "duplicateCourseContentBlockAction",
     "reorderCourseContentBlocksAction",
     "updateCourseModuleAccessAction",
-    "updateModuleSectionAccessAction",
     "updateCourseLessonAccessAction",
     "updateCourseLessonAssessmentAction",
   ]) {
@@ -59,11 +57,6 @@ test("adjacent course content actions require edit", () => {
   ]) {
     assertActionPermission(widgetActions, actionName, "edit");
   }
-  assertActionPermission(
-    source("src/lib/section-lesson-visibility-actions.ts"),
-    "setSectionLessonsVisibilityAction",
-    "edit",
-  );
   assertActionPermission(
     source("src/lib/admin/transcript-wizard-actions.ts"),
     "createBlocksFromTranscriptAction",

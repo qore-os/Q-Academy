@@ -152,36 +152,23 @@ async function createGroundingFixture(
       ${tenant.organization_id}, ${course.id}, ${learningModule.id}, 0, 0, true
     )
   `;
-  const sections = await sql<Array<{ id: string; title: string }>>`
-    insert into module_sections (
-      organization_id, module_id, title, sort_order, status,
-      unlock_after_previous, drip_days
-    ) values
-      (${tenant.organization_id}, ${learningModule.id}, 'Start', 0, 'published', false, 0),
-      (${tenant.organization_id}, ${learningModule.id}, 'Sequenz', 1, 'published', true, 0)
-    returning id, title
-  `;
-  const startSection = sections.find((section) => section.title === "Start")!;
-  const sequenceSection = sections.find(
-    (section) => section.title === "Sequenz",
-  )!;
   const lessonRows = await sql<Array<{ id: string; title: string }>>`
     insert into lessons (
-      organization_id, module_id, section_id, title, slug, type, duration_minutes,
-      sort_order, status, available_at
+      organization_id, module_id, title, slug, type, duration_minutes,
+      sort_order, status, available_at, drip_days, unlock_after_previous
     ) values
-      (${tenant.organization_id}, ${learningModule.id}, ${startSection.id}, ${openLessonTitle},
-        ${`open-${suffix}`}, 'lesson', 10, 0, 'published', null),
-      (${tenant.organization_id}, ${learningModule.id}, ${sequenceSection.id}, ${`Voraussetzung ${suffix}`},
-        ${`sequence-prerequisite-${suffix}`}, 'lesson', 10, 1, 'published', null),
-      (${tenant.organization_id}, ${learningModule.id}, ${sequenceSection.id}, ${`Sequenz ${suffix}`},
-        ${`sequence-${suffix}`}, 'lesson', 10, 2, 'published', null),
-      (${tenant.organization_id}, ${learningModule.id}, null, ${`Termin ${suffix}`},
-        ${`schedule-${suffix}`}, 'lesson', 10, 3, 'published', now() + interval '5 days'),
-      (${tenant.organization_id}, ${learningModule.id}, ${startSection.id}, ${`Entwurf ${suffix}`},
-        ${`draft-${suffix}`}, 'lesson', 10, 4, 'draft', null),
-      (${tenant.organization_id}, ${learningModule.id}, ${startSection.id}, ${`Archiv ${suffix}`},
-        ${`archive-${suffix}`}, 'lesson', 10, 5, 'archived', null)
+      (${tenant.organization_id}, ${learningModule.id}, ${openLessonTitle},
+        ${`open-${suffix}`}, 'lesson', 10, 0, 'published', null, 0, false),
+      (${tenant.organization_id}, ${learningModule.id}, ${`Voraussetzung ${suffix}`},
+        ${`sequence-prerequisite-${suffix}`}, 'lesson', 10, 1, 'published', null, 0, false),
+      (${tenant.organization_id}, ${learningModule.id}, ${`Sequenz ${suffix}`},
+        ${`sequence-${suffix}`}, 'lesson', 10, 2, 'published', null, 0, true),
+      (${tenant.organization_id}, ${learningModule.id}, ${`Termin ${suffix}`},
+        ${`schedule-${suffix}`}, 'lesson', 10, 3, 'published', now() + interval '5 days', 0, false),
+      (${tenant.organization_id}, ${learningModule.id}, ${`Entwurf ${suffix}`},
+        ${`draft-${suffix}`}, 'lesson', 10, 4, 'draft', null, 0, false),
+      (${tenant.organization_id}, ${learningModule.id}, ${`Archiv ${suffix}`},
+        ${`archive-${suffix}`}, 'lesson', 10, 5, 'archived', null, 0, false)
     returning id, title
   `;
   const lessonId = (prefix: string) =>

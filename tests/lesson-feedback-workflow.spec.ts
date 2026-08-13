@@ -62,9 +62,6 @@ test("lesson feedback is private, searchable, actionable, and responsive", async
           modules: Array<{
             id: string;
             lessons: Array<{ id: string; title: string }>;
-            sections: Array<{
-              lessons: Array<{ id: string; title: string }>;
-            }>;
           }>;
         };
       }>
@@ -88,12 +85,7 @@ test("lesson feedback is private, searchable, actionable, and responsive", async
     `;
     expect(fixture).toBeTruthy();
     const learningModule = fixture.snapshot.modules[0]!;
-    const lesson = [
-      ...(learningModule.lessons ?? []),
-      ...(learningModule.sections ?? []).flatMap(
-        (section) => section.lessons ?? [],
-      ),
-    ][0]!;
+    const lesson = learningModule.lessons[0]!;
     expect(lesson).toBeTruthy();
 
     const [member] = await sql<Array<{ id: string }>>`

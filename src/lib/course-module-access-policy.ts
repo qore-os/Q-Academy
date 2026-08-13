@@ -22,12 +22,7 @@ export type CourseModuleOverrideState =
   (typeof COURSE_MODULE_OVERRIDE_STATES)[number];
 
 export type LearningAccessState =
-  | "available"
-  | "read_only"
-  | "upcoming"
-  | "coming_soon"
-  | "locked"
-  | "hidden";
+  "available" | "read_only" | "upcoming" | "coming_soon" | "locked" | "hidden";
 
 export type LearningAccessReason =
   | "module_delay"
@@ -43,8 +38,7 @@ export type LearningAccessReason =
   | "override_hidden"
   | "invalid_configuration"
   | "window_policy"
-  | "section_drip"
-  | "previous_section"
+  | "lesson_drip"
   | "previous_lesson"
   | "lesson_schedule"
   | "active_exam";
@@ -76,6 +70,13 @@ export type CourseModuleAccessConfiguration = {
   windowDefaultState?: CourseModuleOverrideState | null;
   windowState?: CourseModuleOverrideState | null;
   requestAccessEnabled?: boolean | null;
+};
+
+export type CourseLessonAccessConfiguration = {
+  visibility?: "visible" | "draft" | "coming_soon" | null;
+  availableAt?: string | Date | null;
+  dripDays?: number | null;
+  unlockAfterPrevious?: boolean | null;
 };
 
 export type CourseModuleAccessOverride = {
@@ -314,16 +315,102 @@ export function resolveCourseModuleAccess(input: {
   });
 }
 
+export function resolveCourseLessonAccess(input: {
+  configuration: CourseLessonAccessConfiguration;
+  accessAnchor: Date;
+  previousLessonCompleted: boolean;
+  now?: Date;
+}): LearningItemAccess {
+  const now = input.now ?? new Date();
+  const visibility = input.configuration.visibility ?? "visible";
+  if (visibility === "draft") {
+    return result("hidden", { reasons: ["invalid_configuration"] });
+  }
+
+  let access =
+    visibility === "coming_soon"
+      ? result("coming_soon", { reasons: ["coming_soon"] })
+      : result("available");
+  const dripDays = input.configuration.dripDays ?? 0;
+  if (!Number.isInteger(dripDays) || dripDays < 0 || dripDays > 36_500) {
+    return result("hidden", { reasons: ["invalid_configuration"] });
+  }
+  if (dripDays > 0) {
+    const availableAt = addDays(input.accessAnchor, dripDays);
+    if (availableAt.getTime() > now.getTime()) {
+      access = combineLearningAccess(
+        access,
+        result("locked", { reasons: ["lesson_drip"], availableAt }),
+      );
+    }
+  }
+
+  if (input.configuration.availableAt) {
+    const availableAt = validDate(input.configuration.availableAt);
+    if (!availableAt) {
+      return result("hidden", { reasons: ["invalid_configuration"] });
+    }
+    if (availableAt.getTime() > now.getTime()) {
+      access = combineLearningAccess(
+        access,
+        result("locked", { reasons: ["lesson_schedule"], availableAt }),
+      );
+    }
+  }
+
+  if (
+    input.configuration.unlockAfterPrevious &&
+    !input.previousLessonCompleted
+  ) {
+    access = combineLearningAccess(
+      access,
+      result("locked", { reasons: ["previous_lesson"] }),
+    );
+  }
+  return access;
+}
+
+export function resolveCourseLessonAccessSequence<
+  T extends CourseLessonAccessConfiguration & { id: string },
+>(input: {
+  lessonGroups: readonly {
+    lessons: readonly T[];
+    participates: boolean;
+  }[];
+  accessAnchor: Date;
+  completedLessonIds: ReadonlySet<string>;
+  now?: Date;
+}) {
+  let previousLessonCompleted = true;
+  return input.lessonGroups.map((group) =>
+    group.lessons.map((lesson) => {
+      const access = resolveCourseLessonAccess({
+        configuration: lesson,
+        accessAnchor: input.accessAnchor,
+        previousLessonCompleted: group.participates
+          ? previousLessonCompleted
+          : true,
+        now: input.now,
+      });
+      if (group.participates) {
+        previousLessonCompleted = input.completedLessonIds.has(lesson.id);
+      }
+      return { lesson, access };
+    }),
+  );
+}
+
 export function combineLearningAccess(
   own: LearningItemAccess,
   parent: LearningItemAccess,
 ): LearningItemAccess {
   const reasons = [...new Set([...parent.reasons, ...own.reasons])];
-  const availableDates = [parent.availableAt, own.availableAt]
-    .flatMap((value) => {
+  const availableDates = [parent.availableAt, own.availableAt].flatMap(
+    (value) => {
       const date = validDate(value);
       return date ? [date] : [];
-    });
+    },
+  );
   const availableAt = availableDates.length
     ? new Date(Math.max(...availableDates.map((date) => date.getTime())))
     : null;

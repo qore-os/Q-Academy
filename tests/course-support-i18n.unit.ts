@@ -4,6 +4,7 @@ import test from "node:test";
 
 import ts from "typescript";
 
+import type { CourseVersionSnapshot } from "../src/db/schema";
 import {
   getCourseCategoryActionCopy,
   getCourseCategoryColorCopy,
@@ -175,10 +176,13 @@ test("course support mutations do not expose raw server error messages", () => {
 
 test("course snapshot diffs localize system copy without changing authored content", async () => {
   const { diffCourseSnapshots } = await import("../src/lib/course-change-log");
-  const snapshot = {
-    schemaVersion: 3,
-    accessPolicyVersion: 1,
-    capturedAt: new Date(0).toISOString(),
+  const capturedAt = new Date(0).toISOString();
+  const snapshot: CourseVersionSnapshot = {
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
+    moduleKindVersion: 1,
+    courseOutlineVersion: 1,
+    capturedAt,
     course: {
       id: "00000000-0000-4000-8000-000000000001",
       organizationId: "00000000-0000-4000-8000-000000000002",
@@ -196,12 +200,17 @@ test("course snapshot diffs localize system copy without changing authored conte
       visibleInCatalog: true,
       showProgressPercentage: true,
       notifyMembersOnModuleRelease: false,
+      publishedVersionId: null,
+      firstPublishedAt: null,
+      createdById: null,
+      createdAt: capturedAt,
+      updatedAt: capturedAt,
     },
     learningGoals: [],
     authors: [],
     widgets: [],
     modules: [],
-  } as unknown as Parameters<typeof diffCourseSnapshots>[1];
+  };
 
   const english = diffCourseSnapshots(null, snapshot, "en");
   const italian = diffCourseSnapshots(null, snapshot, "it");

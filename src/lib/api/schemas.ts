@@ -75,7 +75,6 @@ export {
   courseWidgetUpdateSchema,
 } from "@/lib/course-widgets";
 export { courseCategoryReorderSchema } from "@/lib/course-category-model";
-export { sectionLessonVisibilityUpdateSchema } from "@/lib/section-lesson-visibility";
 export { memberWelcomeSettingsUpdateSchema } from "@/lib/member-welcome-model";
 export { transcriptSearchSettingsInputSchema } from "@/lib/transcript-search-settings-model";
 export {
@@ -337,20 +336,6 @@ export const moduleUpdateSchema = strictPartialWithoutDefaults(
     })
     .strict(),
 );
-
-export const sectionCreateSchema = z
-  .object({
-    title: z.string().trim().min(2).max(220),
-    description: optionalNullableString,
-    sortOrder: z.number().int().min(0).max(100_000).default(0),
-    status: z.enum(["draft", "published", "archived"]).default("published"),
-    visibility: z.enum(["visible", "draft", "coming_soon"]).default("visible"),
-    unlockAfterPrevious: z.boolean().default(false),
-    dripDays: z.number().int().min(0).max(10_000).default(0),
-  })
-  .strict();
-export const sectionUpdateSchema =
-  strictPartialWithoutDefaults(sectionCreateSchema);
 
 const courseModuleAccessModeSchema = z.enum([
   "visible",
@@ -684,6 +669,8 @@ export const lessonCreateSchema = z
     status: z.enum(["draft", "published", "archived"]).default("published"),
     visibility: z.enum(["visible", "draft", "coming_soon"]).default("visible"),
     availableAt: z.coerce.date().nullable().optional(),
+    dripDays: z.number().int().min(0).max(36_500).default(0),
+    unlockAfterPrevious: z.boolean().default(false),
   })
   .strict();
 

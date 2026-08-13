@@ -110,10 +110,7 @@ export type PublishedSnapshotLesson =
   PublishedSnapshotModule["lessons"][number];
 
 export function moduleLessons(learningModule: PublishedSnapshotModule) {
-  return [
-    ...learningModule.lessons,
-    ...learningModule.sections.flatMap((section) => section.lessons),
-  ].sort(
+  return [...learningModule.lessons].sort(
     (left, right) =>
       left.sortOrder - right.sortOrder || left.id.localeCompare(right.id),
   );

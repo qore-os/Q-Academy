@@ -116,13 +116,6 @@ test("multimedia submission and review controls remain usable responsively", asy
               blocks: Array<{ type: string }>;
               pages: Array<{ blocks: Array<{ type: string }> }>;
             }>;
-            sections: Array<{
-              lessons: Array<{
-                id: string;
-                blocks: Array<{ type: string }>;
-                pages: Array<{ blocks: Array<{ type: string }> }>;
-              }>;
-            }>;
           }>;
         };
       }>
@@ -149,7 +142,7 @@ test("multimedia submission and review controls remain usable responsively", asy
     const fixture = fixtures[0]!;
     const lessonTargets = fixtures.flatMap((course) =>
       course.snapshot.modules.flatMap((module) =>
-        [...module.lessons, ...module.sections.flatMap((section) => section.lessons)]
+        module.lessons
           .filter((lesson) =>
             [
               ...lesson.blocks,

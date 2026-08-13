@@ -58,12 +58,9 @@ function chunks<T>(values: readonly T[], size = DELIVERY_BATCH_SIZE) {
 
 function snapshotLessonIds(published: PublishedCourseContent | null) {
   return (
-    published?.snapshot.modules.flatMap((module) => [
-      ...module.lessons.map((lesson) => lesson.id),
-      ...module.sections.flatMap((section) =>
-        section.lessons.map((lesson) => lesson.id),
-      ),
-    ]) ?? []
+    published?.snapshot.modules.flatMap((module) =>
+      module.lessons.map((lesson) => lesson.id),
+    ) ?? []
   );
 }
 
@@ -342,7 +339,8 @@ export async function queueCourseModuleReleaseEmails(
       userId: recipient.id,
     });
     const rendered = renderedByUser.get(recipient.id);
-    if (!rendered) throw new Error("Release-E-Mail konnte nicht gerendert werden.");
+    if (!rendered)
+      throw new Error("Release-E-Mail konnte nicht gerendert werden.");
     return {
       id,
       organizationId: input.organizationId,

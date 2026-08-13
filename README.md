@@ -10,7 +10,7 @@ Q-Academy ist eine eigenstaendige, mandantenfaehige Lernplattform nach dem Produ
 - Geordnete Autor-, Info- und verlinkte Bildkarten in der Kursuebersicht mit
   sicheren oeffentlichen Quellen oder tenantgebundenen, gescannten privaten
   Bild-Assets aus dem Kursmedien-Picker
-- Kurseditor mit Sektionen, Lektionen, Seiten, strukturiertem Rich Text,
+- Kurseditor mit Lektionen, Seiten, strukturiertem Rich Text,
   Button-/Link-, Galerie-, Callout-, Zitat-, Trenner-, Accordion-, Tabs-,
   Spalten-, Code-, Tabellen-, sicherem Download-, kontrolliertem HTTPS-Embed-
   und eingebetteten Datenformular-Bloecken; der Integrationskatalog bindet
@@ -20,7 +20,7 @@ Q-Academy ist eine eigenstaendige, mandantenfaehige Lernplattform nach dem Produ
   Freigabe aufgebaut. Optimistische Revisionskontrolle verhindert
   ueberschriebene Parallelaenderungen;
   Seiten und Bloecke koennen verschoben, dupliziert und ausgeblendet werden;
-  ganze Sektionen und einzelne Lektionen lassen sich samt Seiten, Bloecken und
+  einzelne Lektionen lassen sich samt Seiten, Bloecken und
   sicher neu zugeordneten Medien-/Formular-/Agent-/Pruefungsreferenzen in ein
   berechtigtes Zielmodul kopieren,
   Page-CAS, sichtbare Bearbeiterpraesenz, Seiten-/Blockstyles und eine

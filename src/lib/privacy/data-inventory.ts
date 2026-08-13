@@ -2325,18 +2325,6 @@ export const PRIVACY_DATA_INVENTORY = {
       "Short-lived challenge credentials are excluded from holds and are purged after the documented operational window.",
     ),
   ),
-  module_sections: table(
-    "module_sections",
-    relation(
-      "none",
-      [],
-      ["modules"],
-      "Module sections are shared instructional structure.",
-    ),
-    exportPolicy("context_only", "Use section labels and unlock rules to explain subject progress."),
-    erasurePolicy("not_applicable", [], "Do not alter shared sections for a subject request."),
-    legalHold(["learning"], "Section context may accompany held learning records."),
-  ),
   modules: table(
     "modules",
     relation(

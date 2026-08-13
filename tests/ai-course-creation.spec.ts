@@ -184,14 +184,7 @@ test("generated draft schema rejects unscored quiz lessons", async ({}, testInfo
           title: "Orientierung und Anwendung",
           description:
             "Das Modul verbindet die wichtigsten Grundlagen mit einer konkreten Anwendung.",
-          sections: [
-            {
-              title: "Gefuehrter Lernpfad",
-              description:
-                "Die Sektion fuehrt schrittweise von der Einordnung zur sicheren Umsetzung.",
-              lessons: [validQuiz],
-            },
-          ],
+          lessons: [validQuiz],
         },
       ],
     }).success,
@@ -209,14 +202,7 @@ test("generated draft schema rejects unscored quiz lessons", async ({}, testInfo
           title: "Orientierung und Anwendung",
           description:
             "Das Modul verbindet die wichtigsten Grundlagen mit einer konkreten Anwendung.",
-          sections: [
-            {
-              title: "Gefuehrter Lernpfad",
-              description:
-                "Die Sektion fuehrt schrittweise von der Einordnung zur sicheren Umsetzung.",
-              lessons: [unscoredQuiz],
-            },
-          ],
+          lessons: [unscoredQuiz],
         },
       ],
     }).success,
@@ -408,7 +394,6 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
         module_id: string;
         reusable: boolean;
         module_organization_id: string;
-        section_status: string;
         lesson_status: string;
         lesson_type: string;
         page_status: string;
@@ -424,7 +409,6 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
         m.id as module_id,
         m.is_reusable as reusable,
         m.organization_id as module_organization_id,
-        ms.status as section_status,
         l.status as lesson_status,
         l.type as lesson_type,
         lp.status as page_status,
@@ -436,8 +420,7 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
         cb.data
       from course_modules cm
       join modules m on m.id = cm.module_id
-      join module_sections ms on ms.module_id = m.id
-      join lessons l on l.section_id = ms.id
+      join lessons l on l.module_id = m.id
       join lesson_pages lp on lp.lesson_id = l.id
       join content_blocks cb on cb.page_id = lp.id
       where cm.course_id = ${courseId}
@@ -457,9 +440,7 @@ test("KI assistant creates a complete tenant-bound fallback draft", async ({
     expect(
       structure.every(
         (row) =>
-          row.section_status === "published" &&
-          row.lesson_status === "published" &&
-          row.page_status === "published",
+          row.lesson_status === "published" && row.page_status === "published",
       ),
     ).toBe(true);
     expect(new Set(structure.map((row) => row.block_type))).toEqual(

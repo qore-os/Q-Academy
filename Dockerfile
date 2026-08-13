@@ -33,7 +33,8 @@ RUN groupadd --system --gid 1001 nodejs \
 
 FROM base AS runtime-base
 LABEL com.q-academy.ai-text-contract="gpt-5.6-terra-chat-completions-v1" \
-      com.q-academy.transcription-contract="openai-diarized-transcription-v1"
+      com.q-academy.transcription-contract="openai-diarized-transcription-v1" \
+      com.q-academy.database-schema-contract="flat-course-lessons-v1"
 RUN rm -rf -- \
       /usr/local/lib/node_modules/npm \
       /usr/local/lib/node_modules/corepack \

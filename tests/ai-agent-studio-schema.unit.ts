@@ -202,10 +202,11 @@ test("Agent Studio migrations remain unique in the current history", () => {
     { idx: 79, tag: "0079_mushy_greymalkin" },
     { idx: 80, tag: "0080_closed_catseye" },
     { idx: 81, tag: "0081_great_lila_cheney" },
+    { idx: 82, tag: "0082_flatten_course_sections" },
   ]);
   assert.equal(
     journal.entries.at(-1)?.tag,
-    "0081_great_lila_cheney",
+    "0082_flatten_course_sections",
   );
 });
 

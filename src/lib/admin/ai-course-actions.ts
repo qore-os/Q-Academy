@@ -16,7 +16,6 @@ import {
   lessonPages,
   lessons,
   modules,
-  moduleSections,
   notifications,
   users,
   type ContentBlockData,
@@ -176,7 +175,8 @@ export async function createAiCourseAction(
     return {
       error: parsed.error.issues.some(
         (issue) =>
-          issue.code === "custom" && issue.message.includes("Steueranweisungen"),
+          issue.code === "custom" &&
+          issue.message.includes("Steueranweisungen"),
       )
         ? getAiBriefUnsafeInputCopy(locale)
         : copy.invalidBrief,
@@ -296,10 +296,7 @@ export async function createAiCourseAction(
           .where(
             and(
               eq(courseCategories.id, parsed.data.categoryId),
-              eq(
-                courseCategories.organizationId,
-                currentAuthor.organizationId,
-              ),
+              eq(courseCategories.organizationId, currentAuthor.organizationId),
             ),
           )
           .limit(1);
@@ -309,14 +306,8 @@ export async function createAiCourseAction(
       const estimatedMinutes = generation.draft.modules.reduce(
         (courseTotal, courseModule) =>
           courseTotal +
-          courseModule.sections.reduce(
-            (moduleTotal, section) =>
-              moduleTotal +
-              section.lessons.reduce(
-                (lessonTotal, lesson) =>
-                  lessonTotal + lesson.durationMinutes,
-                0,
-              ),
+          courseModule.lessons.reduce(
+            (lessonTotal, lesson) => lessonTotal + lesson.durationMinutes,
             0,
           ),
         0,
@@ -353,15 +344,12 @@ export async function createAiCourseAction(
         });
       }
 
-      for (const [moduleIndex, draftModule] of generation.draft.modules.entries()) {
-        const moduleMinutes = draftModule.sections.reduce(
-          (total, section) =>
-            total +
-            section.lessons.reduce(
-              (lessonTotal, lesson) =>
-                lessonTotal + lesson.durationMinutes,
-              0,
-            ),
+      for (const [
+        moduleIndex,
+        draftModule,
+      ] of generation.draft.modules.entries()) {
+        const moduleMinutes = draftModule.lessons.reduce(
+          (lessonTotal, lesson) => lessonTotal + lesson.durationMinutes,
           0,
         );
         const [courseModule] = await transaction
@@ -385,70 +373,54 @@ export async function createAiCourseAction(
           isRequired: true,
         });
 
-        let lessonSortOrder = 0;
-        for (const [sectionIndex, draftSection] of draftModule.sections.entries()) {
-          const [section] = await transaction
-            .insert(moduleSections)
+        for (const [
+          lessonSortOrder,
+          draftLesson,
+        ] of draftModule.lessons.entries()) {
+          const currentLessonOrder = lessonSortOrder;
+          const lessonSlug =
+            slugify(draftLesson.title).slice(0, 165) || "lektion";
+          const [lesson] = await transaction
+            .insert(lessons)
             .values({
               organizationId: currentAuthor.organizationId,
               moduleId: courseModule.id,
-              title: draftSection.title,
-              description: draftSection.description,
-              sortOrder: sectionIndex,
+              title: draftLesson.title,
+              slug: `${lessonSlug}-${currentLessonOrder + 1}`,
+              summary: draftLesson.summary,
+              type: draftLesson.type,
+              durationMinutes: draftLesson.durationMinutes,
+              sortOrder: currentLessonOrder,
               status: "published",
-              unlockAfterPrevious: sectionIndex > 0,
+              passingScore: 100,
+              maxAttempts: null,
+              shuffleQuestions: false,
               dripDays: 0,
+              unlockAfterPrevious: false,
             })
-            .returning({ id: moduleSections.id });
+            .returning({ id: lessons.id });
 
-          for (const draftLesson of draftSection.lessons) {
-            const currentLessonOrder = lessonSortOrder;
-            lessonSortOrder += 1;
-            const lessonSlug =
-              slugify(draftLesson.title).slice(0, 165) || "lektion";
-            const [lesson] = await transaction
-              .insert(lessons)
+          for (const [pageIndex, draftPage] of draftLesson.pages.entries()) {
+            const pageSlug = slugify(draftPage.title).slice(0, 165) || "seite";
+            const [page] = await transaction
+              .insert(lessonPages)
               .values({
-                organizationId: currentAuthor.organizationId,
-                moduleId: courseModule.id,
-                sectionId: section.id,
-                title: draftLesson.title,
-                slug: `${lessonSlug}-${currentLessonOrder + 1}`,
-                summary: draftLesson.summary,
-                type: draftLesson.type,
-                durationMinutes: draftLesson.durationMinutes,
-                sortOrder: currentLessonOrder,
+                lessonId: lesson.id,
+                title: pageIndex === 0 ? draftLesson.title : draftPage.title,
+                titleSyncedWithLesson: pageIndex === 0,
+                slug: `${pageSlug}-${pageIndex + 1}`,
+                sortOrder: pageIndex,
                 status: "published",
-                passingScore: 100,
-                maxAttempts: null,
-                shuffleQuestions: false,
               })
-              .returning({ id: lessons.id });
-
-            for (const [pageIndex, draftPage] of draftLesson.pages.entries()) {
-              const pageSlug =
-                slugify(draftPage.title).slice(0, 165) || "seite";
-              const [page] = await transaction
-                .insert(lessonPages)
-                .values({
-                  lessonId: lesson.id,
-                  title:
-                    pageIndex === 0 ? draftLesson.title : draftPage.title,
-                  titleSyncedWithLesson: pageIndex === 0,
-                  slug: `${pageSlug}-${pageIndex + 1}`,
-                  sortOrder: pageIndex,
-                  status: "published",
-                })
-                .returning({ id: lessonPages.id });
-              await transaction.insert(contentBlocks).values(
-                draftPage.blocks.map((block, blockIndex) => ({
-                  lessonId: lesson.id,
-                  pageId: page.id,
-                  sortOrder: blockIndex,
-                  ...blockValues(block, copy),
-                })),
-              );
-            }
+              .returning({ id: lessonPages.id });
+            await transaction.insert(contentBlocks).values(
+              draftPage.blocks.map((block, blockIndex) => ({
+                lessonId: lesson.id,
+                pageId: page.id,
+                sortOrder: blockIndex,
+                ...blockValues(block, copy),
+              })),
+            );
           }
         }
       }

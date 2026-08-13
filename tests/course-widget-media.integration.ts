@@ -24,24 +24,67 @@ after(async () => {
   await Promise.all([sql.end(), postgresClient.end()]);
 });
 
-test("only v5 snapshots authorize private widget media", () => {
+test("v6 snapshots authorize private widget media", () => {
   const mediaAssetId = randomUUID();
-  const snapshot = {
-    schemaVersion: 5,
-    course: { coverImage: null },
-    widgets: [{ type: "image_link", mediaAssetId }],
+  const courseId = randomUUID();
+  const organizationId = randomUUID();
+  const capturedAt = new Date().toISOString();
+  const snapshot: CourseVersionSnapshot = {
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
+    moduleKindVersion: 1,
+    courseOutlineVersion: 1,
+    capturedAt,
+    course: {
+      id: courseId,
+      organizationId,
+      categoryId: null,
+      title: "Widget media fixture",
+      slug: `widget-media-${courseId}`,
+      shortDescription: "Private widget media fixture.",
+      description: "Private widget media fixture.",
+      coverImage: null,
+      status: "published",
+      difficulty: "Grundlagen",
+      estimatedMinutes: 0,
+      certificateEnabled: false,
+      featured: false,
+      visibleInCatalog: true,
+      showProgressPercentage: true,
+      publishedVersionId: null,
+      firstPublishedAt: capturedAt,
+      createdById: null,
+      createdAt: capturedAt,
+      updatedAt: capturedAt,
+    },
+    learningGoals: [],
+    authors: [],
+    widgets: [
+      {
+        id: randomUUID(),
+        organizationId,
+        courseId,
+        type: "image_link",
+        sortOrder: 0,
+        authorUserId: null,
+        authorRole: null,
+        authorDescription: null,
+        title: null,
+        text: null,
+        linkUrl: "/academy/courses",
+        imageUrl: `/api/media-assets/${mediaAssetId}/download`,
+        mediaAssetId,
+        altText: "Private widget image",
+        createdAt: capturedAt,
+        updatedAt: capturedAt,
+        author: null,
+      },
+    ],
     modules: [],
-  } as unknown as CourseVersionSnapshot;
+  };
   assert.equal(
     courseSnapshotWidgetsReferenceMediaAsset(snapshot, mediaAssetId),
     true,
-  );
-  assert.equal(
-    courseSnapshotWidgetsReferenceMediaAsset(
-      { ...snapshot, schemaVersion: 4 },
-      mediaAssetId,
-    ),
-    false,
   );
 });
 

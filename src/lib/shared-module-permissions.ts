@@ -10,7 +10,6 @@ import {
   lessonPages,
   lessons,
   modules,
-  moduleSections,
   type User,
 } from "@/db/schema";
 import { canMutateSharedModuleContent } from "@/lib/shared-module-permission-policy";
@@ -27,7 +26,6 @@ type SharedModuleReader = Pick<typeof db, "select">;
 
 export type SharedModuleContentTarget =
   | { type: "module"; id: string }
-  | { type: "section"; id: string }
   | { type: "lesson"; id: string }
   | { type: "page"; id: string }
   | { type: "block"; id: string };
@@ -45,27 +43,6 @@ async function resolveTargetModuleId(
         and(
           eq(modules.id, target.id),
           eq(modules.organizationId, actor.organizationId),
-        ),
-      )
-      .limit(1);
-    return record?.moduleId ?? null;
-  }
-
-  if (target.type === "section") {
-    const [record] = await reader
-      .select({ moduleId: moduleSections.moduleId })
-      .from(moduleSections)
-      .innerJoin(
-        modules,
-        and(
-          eq(modules.id, moduleSections.moduleId),
-          eq(modules.organizationId, moduleSections.organizationId),
-        ),
-      )
-      .where(
-        and(
-          eq(moduleSections.id, target.id),
-          eq(moduleSections.organizationId, actor.organizationId),
         ),
       )
       .limit(1);

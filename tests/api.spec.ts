@@ -112,7 +112,7 @@ test("API exposes consistent authentication, problem details and OpenAPI", async
   const openApi = await request.get("/api/v1/openapi");
   expect(openApi.status()).toBe(200);
   const openApiBody = await openApi.json();
-  expect(Object.keys(openApiBody.paths)).toHaveLength(217);
+  expect(Object.keys(openApiBody.paths)).toHaveLength(213);
   const multipartOperations = [
     {
       path: "/media-assets/{id}/multipart",

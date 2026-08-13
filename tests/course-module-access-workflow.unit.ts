@@ -12,8 +12,6 @@ import {
   courseModuleUpdateSchema,
   lessonCreateSchema,
   lessonUpdateSchema,
-  sectionCreateSchema,
-  sectionUpdateSchema,
 } from "../src/lib/api/schemas";
 import {
   canCreateModuleAccessRequest,
@@ -64,10 +62,7 @@ test("a decision requires the same current locked policy and pending request", (
     ),
     false,
   );
-  assert.equal(
-    canDecideModuleAccessRequest(lockedTarget, true),
-    false,
-  );
+  assert.equal(canDecideModuleAccessRequest(lockedTarget, true), false);
 });
 
 test("republishing after request makes the target stale and expiry is exclusive", () => {
@@ -86,10 +81,7 @@ test("republishing after request makes the target stale and expiry is exclusive"
   assert.equal(isFutureWorkflowExpiry(null, requestedAt), true);
   assert.equal(isFutureWorkflowExpiry(requestedAt, requestedAt), false);
   assert.equal(
-    isFutureWorkflowExpiry(
-      new Date("2027-01-01T10:00:00.001Z"),
-      requestedAt,
-    ),
+    isFutureWorkflowExpiry(new Date("2027-01-01T10:00:00.001Z"), requestedAt),
     true,
   );
 });
@@ -104,11 +96,13 @@ test("access workflow API schemas are strict and coerce ISO expiry dates", () =>
     userId,
   });
   assert.equal(
-    courseModuleAccessRequestDecisionSchema.parse({
-      actorId: userId,
-      decision: "approved",
-      expiresAt: "2027-01-02T10:00:00.000Z",
-    }).expiresAt?.toISOString(),
+    courseModuleAccessRequestDecisionSchema
+      .parse({
+        actorId: userId,
+        decision: "approved",
+        expiresAt: "2027-01-02T10:00:00.000Z",
+      })
+      .expiresAt?.toISOString(),
     "2027-01-02T10:00:00.000Z",
   );
   assert.equal(
@@ -136,23 +130,20 @@ test("access workflow API schemas are strict and coerce ISO expiry dates", () =>
 test("course module API policy validates coherent modes without PATCH defaults", () => {
   const moduleId = "00000000-0000-4000-8000-000000000002";
   assert.deepEqual(courseModuleUpdateSchema.parse({}), {});
-  assert.deepEqual(
-    courseModuleAttachSchema.parse({ moduleId }),
-    {
-      moduleId,
-      sortOrder: 0,
-      indentLevel: 0,
-      accessMode: "visible",
-      dripDays: 0,
-      delayPendingState: "locked",
-      availableFrom: null,
-      availableUntil: null,
-      windowDefaultState: "locked",
-      windowState: "available",
-      requestAccessEnabled: false,
-      isRequired: true,
-    },
-  );
+  assert.deepEqual(courseModuleAttachSchema.parse({ moduleId }), {
+    moduleId,
+    sortOrder: 0,
+    indentLevel: 0,
+    accessMode: "visible",
+    dripDays: 0,
+    delayPendingState: "locked",
+    availableFrom: null,
+    availableUntil: null,
+    windowDefaultState: "locked",
+    windowState: "available",
+    requestAccessEnabled: false,
+    isRequired: true,
+  });
   const window = courseModuleAccessConfigurationSchema.parse({
     accessMode: "date_window",
     availableFrom: "2027-04-01T08:00:00.000Z",
@@ -182,19 +173,21 @@ test("course module API policy validates coherent modes without PATCH defaults",
   );
 });
 
-test("section and lesson visibility is create-defaulted and update-explicit", () => {
-  assert.equal(
-    sectionCreateSchema.parse({ title: "Neue Sektion" }).visibility,
-    "visible",
+test("lesson access fields are create-defaulted and update-explicit", () => {
+  const created = lessonCreateSchema.parse({ title: "Neue Lektion" });
+  assert.equal(created.visibility, "visible");
+  assert.equal(created.dripDays, 0);
+  assert.equal(created.unlockAfterPrevious, false);
+  assert.deepEqual(
+    lessonUpdateSchema.parse({
+      visibility: "draft",
+      dripDays: 3,
+      unlockAfterPrevious: true,
+    }),
+    {
+      visibility: "draft",
+      dripDays: 3,
+      unlockAfterPrevious: true,
+    },
   );
-  assert.deepEqual(sectionUpdateSchema.parse({ visibility: "coming_soon" }), {
-    visibility: "coming_soon",
-  });
-  assert.equal(
-    lessonCreateSchema.parse({ title: "Neue Lektion" }).visibility,
-    "visible",
-  );
-  assert.deepEqual(lessonUpdateSchema.parse({ visibility: "draft" }), {
-    visibility: "draft",
-  });
 });

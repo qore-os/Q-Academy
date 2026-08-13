@@ -20,7 +20,6 @@ test("shared video media remains manageable from every referencing course", asyn
   const suffix = randomUUID().slice(0, 8);
   const trainerEmail = `shared-media-${suffix}@example.test`;
   const moduleTitle = `Shared Media ${suffix}`;
-  const sectionTitle = `Shared Section ${suffix}`;
   const blockTitle = `Shared Video ${suffix}`;
   const assetIds = {
     video: randomUUID(),
@@ -109,20 +108,12 @@ test("shared video media remains manageable from every referencing course", asyn
         ${fixture.organizationId}, ${sourceCourseId}, ${moduleId}, 0, 0, true
       )
     `;
-    const [section] = await sql<Array<{ id: string }>>`
-      insert into module_sections (
-        organization_id, module_id, title, sort_order
-      ) values (
-        ${fixture.organizationId}, ${moduleId}, ${sectionTitle}, 0
-      ) returning id
-    `;
     const [lesson] = await sql<Array<{ id: string }>>`
       insert into lessons (
-        organization_id, module_id, section_id, title, slug, type, status,
+        organization_id, module_id, title, slug, type, status,
         duration_minutes, sort_order
       ) values (
-        ${fixture.organizationId}, ${moduleId}, ${section.id},
-        ${`Shared Lesson ${suffix}`},
+        ${fixture.organizationId}, ${moduleId}, ${`Shared Lesson ${suffix}`},
         ${`shared-lesson-${suffix}`}, 'lesson', 'published', 10, 0
       ) returning id
     `;
@@ -137,7 +128,8 @@ test("shared video media remains manageable from every referencing course", asyn
     pageId = lessonPage.id;
     for (const [kind, assetId] of Object.entries(assetIds)) {
       const mediaKind = kind === "poster" ? "image" : kind;
-      const extension = kind === "poster" ? "png" : kind === "audio" ? "mp3" : "mp4";
+      const extension =
+        kind === "poster" ? "png" : kind === "audio" ? "mp3" : "mp4";
       const mimeType =
         kind === "poster"
           ? "image/png"
@@ -348,7 +340,9 @@ test("shared video media remains manageable from every referencing course", asyn
     });
     expect(login.status()).toBe(200);
     await page.goto(`/admin/courses/${targetCourseId}`);
-    await page.getByRole("button", { name: "Modul anlegen", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Modul anlegen", exact: true })
+      .click();
     const attachDialog = page.getByRole("dialog", { name: "Modul anlegen" });
     await attachDialog
       .getByRole("radio", { name: `${moduleTitle} auswaehlen`, exact: true })
@@ -383,7 +377,9 @@ test("shared video media remains manageable from every referencing course", asyn
       where organization_id = ${fixture.organizationId}
         and source_asset_id = ${assetIds.video}
     `;
-    expect(jobsAfterInvalidLanguage.count).toBe(jobsBeforeInvalidLanguage.count);
+    expect(jobsAfterInvalidLanguage.count).toBe(
+      jobsBeforeInvalidLanguage.count,
+    );
 
     const invalidDescriptionLanguage = await page.request.post(
       `/api/media-assets/${assetIds.video}/video-description`,
@@ -419,10 +415,9 @@ test("shared video media remains manageable from every referencing course", asyn
         },
       },
     );
-    expect(
-      queuedDescription.status(),
-      await queuedDescription.text(),
-    ).toBe(422);
+    expect(queuedDescription.status(), await queuedDescription.text()).toBe(
+      422,
+    );
 
     await sql`
       update media_processing_jobs
@@ -433,10 +428,9 @@ test("shared video media remains manageable from every referencing course", asyn
     const succeededProcessing = await page.request.get(
       `/api/media-assets/${assetIds.video}/processing?language=de`,
     );
-    expect(
-      succeededProcessing.status(),
-      await succeededProcessing.text(),
-    ).toBe(200);
+    expect(succeededProcessing.status(), await succeededProcessing.text()).toBe(
+      200,
+    );
     const succeededProcessingBody = await succeededProcessing.json();
     expect(succeededProcessingBody.transcript?.webVtt).toContain(
       "Nur dieses aktuelle Transkript darf sichtbar sein.",
@@ -496,10 +490,9 @@ test("shared video media remains manageable from every referencing course", asyn
         },
       },
     );
-    expect(
-      overlongDescription.status(),
-      await overlongDescription.text(),
-    ).toBe(422);
+    expect(overlongDescription.status(), await overlongDescription.text()).toBe(
+      422,
+    );
     await sql`delete from content_blocks where id = ${overlongBlock.id}`;
 
     await page
@@ -509,10 +502,9 @@ test("shared video media remains manageable from every referencing course", asyn
       .getByRole("button", { name: `1. Shared Page ${suffix}`, exact: true })
       .click();
     await page.getByLabel("Seite duplizieren").click();
-    await expect.poll(async () => {
-      const [counts] = await sql<
-        Array<{ blocks: number; jobs: number }>
-      >`
+    await expect
+      .poll(async () => {
+        const [counts] = await sql<Array<{ blocks: number; jobs: number }>>`
         select
           (select count(*)::int from content_blocks
            where lesson_id = ${lesson.id} and type = 'video') as blocks,
@@ -520,8 +512,9 @@ test("shared video media remains manageable from every referencing course", asyn
            where organization_id = ${fixture.organizationId}
              and source_asset_reference_id = ${assetIds.video}) as jobs
       `;
-      return counts;
-    }).toEqual({ blocks: 2, jobs: 2 });
+        return counts;
+      })
+      .toEqual({ blocks: 2, jobs: 2 });
     const [copiedVideo] = await sql<
       Array<{
         id: string;
@@ -601,7 +594,10 @@ test("shared video media remains manageable from every referencing course", asyn
     `;
     expect(
       Object.fromEntries(
-        bindingsAfterAttach.map((binding) => [binding.mediaAssetId, binding.count]),
+        bindingsAfterAttach.map((binding) => [
+          binding.mediaAssetId,
+          binding.count,
+        ]),
       ),
     ).toEqual({
       [assetIds.video]: 2,
@@ -648,7 +644,9 @@ test("shared video media remains manageable from every referencing course", asyn
         and media_asset_id = ${assetIds.poster}
     `;
     await page.reload();
-    await page.getByRole("button", { name: `${blockTitle}: Bearbeiten` }).click();
+    await page
+      .getByRole("button", { name: `${blockTitle}: Bearbeiten` })
+      .click();
     const editor = page.getByRole("dialog", {
       name: "Inhaltselement bearbeiten",
     });
@@ -669,7 +667,9 @@ test("shared video media remains manageable from every referencing course", asyn
         and course_id = ${sourceCourseId}
         and media_asset_id = ${assetIds.poster}
     `;
-    await page.getByRole("button", { name: "Lektion kopieren", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Lektion kopieren", exact: true })
+      .click();
     const lessonCopyDialog = page.getByRole("dialog", {
       name: "Lektion kopieren nach",
     });
@@ -689,41 +689,14 @@ test("shared video media remains manageable from every referencing course", asyn
         and course_id in (${sourceCourseId}, ${targetCourseId})
     `;
     expect(posterBindingsAfterLessonCopy.count).toBe(2);
-
-    await sql`
-      delete from course_media_assets
-      where organization_id = ${fixture.organizationId}
-        and course_id = ${sourceCourseId}
-        and media_asset_id = ${assetIds.audio}
-    `;
-    await page
-      .getByRole("button", { name: `Sektion kopieren: ${sectionTitle}` })
-      .click();
-    const sectionCopyDialog = page.getByRole("dialog", {
-      name: "Sektion kopieren nach",
-    });
-    await sectionCopyDialog
-      .getByRole("button", { name: "Kopie erstellen" })
-      .click();
-    await expect(
-      page.getByText("Sektion samt Lektionen, Seiten und Inhalten kopiert.", {
-        exact: true,
-      }),
-    ).toBeVisible();
-    const [audioBindingsAfterSectionCopy] = await sql<Array<{ count: number }>>`
-      select count(*)::int as count
-      from course_media_assets
-      where organization_id = ${fixture.organizationId}
-        and media_asset_id = ${assetIds.audio}
-        and course_id in (${sourceCourseId}, ${targetCourseId})
-    `;
-    expect(audioBindingsAfterSectionCopy.count).toBe(2);
   } finally {
     if (moduleId) {
       await sql`delete from activity_events where entity_id = ${moduleId}`;
     }
-    if (targetCourseId) await sql`delete from courses where id = ${targetCourseId}`;
-    if (sourceCourseId) await sql`delete from courses where id = ${sourceCourseId}`;
+    if (targetCourseId)
+      await sql`delete from courses where id = ${targetCourseId}`;
+    if (sourceCourseId)
+      await sql`delete from courses where id = ${sourceCourseId}`;
     if (moduleId) await sql`delete from modules where id = ${moduleId}`;
     await sql`
       delete from media_assets

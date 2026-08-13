@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 const comparableText = (value: string) =>
-  value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("de-DE");
+  value
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("de-DE");
 
 function uniqueTextArray(
   minimum: number,
@@ -238,19 +242,11 @@ export const generatedCourseDifficultyValues = [
   "Mixte",
 ] as const;
 
-const generatedCourseSectionSchema = z
-  .object({
-    title: z.string().trim().min(3).max(160),
-    description: z.string().trim().min(20).max(700),
-    lessons: z.array(generatedCourseLessonSchema).min(1).max(4),
-  })
-  .strict();
-
 const generatedCourseModuleSchema = z
   .object({
     title: z.string().trim().min(3).max(180),
     description: z.string().trim().min(20).max(900),
-    sections: z.array(generatedCourseSectionSchema).min(1).max(2),
+    lessons: z.array(generatedCourseLessonSchema).min(1).max(4),
   })
   .strict();
 
@@ -266,11 +262,9 @@ export const generatedCourseDraftSchema = z
   .superRefine((draft, context) => {
     const blockTypes = new Set(
       draft.modules.flatMap((courseModule) =>
-        courseModule.sections.flatMap((section) =>
-          section.lessons.flatMap((lesson) =>
-            lesson.pages.flatMap((page) =>
-              page.blocks.map((block) => block.type),
-            ),
+        courseModule.lessons.flatMap((lesson) =>
+          lesson.pages.flatMap((page) =>
+            page.blocks.map((block) => block.type),
           ),
         ),
       ),

@@ -42,7 +42,6 @@ import {
   lessonProgress,
   lessons,
   modules,
-  moduleSections,
   memberBundles,
   mediaAssets,
   notifications,
@@ -605,44 +604,13 @@ export async function getCourseBuilderData(
           asc(modules.title),
         )
     : [];
-  const copyTargetModuleIds = [
-    ...new Set(copyTargetModuleRows.map((module) => module.id)),
-  ];
-  const copyTargetSectionRows = copyTargetModuleIds.length
+  const lessonRows = moduleIds.length
     ? await db
-        .select({
-          id: moduleSections.id,
-          moduleId: moduleSections.moduleId,
-          title: moduleSections.title,
-          sortOrder: moduleSections.sortOrder,
-        })
-        .from(moduleSections)
-        .where(
-          and(
-            eq(moduleSections.organizationId, organizationId),
-            inArray(moduleSections.moduleId, copyTargetModuleIds),
-          ),
-        )
-        .orderBy(
-          asc(moduleSections.moduleId),
-          asc(moduleSections.sortOrder),
-          asc(moduleSections.title),
-        )
+        .select()
+        .from(lessons)
+        .where(inArray(lessons.moduleId, moduleIds))
+        .orderBy(asc(lessons.sortOrder), asc(lessons.id))
     : [];
-  const [sectionRows, lessonRows] = moduleIds.length
-    ? await Promise.all([
-        db
-          .select()
-          .from(moduleSections)
-          .where(inArray(moduleSections.moduleId, moduleIds))
-          .orderBy(asc(moduleSections.sortOrder), asc(moduleSections.id)),
-        db
-          .select()
-          .from(lessons)
-          .where(inArray(lessons.moduleId, moduleIds))
-          .orderBy(asc(lessons.sortOrder), asc(lessons.id)),
-      ])
-    : [[], []];
   const lessonIds = lessonRows.map((lesson) => lesson.id);
   const [pageRows, blockRows] = lessonIds.length
     ? await Promise.all([
@@ -701,7 +669,6 @@ export async function getCourseBuilderData(
       module.delayPendingState === "locked"
         ? ("locked" as const)
         : ("hidden" as const),
-    sections: sectionRows.filter((section) => section.moduleId === module.id),
     lessons: lessonRows
       .filter((lesson) => lesson.moduleId === module.id)
       .map((lesson) => ({
@@ -759,9 +726,6 @@ export async function getCourseBuilderData(
         .map((module) => ({
           id: module.id,
           title: module.title,
-          sections: copyTargetSectionRows
-            .filter((section) => section.moduleId === module.id)
-            .map((section) => ({ id: section.id, title: section.title })),
         })),
     })),
     access: { ...enrollmentStats[0], grants },
@@ -1031,10 +995,7 @@ export async function getAdminSubmissions(organizationId: string) {
     ...review,
     annotations: annotationsByReview.get(review.id) ?? [],
   }));
-  const reviewsBySubmission = new Map<
-    string,
-    typeof reviewsWithAnnotations
-  >();
+  const reviewsBySubmission = new Map<string, typeof reviewsWithAnnotations>();
   for (const review of reviewsWithAnnotations) {
     const current = reviewsBySubmission.get(review.submissionId) ?? [];
     current.push(review);
@@ -1546,20 +1507,6 @@ export async function getMemberCourse(
           dripDays: resolvedModule.module.dripDays,
           isRequired: resolvedModule.module.isRequired,
           access: resolvedModule.access,
-          sections: resolvedModule.sections
-            .filter((resolvedSection) => resolvedSection.access.listed)
-            .map((resolvedSection) => ({
-              id: resolvedSection.section.id,
-              title: resolvedSection.section.title,
-              description: resolvedSection.section.description,
-              sortOrder: resolvedSection.section.sortOrder,
-              status: resolvedSection.section.status,
-              unlockAfterPrevious: resolvedSection.section.unlockAfterPrevious,
-              dripDays: resolvedSection.section.dripDays,
-              completed: resolvedSection.completed,
-              access: resolvedSection.access,
-              lessonIds: resolvedSection.lessons.map(({ lesson }) => lesson.id),
-            })),
           lessons: resolvedModule.lessons
             .filter((resolvedLesson) => resolvedLesson.access.listed)
             .map((resolvedLesson) => ({
@@ -1569,7 +1516,8 @@ export async function getMemberCourse(
               type: resolvedLesson.lesson.type,
               durationMinutes: resolvedLesson.lesson.durationMinutes,
               sortOrder: resolvedLesson.lesson.sortOrder,
-              sectionId: resolvedLesson.sectionId,
+              dripDays: resolvedLesson.lesson.dripDays,
+              unlockAfterPrevious: resolvedLesson.lesson.unlockAfterPrevious,
               status: resolvedLesson.lesson.status,
               availableAt: resolvedLesson.lesson.availableAt,
               required: resolvedLesson.required,
@@ -1704,43 +1652,43 @@ export async function getLessonReader(
   const [attachmentRows, learnerAnnotationRows] = submissionRows.length
     ? await Promise.all([
         db
-        .select({
-          submissionId: submissionAttachments.submissionId,
-          id: mediaAssets.id,
-          originalFileName: mediaAssets.originalFileName,
-          kind: mediaAssets.kind,
-          declaredMimeType: mediaAssets.declaredMimeType,
-          detectedMimeType: mediaAssets.detectedMimeType,
-          declaredSizeBytes: mediaAssets.declaredSizeBytes,
-          actualSizeBytes: mediaAssets.actualSizeBytes,
-          sortOrder: submissionAttachments.sortOrder,
-        })
-        .from(submissionAttachments)
-        .innerJoin(
-          mediaAssets,
-          and(
-            eq(mediaAssets.id, submissionAttachments.mediaAssetId),
-            eq(
-              mediaAssets.organizationId,
-              submissionAttachments.organizationId,
+          .select({
+            submissionId: submissionAttachments.submissionId,
+            id: mediaAssets.id,
+            originalFileName: mediaAssets.originalFileName,
+            kind: mediaAssets.kind,
+            declaredMimeType: mediaAssets.declaredMimeType,
+            detectedMimeType: mediaAssets.detectedMimeType,
+            declaredSizeBytes: mediaAssets.declaredSizeBytes,
+            actualSizeBytes: mediaAssets.actualSizeBytes,
+            sortOrder: submissionAttachments.sortOrder,
+          })
+          .from(submissionAttachments)
+          .innerJoin(
+            mediaAssets,
+            and(
+              eq(mediaAssets.id, submissionAttachments.mediaAssetId),
+              eq(
+                mediaAssets.organizationId,
+                submissionAttachments.organizationId,
+              ),
             ),
-          ),
-        )
-        .where(
-          and(
-            eq(submissionAttachments.organizationId, organizationId),
-            inArray(
-              submissionAttachments.submissionId,
-              submissionRows.map((submission) => submission.id),
+          )
+          .where(
+            and(
+              eq(submissionAttachments.organizationId, organizationId),
+              inArray(
+                submissionAttachments.submissionId,
+                submissionRows.map((submission) => submission.id),
+              ),
+              eq(mediaAssets.status, "ready"),
+              isNull(mediaAssets.deletedAt),
             ),
-            eq(mediaAssets.status, "ready"),
-            isNull(mediaAssets.deletedAt),
+          )
+          .orderBy(
+            asc(submissionAttachments.submissionId),
+            asc(submissionAttachments.sortOrder),
           ),
-        )
-        .orderBy(
-          asc(submissionAttachments.submissionId),
-          asc(submissionAttachments.sortOrder),
-        ),
         db
           .select({
             id: submissionReviewAnnotations.id,
@@ -1915,7 +1863,6 @@ export async function getLessonReader(
     })),
   };
 }
-
 
 export async function getOrganizationExperienceData(organizationId: string) {
   const [

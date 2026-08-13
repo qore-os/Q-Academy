@@ -9,6 +9,7 @@ export type ApiErrorCode =
   | "insufficient_scope"
   | "forbidden"
   | "not_found"
+  | "gone"
   | "conflict"
   | "idempotency_conflict"
   | "profile_incomplete"

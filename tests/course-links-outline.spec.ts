@@ -163,13 +163,11 @@ test("admin creates a link module and persists its indentation", async ({
         indent_level: number;
         is_required: boolean;
         lesson_count: number;
-        section_count: number;
       }[]
     >`
       select module.id, module.linked_course_id, association.indent_level,
              association.is_required,
-             (select count(*)::int from lessons where module_id = module.id) as lesson_count,
-             (select count(*)::int from module_sections where module_id = module.id) as section_count
+             (select count(*)::int from lessons where module_id = module.id) as lesson_count
       from modules module
       join course_modules association on association.module_id = module.id
       where association.course_id = ${sourceCourseId}
@@ -182,7 +180,6 @@ test("admin creates a link module and persists its indentation", async ({
       indent_level: 0,
       is_required: false,
       lesson_count: 0,
-      section_count: 0,
     });
 
     await page

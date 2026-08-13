@@ -6,8 +6,10 @@ import { diffCourseSnapshots } from "@/lib/course-change-log";
 
 function fixture(): CourseVersionSnapshot {
   return {
-    schemaVersion: 3,
-    accessPolicyVersion: 1,
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
+    moduleKindVersion: 1,
+    courseOutlineVersion: 1,
     capturedAt: "2026-07-10T08:00:00.000Z",
     course: {
       id: "10000000-0000-4000-8000-000000000001",
@@ -103,7 +105,6 @@ function moduleFixture(
   withContent = true,
 ): CourseVersionSnapshot["modules"][number] {
   const organizationId = "10000000-0000-4000-8000-000000000002";
-  const sectionId = `${id.slice(0, -3)}300`;
   const lessonId = `${id.slice(0, -3)}400`;
   const pageId = `${id.slice(0, -3)}500`;
   const blockId = `${id.slice(0, -3)}600`;
@@ -111,6 +112,9 @@ function moduleFixture(
     id,
     organizationId,
     title,
+    kind: "learning",
+    linkedCourseId: null,
+    targetVersionIdAtCapture: null,
     description: `${title} Beschreibung`,
     folder: "Kursmodule",
     isReusable: true,
@@ -118,6 +122,7 @@ function moduleFixture(
     createdAt: "2026-07-09T08:00:00.000Z",
     updatedAt: "2026-07-09T08:00:00.000Z",
     sortOrder,
+    indentLevel: 0,
     accessMode: "visible",
     dripDays: 0,
     delayPendingState: "locked",
@@ -127,85 +132,69 @@ function moduleFixture(
     windowState: "available",
     requestAccessEnabled: false,
     isRequired: true,
-    lessons: [],
-    sections: withContent
+    lessons: withContent
       ? [
           {
-            id: sectionId,
+            id: lessonId,
             organizationId,
             moduleId: id,
-            title: "Start",
-            description: null,
+            title: "Einstieg",
+            summary: null,
+            slug: "einstieg",
+            type: "quiz",
+            durationMinutes: 10,
+            passingScore: 80,
+            maxAttempts: 3,
+            shuffleQuestions: false,
+            examDurationSeconds: null,
+            examQuestionPools: [],
+            examResultReleaseMode: "immediate",
+            examReviewReleaseMode: "after_result",
+            examContentAccessMode: "allow",
             sortOrder: 0,
             status: "published",
             visibility: "visible",
-            dripDays: 0,
             unlockAfterPrevious: false,
+            dripDays: 0,
+            availableAt: null,
             createdAt: "2026-07-09T08:00:00.000Z",
             updatedAt: "2026-07-09T08:00:00.000Z",
-            lessons: [
+            blocks: [],
+            pages: [
               {
-                id: lessonId,
-                organizationId,
-                moduleId: id,
-                sectionId,
-                title: "Einstieg",
-                summary: null,
-                slug: "einstieg",
-                type: "quiz",
-                durationMinutes: 10,
-                passingScore: 80,
-                maxAttempts: 3,
-                shuffleQuestions: false,
-                examDurationSeconds: null,
-                examQuestionPools: [],
-                examResultReleaseMode: "immediate",
-                examReviewReleaseMode: "after_result",
-                examContentAccessMode: "allow",
+                id: pageId,
+                lessonId,
+                title: "Wissenstest",
+                titleSyncedWithLesson: false,
+                slug: "wissenstest",
                 sortOrder: 0,
                 status: "published",
-                visibility: "visible",
-                availableAt: null,
+                revision: 1,
+                layoutWidth: "standard",
+                backgroundTone: "plain",
+                contentSpacing: "comfortable",
                 createdAt: "2026-07-09T08:00:00.000Z",
                 updatedAt: "2026-07-09T08:00:00.000Z",
-                blocks: [],
-                pages: [
+                blocks: [
                   {
-                    id: pageId,
+                    id: blockId,
                     lessonId,
-                    title: "Wissenstest",
-                    titleSyncedWithLesson: false,
-                    slug: "wissenstest",
+                    pageId,
+                    type: "ordering",
+                    title: "Ablauf sortieren",
                     sortOrder: 0,
-                    status: "published",
-                    revision: 1,
-                    layoutWidth: "standard",
-                    backgroundTone: "plain",
-                    contentSpacing: "comfortable",
-                    createdAt: "2026-07-09T08:00:00.000Z",
-                    updatedAt: "2026-07-09T08:00:00.000Z",
-                    blocks: [
-                      {
-                        id: blockId,
-                        lessonId,
-                        pageId,
-                        type: "ordering",
-                        title: "Ablauf sortieren",
-                        sortOrder: 0,
-                        required: true,
-                        style: {
-                          width: "content",
-                          alignment: "left",
-                          surface: "plain",
-                        },
-                        data: {
-                          options: ["Erster Schritt", "Zweiter Schritt"],
-                          correctOptions: [0],
-                          presentationOrder: ["first", "second"],
-                          acceptedAnswers: ["PRIVATE_ANSWER_KEY"],
-                        },
-                      },
-                    ],
+                    required: true,
+                    style: {
+                      width: "content",
+                      alignment: "left",
+                      surface: "plain",
+                    },
+                    data: {
+                      options: ["Erster Schritt", "Zweiter Schritt"],
+                      correctOptions: [0],
+                      presentationOrder: ["first", "second"],
+                      acceptedAnswers: ["PRIVATE_ANSWER_KEY"],
+                    },
                   },
                 ],
               },
@@ -226,10 +215,9 @@ test("ignores timestamps and randomized ordering presentation without phantom ch
   draft.capturedAt = "2026-07-11T12:30:00.000Z";
   draft.course.updatedAt = "2026-07-11T12:30:00.000Z";
   draft.modules[0].updatedAt = "2026-07-11T12:30:00.000Z";
-  draft.modules[0].sections[0].updatedAt = "2026-07-11T12:30:00.000Z";
-  draft.modules[0].sections[0].lessons[0].updatedAt = "2026-07-11T12:30:00.000Z";
-  draft.modules[0].sections[0].lessons[0].pages[0].updatedAt = "2026-07-11T12:30:00.000Z";
-  draft.modules[0].sections[0].lessons[0].pages[0].blocks[0].data.presentationOrder = [
+  draft.modules[0].lessons[0].updatedAt = "2026-07-11T12:30:00.000Z";
+  draft.modules[0].lessons[0].pages[0].updatedAt = "2026-07-11T12:30:00.000Z";
+  draft.modules[0].lessons[0].pages[0].blocks[0].data.presentationOrder = [
     "second",
     "first",
   ];
@@ -248,10 +236,9 @@ test("reports nested edits without serializing assessment answers or block paylo
   draft.course.title = "Sicher und gesund arbeiten";
   draft.modules[0].accessMode = "delay_days";
   draft.modules[0].dripDays = 3;
-  draft.modules[0].sections[0].title = "Vorbereitung";
-  draft.modules[0].sections[0].lessons[0].visibility = "coming_soon";
-  draft.modules[0].sections[0].lessons[0].pages[0].title = "Abschlusstest";
-  const block = draft.modules[0].sections[0].lessons[0].pages[0].blocks[0];
+  draft.modules[0].lessons[0].visibility = "coming_soon";
+  draft.modules[0].lessons[0].pages[0].title = "Abschlusstest";
+  const block = draft.modules[0].lessons[0].pages[0].blocks[0];
   block.data.acceptedAnswers = ["NEW_ULTRA_SECRET_ANSWER"];
 
   const result = diffCourseSnapshots(published, draft);
@@ -259,7 +246,6 @@ test("reports nested edits without serializing assessment answers or block paylo
   assert.equal(result.hasChanges, true);
   assert.ok(result.groups.some((group) => group.key === "course"));
   assert.ok(result.groups.some((group) => group.key === "access"));
-  assert.ok(result.groups.some((group) => group.key === "sections"));
   assert.ok(result.groups.some((group) => group.key === "lessons"));
   assert.ok(result.groups.some((group) => group.key === "pages"));
   assert.ok(result.groups.some((group) => group.key === "blocks"));
@@ -273,7 +259,7 @@ test("reports nested edits without serializing assessment answers or block paylo
 test("detects a lesson summary edit on its own", () => {
   const published = fixture();
   const draft = copy(published);
-  draft.modules[0].sections[0].lessons[0].summary = "Neue Zusammenfassung";
+  draft.modules[0].lessons[0].summary = "Neue Zusammenfassung";
 
   const result = diffCourseSnapshots(published, draft);
   assert.equal(result.total, 1);
@@ -302,7 +288,6 @@ test("reports link retargeting and indentation without target-version phantom di
   linkModule.indentLevel = 1;
   linkModule.isRequired = false;
   linkModule.lessons = [];
-  linkModule.sections = [];
 
   const republishedTarget = copy(published);
   republishedTarget.modules[1].targetVersionIdAtCapture =
@@ -313,11 +298,11 @@ test("reports link retargeting and indentation without target-version phantom di
   );
 
   const retargeted = copy(republishedTarget);
-  retargeted.modules[1].linkedCourseId =
-    "10000000-0000-4000-8000-000000000703";
+  retargeted.modules[1].linkedCourseId = "10000000-0000-4000-8000-000000000703";
   retargeted.modules[1].indentLevel = 2;
   const result = diffCourseSnapshots(published, retargeted);
-  const entries = result.groups.find((group) => group.key === "modules")?.entries ?? [];
+  const entries =
+    result.groups.find((group) => group.key === "modules")?.entries ?? [];
 
   assert.deepEqual(
     entries.map(({ kind, detail }) => ({ kind, detail })),
@@ -371,5 +356,8 @@ test("an identical republished snapshot resets the draft diff", () => {
   const republished = fixture();
   republished.capturedAt = "2026-07-11T13:00:00.000Z";
   republished.course.updatedAt = "2026-07-11T13:00:00.000Z";
-  assert.equal(diffCourseSnapshots(republished, copy(republished)).hasChanges, false);
+  assert.equal(
+    diffCourseSnapshots(republished, copy(republished)).hasChanges,
+    false,
+  );
 });

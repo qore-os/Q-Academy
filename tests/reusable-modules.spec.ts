@@ -30,16 +30,12 @@ test("reusable module can be attached and edited from a course", async ({
       ) returning id
     `;
     moduleId = module.id;
-    const [section] = await client<{ id: string }[]>`
-      insert into module_sections (organization_id, module_id, title, sort_order)
-      values (${fixture.organization_id}, ${moduleId}, 'Start', 0) returning id
-    `;
     await client`
       insert into lessons (
-        organization_id, module_id, section_id, title, slug, summary, type,
+        organization_id, module_id, title, slug, summary, type,
         status, duration_minutes, sort_order
       ) values (
-        ${fixture.organization_id}, ${moduleId}, ${section.id},
+        ${fixture.organization_id}, ${moduleId},
         'Bibliothekslektion', ${`bibliothek-${suffix}`}, 'Synchroner Inhalt.',
         'lesson', 'published', 12, 0
       )

@@ -575,6 +575,13 @@
       "when": 1786547863520,
       "tag": "0081_great_lila_cheney",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1786632153991,
+      "tag": "0082_flatten_course_sections",
+      "breakpoints": true
     }
   ]
 }

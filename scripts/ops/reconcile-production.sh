@@ -161,6 +161,11 @@ bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" apply \
 bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" verify \
   --project "$project_name"
 
+"${compose[@]}" run --rm --no-deps database-config-preflight
+"${compose[@]}" up -d --wait --wait-timeout 900 postgres clamav
+verify_release_database_schema_contract "$current_tag" "${compose[@]}" ||
+  fail "active release is incompatible with the applied database schema contract"
+
 if ai_api_key_file_is_configured "$env_file"; then
   timeout --foreground --signal=TERM --kill-after=30s \
     "${AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS}s" \
@@ -169,8 +174,6 @@ else
   printf 'External AI is disabled; skipping the Terra provider preflight.\n'
 fi
 
-"${compose[@]}" run --rm --no-deps database-config-preflight
-"${compose[@]}" up -d --wait --wait-timeout 900 postgres clamav
 "${compose[@]}" run --rm --no-deps -e DATABASE_ROLE_MODE=validate database-role
 "${compose[@]}" up -d --no-deps --wait --wait-timeout 300 \
   "${DATABASE_RUNTIME_SERVICES[@]}"

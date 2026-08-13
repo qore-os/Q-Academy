@@ -21,7 +21,10 @@ async function login(page: Page, role: "admin" | "member") {
   await page.goto("/login");
   await page
     .getByRole("button", {
-      name: role === "admin" ? /Admin-Demo|Als Admin testen/ : /Lernenden-Demo|Als Mitglied testen/,
+      name:
+        role === "admin"
+          ? /Admin-Demo|Als Admin testen/
+          : /Lernenden-Demo|Als Mitglied testen/,
     })
     .click();
   await page.waitForURL(role === "admin" ? "**/admin" : "**/academy");
@@ -124,7 +127,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
       .getByRole("spinbutton", { name: "Dauer (Minuten)", exact: true })
       .fill("35");
     await dialog.getByRole("button", { name: "Modul anlegen" }).click();
-    await expect(page.getByText("Modul im Kurs angelegt.", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Modul im Kurs angelegt.", { exact: true }),
+    ).toBeVisible();
 
     const [shape] = await client<
       Array<{
@@ -133,11 +138,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
         page_id: string;
         kind: string;
         lesson_type: string;
-        section_id: string | null;
         title_synced: boolean;
         page_revision: number;
         lesson_count: number;
-        section_count: number;
       }>
     >`
       select
@@ -146,11 +149,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
         p.id as page_id,
         m.kind,
         l.type as lesson_type,
-        l.section_id,
         p.title_synced_with_lesson as title_synced,
         p.revision as page_revision,
-        (select count(*)::int from lessons where module_id = m.id) as lesson_count,
-        (select count(*)::int from module_sections where module_id = m.id) as section_count
+        (select count(*)::int from lessons where module_id = m.id) as lesson_count
       from modules m
       join lessons l on l.module_id = m.id
       join lesson_pages p on p.lesson_id = l.id
@@ -161,19 +162,23 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     expect(shape).toMatchObject({
       kind: "exam",
       lesson_type: "exam",
-      section_id: null,
       title_synced: true,
       lesson_count: 1,
-      section_count: 0,
     });
     moduleId = shape.module_id;
     lessonId = shape.lesson_id;
     pageId = shape.page_id;
 
-    await expect(page.getByText("Pruefungsbausteine", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Multiple Choice" })).toBeVisible();
+    await expect(
+      page.getByText("Pruefungsbausteine", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Multiple Choice" }),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Abgabe" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Vorschau", exact: true })).toHaveAttribute(
+    await expect(
+      page.getByRole("link", { name: "Vorschau", exact: true }),
+    ).toHaveAttribute(
       "href",
       new RegExp(`/admin/courses/${courseId}/preview\\?lesson=${lessonId}`),
     );
@@ -190,14 +195,6 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
       code: "validation_error",
     });
 
-    const sectionCreate = await request.post(
-      `/api/v1/modules/${moduleId}/sections`,
-      {
-        headers: mutationHeaders(`${prefix}-section`),
-        data: { title: "Unzulaessige Sektion" },
-      },
-    );
-    await expectStatus(sectionCreate, 409, requestIds);
     const secondLesson = await request.post(
       `/api/v1/modules/${moduleId}/lessons`,
       {
@@ -255,7 +252,8 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
           sortOrder: 1,
           required: true,
           data: {
-            prompt: "Reiche Risiken, Kontrollen und deine Freigabeentscheidung ein.",
+            prompt:
+              "Reiche Risiken, Kontrollen und deine Freigabeentscheidung ein.",
           },
         },
       },
@@ -265,7 +263,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     await page.reload();
     const settings = page
       .locator("form")
-      .filter({ has: page.getByText("Pruefungseinstellungen", { exact: true }) });
+      .filter({
+        has: page.getByText("Pruefungseinstellungen", { exact: true }),
+      });
     await settings.getByLabel("Bestehen ab (%)").fill("100");
     await settings.getByLabel("Max. Versuche").fill("2");
     await settings.getByLabel("Fragen je Versuch mischen").check();
@@ -346,10 +346,10 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
       foreignModuleId = foreignModule.id;
       const [foreignLesson] = await tx<Array<{ id: string }>>`
         insert into lessons (
-          organization_id, module_id, title, slug, type, section_id
+          organization_id, module_id, title, slug, type
         ) values (
           ${foreignOrganizationId}, ${foreignModuleId}, 'Foreign exam',
-          ${`foreign-exam-${suffix}`}, 'exam', null
+          ${`foreign-exam-${suffix}`}, 'exam'
         ) returning id
       `;
       await tx`
@@ -361,9 +361,12 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
         )
       `;
     });
-    const foreignRead = await request.get(`/api/v1/modules/${foreignModuleId}`, {
-      headers: authorization,
-    });
+    const foreignRead = await request.get(
+      `/api/v1/modules/${foreignModuleId}`,
+      {
+        headers: authorization,
+      },
+    );
     requestIds.push(foreignRead.headers()["x-request-id"]);
     expect(foreignRead.status()).toBe(404);
 
@@ -372,19 +375,27 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     memberPage.setDefaultTimeout(10_000);
     await login(memberPage, "member");
     await memberPage.goto(`/academy/courses/${courseSlug}`);
-    await expect(memberPage.getByText("Pruefungsmodul | 1 Pruefung")).toBeVisible();
-    await memberPage.getByRole("link", { name: new RegExp(moduleTitle) }).click();
+    await expect(
+      memberPage.getByText("Pruefungsmodul | 1 Pruefung"),
+    ).toBeVisible();
+    await memberPage
+      .getByRole("link", { name: new RegExp(moduleTitle) })
+      .click();
     await expect(
       memberPage.getByRole("heading", { name: "Bereit für den Start" }),
     ).toBeVisible();
-    await expect(memberPage.getByText(wrongOption, { exact: true })).toHaveCount(0);
+    await expect(
+      memberPage.getByText(wrongOption, { exact: true }),
+    ).toHaveCount(0);
     expect(await memberPage.content()).not.toContain("correctOption");
     expect(await memberPage.content()).not.toContain(secretFeedback);
 
     await memberPage
       .getByRole("button", { name: "Starten / fortsetzen" })
       .click();
-    await expect(memberPage.getByText(wrongOption, { exact: true })).toBeVisible();
+    await expect(
+      memberPage.getByText(wrongOption, { exact: true }),
+    ).toBeVisible();
     await expect(
       memberPage.getByText("Zurueck zum Kurs", { exact: true }),
     ).toHaveAttribute("aria-disabled", "true");
@@ -392,11 +403,15 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     const supplemental = memberPage
       .getByRole("heading", { name: "Transferanalyse" })
       .locator("..");
-    await supplemental.getByLabel("Titel").fill("Transferanalyse erster Versuch");
+    await supplemental
+      .getByLabel("Titel")
+      .fill("Transferanalyse erster Versuch");
     await supplemental
       .getByLabel("Antwort")
       .fill("Risiko erkannt, Kontrolle dokumentiert und Freigabe abgelehnt.");
-    await supplemental.getByRole("button", { name: "Abgabe einreichen" }).click();
+    await supplemental
+      .getByRole("button", { name: "Abgabe einreichen" })
+      .click();
     await expect(
       supplemental.getByText("Wartet auf Bewertung", { exact: true }),
     ).toBeVisible();
@@ -411,7 +426,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
     await expect(
       memberPage.getByRole("heading", { name: "Prüfung nicht bestanden" }),
     ).toBeVisible();
-    await expect(memberPage.getByText(secretFeedback, { exact: true })).toBeVisible();
+    await expect(
+      memberPage.getByText(secretFeedback, { exact: true }),
+    ).toBeVisible();
 
     await memberPage
       .getByRole("button", { name: "Neuen Versuch starten" })
@@ -428,7 +445,9 @@ test("exam modules are atomic, publishable, tenant-safe and usable without answe
         .getByRole("main")
         .getByText("Prüfung bestanden", { exact: true }),
     ).toBeVisible();
-    await expect(memberPage.getByText("100 % | 1 von 1 Fragen richtig")).toBeVisible();
+    await expect(
+      memberPage.getByText("100 % | 1 von 1 Fragen richtig"),
+    ).toBeVisible();
     await expect(
       memberPage.getByRole("link", { name: "Zurueck zum Kurs" }),
     ).toBeVisible();

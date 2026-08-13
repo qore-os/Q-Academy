@@ -39,6 +39,8 @@ type LessonUpdate = Partial<
     | "sortOrder"
     | "status"
     | "visibility"
+    | "dripDays"
+    | "unlockAfterPrevious"
     | "availableAt"
   >
 >;

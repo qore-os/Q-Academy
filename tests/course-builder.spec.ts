@@ -7,7 +7,9 @@ const databaseUrl =
 
 async function loginAsOwner(page: import("@playwright/test").Page) {
   await page.goto("/login");
-  await page.getByRole("button", { name: /Admin-Demo|Als Admin testen/ }).click();
+  await page
+    .getByRole("button", { name: /Admin-Demo|Als Admin testen/ })
+    .click();
   await page.waitForURL("**/admin");
 }
 
@@ -23,7 +25,6 @@ test("admin builds a paged lesson and manages its content", async ({
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const courseTitle = `Builder E2E ${suffix}`;
   const moduleTitle = `Modul ${suffix}`;
-  const sectionTitle = `Praxis ${suffix}`;
   const lessonTitle = `Lektion ${suffix}`;
   const pageTitle = `Vertiefung ${suffix}`;
   let courseId = "";
@@ -81,30 +82,12 @@ test("admin builds a paged lesson and manages its content", async ({
 
     await page
       .getByRole("button", {
-        name: `Sektion anlegen: ${moduleTitle}`,
-        exact: true,
-      })
-      .click();
-    dialog = page.getByRole("dialog", { name: "Sektion anlegen" });
-    await dialog.getByLabel("Sektionstitel").fill(sectionTitle);
-    await dialog
-      .getByLabel("Beschreibung")
-      .fill("Sektion fuer den Seitenfluss.");
-    await dialog
-      .getByRole("button", { name: "Sektion anlegen", exact: true })
-      .click();
-    await expect(dialog).toBeHidden();
-    await expect(page.getByText(sectionTitle, { exact: true })).toBeVisible();
-
-    await page
-      .getByRole("button", {
         name: `Lektion anlegen: ${moduleTitle}`,
         exact: true,
       })
       .click();
     dialog = page.getByRole("dialog", { name: "Lektion anlegen" });
     await dialog.getByLabel("Lektionstitel").fill(lessonTitle);
-    await dialog.getByLabel("Sektion").selectOption({ label: sectionTitle });
     await dialog.getByLabel("Dauer (Minuten)").fill("12");
     await dialog
       .getByLabel("Zusammenfassung")
@@ -269,9 +252,7 @@ test("admin builds a paged lesson and manages its content", async ({
       page.getByText("Zugangseinstellungen gespeichert."),
     ).toBeVisible();
 
-    await page
-      .getByRole("tab", { name: "Informationen", exact: true })
-      .click();
+    await page.getByRole("tab", { name: "Informationen", exact: true }).click();
     const informationForm = page
       .locator("form")
       .filter({ hasText: "Kursinformationen" });

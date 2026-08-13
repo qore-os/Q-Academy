@@ -31,7 +31,7 @@ function flattenCopy(
 
 test("course-builder copy has complete five-locale parity", () => {
   const german = flattenCopy(getCourseBuilderCopy("de"));
-  assert.equal(german.size, 385);
+  assert.equal(german.size, 381);
 
   for (const locale of SUPPORTED_LOCALES) {
     const localized = flattenCopy(getCourseBuilderCopy(locale));

@@ -19,7 +19,6 @@ function examModule(
 ) {
   const lesson = {
     id: "exam-lesson",
-    sectionId: null,
     type: "exam",
     status: "published",
     visibility: options.visibility ?? "visible",
@@ -28,7 +27,6 @@ function examModule(
   };
   return {
     kind: options.kind ?? "exam",
-    sections: [] as Array<{ lessons: Array<typeof lesson> }>,
     lessons: [lesson],
   };
 }
@@ -151,7 +149,7 @@ test("a gradable task on a draft page cannot make an exam publishable", () => {
   );
 });
 
-test("exam publication rejects sections and multiple lessons", () => {
+test("exam publication rejects multiple direct lessons", () => {
   const candidate = examModule([
     block("question", "true_false", {
       prompt: "Ist die Aussage richtig?",
@@ -159,9 +157,7 @@ test("exam publication rejects sections and multiple lessons", () => {
       correctOption: 0,
     }),
   ]);
-  candidate.sections.push({ lessons: [] });
   candidate.lessons.push({ ...candidate.lessons[0], id: "second" });
   const errors = examModulePublicationErrors(candidate).join(" ");
-  assert.match(errors, /keine Sektionen/);
   assert.match(errors, /genau eine Pruefung/);
 });

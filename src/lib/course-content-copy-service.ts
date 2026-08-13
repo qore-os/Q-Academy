@@ -12,7 +12,6 @@ import {
   lessonPages,
   lessons,
   mediaAssets,
-  moduleSections,
   type Lesson,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api/errors";
@@ -47,14 +46,6 @@ export type CopiedLessonResult = {
   pageId?: string;
   blockCount: number;
   pageCount: number;
-};
-
-export type CopiedSectionResult = {
-  sectionId: string;
-  firstLessonId?: string;
-  lessonCount: number;
-  pageCount: number;
-  blockCount: number;
 };
 
 function copyError(status: 404 | 409 | 422, reason: CopyReason) {
@@ -159,27 +150,6 @@ async function sourceLesson(
   return source;
 }
 
-async function validateTargetSection(
-  transaction: CoursePermissionTransaction,
-  context: CopyContext,
-  targetSectionId: string | null,
-) {
-  if (!targetSectionId) return;
-  const [targetSection] = await transaction
-    .select({ id: moduleSections.id })
-    .from(moduleSections)
-    .where(
-      and(
-        eq(moduleSections.id, targetSectionId),
-        eq(moduleSections.organizationId, context.organizationId),
-        eq(moduleSections.moduleId, context.targetModuleId),
-      ),
-    )
-    .limit(1)
-    .for("share");
-  if (!targetSection) throw copyError(404, "target_unavailable");
-}
-
 async function validateLogicalReferences(
   transaction: CoursePermissionTransaction,
   organizationId: string,
@@ -245,7 +215,9 @@ async function bindCopiedMedia(
   const ids = [...references.keys()];
   if (!ids.length) return;
   const targetCourseIds = [
-    ...new Set(context.targetCourseIds.map((courseId) => courseId.toLowerCase())),
+    ...new Set(
+      context.targetCourseIds.map((courseId) => courseId.toLowerCase()),
+    ),
   ].sort();
   if (
     !targetCourseIds.length ||
@@ -305,7 +277,6 @@ async function cloneLessonGraph(
   transaction: CoursePermissionTransaction,
   context: CopyContext,
   source: Lesson,
-  targetSectionId: string | null,
   targetSortOrder: number,
 ): Promise<CopiedLessonResult> {
   const sourcePages = await transaction
@@ -356,7 +327,6 @@ async function cloneLessonGraph(
     id: copiedLessonId,
     organizationId: context.organizationId,
     moduleId: context.targetModuleId,
-    sectionId: targetSectionId,
     title: source.title,
     slug: copiedLessonSlug(source.slug, copiedLessonId),
     summary: source.summary,
@@ -374,6 +344,8 @@ async function cloneLessonGraph(
     status: source.status,
     visibility: source.visibility,
     availableAt: source.availableAt,
+    dripDays: source.dripDays,
+    unlockAfterPrevious: source.unlockAfterPrevious,
   });
   if (sourcePages.length) {
     await transaction.insert(lessonPages).values(
@@ -393,16 +365,16 @@ async function cloneLessonGraph(
   }
   if (sourceBlocks.length) {
     const copiedBlocks = sourceBlocks.map((block) => ({
-        id: blockIds.get(block.id)!,
-        lessonId: copiedLessonId,
-        pageId: block.pageId ? pageIds.get(block.pageId) : null,
-        type: block.type,
-        title: block.title,
-        sortOrder: block.sortOrder,
-        required: block.required,
-        data: courseContentDataForCopy(block.type, block.data),
-        style: block.style,
-      }));
+      id: blockIds.get(block.id)!,
+      lessonId: copiedLessonId,
+      pageId: block.pageId ? pageIds.get(block.pageId) : null,
+      type: block.type,
+      title: block.title,
+      sortOrder: block.sortOrder,
+      required: block.required,
+      data: courseContentDataForCopy(block.type, block.data),
+      style: block.style,
+    }));
     await transaction.insert(contentBlocks).values(copiedBlocks);
     await enqueueCopiedVideoDescriptionJobsInTransaction(transaction, {
       organizationId: context.organizationId,
@@ -422,13 +394,9 @@ async function cloneLessonGraph(
 
 export async function copyLessonToCourseTarget(
   transaction: CoursePermissionTransaction,
-  input: CopyContext & {
-    sourceLessonId: string;
-    targetSectionId: string | null;
-  },
+  input: CopyContext & { sourceLessonId: string },
 ) {
   await lockAndValidateTarget(transaction, input);
-  await validateTargetSection(transaction, input, input.targetSectionId);
   const source = await sourceLesson(transaction, input, input.sourceLessonId);
   const [last] = await transaction
     .select({ sortOrder: lessons.sortOrder })
@@ -440,102 +408,6 @@ export async function copyLessonToCourseTarget(
     transaction,
     input,
     source,
-    input.targetSectionId,
     (last?.sortOrder ?? -1) + 1,
   );
-}
-
-export async function copySectionToCourseTarget(
-  transaction: CoursePermissionTransaction,
-  input: CopyContext & { sourceSectionId: string },
-): Promise<CopiedSectionResult> {
-  await lockAndValidateTarget(transaction, input);
-  const [sourceSection] = await transaction
-    .select()
-    .from(moduleSections)
-    .where(
-      and(
-        eq(moduleSections.id, input.sourceSectionId),
-        eq(moduleSections.organizationId, input.organizationId),
-      ),
-    )
-    .limit(1)
-    .for("share");
-  if (!sourceSection) throw copyError(404, "source_unavailable");
-  const [sourceAssignment] = await transaction
-    .select({ moduleId: courseModules.moduleId })
-    .from(courseModules)
-    .where(
-      and(
-        eq(courseModules.organizationId, input.organizationId),
-        eq(courseModules.courseId, input.sourceCourseId),
-        eq(courseModules.moduleId, sourceSection.moduleId),
-      ),
-    )
-    .limit(1);
-  if (!sourceAssignment) throw copyError(404, "source_unavailable");
-
-  const sourceLessons = await transaction
-    .select()
-    .from(lessons)
-    .where(
-      and(
-        eq(lessons.organizationId, input.organizationId),
-        eq(lessons.moduleId, sourceSection.moduleId),
-        eq(lessons.sectionId, sourceSection.id),
-      ),
-    )
-    .orderBy(asc(lessons.sortOrder), asc(lessons.id))
-    .for("share");
-  const [[lastSection], [lastLesson]] = await Promise.all([
-    transaction
-      .select({ sortOrder: moduleSections.sortOrder })
-      .from(moduleSections)
-      .where(eq(moduleSections.moduleId, input.targetModuleId))
-      .orderBy(desc(moduleSections.sortOrder), desc(moduleSections.id))
-      .limit(1),
-    transaction
-      .select({ sortOrder: lessons.sortOrder })
-      .from(lessons)
-      .where(eq(lessons.moduleId, input.targetModuleId))
-      .orderBy(desc(lessons.sortOrder), desc(lessons.id))
-      .limit(1),
-  ]);
-  const copiedSectionId = randomUUID();
-  await transaction.insert(moduleSections).values({
-    id: copiedSectionId,
-    organizationId: input.organizationId,
-    moduleId: input.targetModuleId,
-    title: sourceSection.title,
-    description: sourceSection.description,
-    sortOrder: (lastSection?.sortOrder ?? -1) + 1,
-    status: sourceSection.status,
-    visibility: sourceSection.visibility,
-    unlockAfterPrevious: sourceSection.unlockAfterPrevious,
-    dripDays: sourceSection.dripDays,
-  });
-
-  let pageCount = 0;
-  let blockCount = 0;
-  let firstLessonId: string | undefined;
-  const initialLessonSortOrder = (lastLesson?.sortOrder ?? -1) + 1;
-  for (const [index, lesson] of sourceLessons.entries()) {
-    const copied = await cloneLessonGraph(
-      transaction,
-      input,
-      lesson,
-      copiedSectionId,
-      initialLessonSortOrder + index,
-    );
-    firstLessonId ??= copied.lessonId;
-    pageCount += copied.pageCount;
-    blockCount += copied.blockCount;
-  }
-  return {
-    sectionId: copiedSectionId,
-    ...(firstLessonId ? { firstLessonId } : {}),
-    lessonCount: sourceLessons.length,
-    pageCount,
-    blockCount,
-  };
 }

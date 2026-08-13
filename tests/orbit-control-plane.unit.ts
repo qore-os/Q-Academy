@@ -24,6 +24,7 @@ const ids = {
   targetVersion: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
   targetOwner: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
   sourceModule: "44444444-4444-4444-8444-444444444444",
+  sourceLearningModule: "45454545-4545-4545-8545-454545454545",
   externalCourse: "55555555-5555-4555-8555-555555555555",
   externalVersion: "66666666-6666-4666-8666-666666666666",
   sourceMedia: "77777777-7777-4777-8777-777777777777",
@@ -50,8 +51,8 @@ const targetAuthorProfile = {
 
 function sourceSnapshot() {
   return {
-    schemaVersion: 5,
-    accessPolicyVersion: 1,
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
     moduleKindVersion: 1,
     courseOutlineVersion: 1,
     capturedAt: "2026-01-01T10:00:00.000Z",
@@ -167,9 +168,41 @@ function sourceSnapshot() {
         windowState: "available",
         requestAccessEnabled: false,
         isRequired: false,
+        lessons: [],
+      },
+      {
+        id: ids.sourceLearningModule,
+        organizationId: ids.sourceOrganization,
+        title: "Composed video",
+        kind: "learning",
+        linkedCourseId: null,
+        targetVersionIdAtCapture: null,
+        description: null,
+        folder: "Allgemein",
+        isReusable: false,
+        estimatedMinutes: 10,
+        createdAt: "2026-01-01T10:00:00.000Z",
+        updatedAt: "2026-01-01T10:00:00.000Z",
+        sortOrder: 1,
+        indentLevel: 0,
+        dripDays: 0,
+        accessMode: "visible",
+        delayPendingState: "locked",
+        availableFrom: null,
+        availableUntil: null,
+        windowDefaultState: "locked",
+        windowState: "available",
+        requestAccessEnabled: false,
+        isRequired: true,
         lessons: [
           {
             id: "15151515-1515-4515-8515-151515151515",
+            organizationId: ids.sourceOrganization,
+            moduleId: ids.sourceLearningModule,
+            visibility: "visible",
+            availableAt: null,
+            dripDays: 0,
+            unlockAfterPrevious: false,
             blocks: [
               {
                 id: "16161616-1616-4616-8616-161616161616",
@@ -196,7 +229,6 @@ function sourceSnapshot() {
             pages: [],
           },
         ],
-        sections: [],
       },
     ],
   } as unknown as CourseVersionSnapshot;
@@ -282,7 +314,7 @@ test("Orbit scope policy permits only workspace and delegated tenant scopes", ()
 test("course transfer remaps every source identity and neutralizes external links", () => {
   let sequence = 1;
   const snapshot = sourceSnapshot();
-  delete snapshot.modules[0]?.lessons[0]?.blocks[0]?.data.videoComposition;
+  delete snapshot.modules[1]?.lessons[0]?.blocks[0]?.data.videoComposition;
   const remapped = remapPublishedCourseSnapshot({
     snapshot,
     sourceOrganizationId: ids.sourceOrganization,

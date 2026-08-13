@@ -1863,54 +1863,6 @@ export const modules = pgTable(
   ],
 );
 
-export const moduleSections = pgTable(
-  "module_sections",
-  {
-    id: uuid("id").defaultRandom().primaryKey(),
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organizations.id, { onDelete: "cascade" }),
-    moduleId: uuid("module_id").notNull(),
-    title: varchar("title", { length: 220 }).notNull(),
-    description: text("description"),
-    sortOrder: integer("sort_order").default(0).notNull(),
-    status: courseStatusEnum("status").default("published").notNull(),
-    visibility: learningContentVisibilityEnum("visibility")
-      .default("visible")
-      .notNull(),
-    unlockAfterPrevious: boolean("unlock_after_previous")
-      .default(false)
-      .notNull(),
-    dripDays: integer("drip_days").default(0).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (table) => [
-    foreignKey({
-      name: "module_sections_module_tenant_fk",
-      columns: [table.moduleId, table.organizationId],
-      foreignColumns: [modules.id, modules.organizationId],
-    }).onDelete("cascade"),
-    uniqueIndex("module_sections_id_organization_idx").on(
-      table.id,
-      table.organizationId,
-    ),
-    uniqueIndex("module_sections_id_module_organization_idx").on(
-      table.id,
-      table.moduleId,
-      table.organizationId,
-    ),
-    index("module_sections_module_sort_idx").on(
-      table.moduleId,
-      table.sortOrder,
-    ),
-  ],
-);
-
 export const courseModules = pgTable(
   "course_modules",
   {
@@ -2218,9 +2170,6 @@ export const lessons = pgTable(
     moduleId: uuid("module_id")
       .notNull()
       .references(() => modules.id, { onDelete: "cascade" }),
-    sectionId: uuid("section_id").references(() => moduleSections.id, {
-      onDelete: "set null",
-    }),
     title: varchar("title", { length: 220 }).notNull(),
     slug: varchar("slug", { length: 180 }).notNull(),
     summary: text("summary"),
@@ -2248,6 +2197,10 @@ export const lessons = pgTable(
     visibility: learningContentVisibilityEnum("visibility")
       .default("visible")
       .notNull(),
+    unlockAfterPrevious: boolean("unlock_after_previous")
+      .default(false)
+      .notNull(),
+    dripDays: integer("drip_days").default(0).notNull(),
     availableAt: timestamp("available_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -2262,15 +2215,6 @@ export const lessons = pgTable(
       columns: [table.moduleId, table.organizationId],
       foreignColumns: [modules.id, modules.organizationId],
     }).onDelete("cascade"),
-    foreignKey({
-      name: "lessons_section_module_tenant_fk",
-      columns: [table.sectionId, table.moduleId, table.organizationId],
-      foreignColumns: [
-        moduleSections.id,
-        moduleSections.moduleId,
-        moduleSections.organizationId,
-      ],
-    }),
     uniqueIndex("lessons_id_organization_idx").on(
       table.id,
       table.organizationId,
@@ -2281,6 +2225,15 @@ export const lessons = pgTable(
       table.organizationId,
     ),
     uniqueIndex("lessons_module_slug_idx").on(table.moduleId, table.slug),
+    index("lessons_module_sort_idx").on(
+      table.moduleId,
+      table.sortOrder,
+      table.id,
+    ),
+    check(
+      "lessons_drip_days_check",
+      sql`${table.dripDays} >= 0 and ${table.dripDays} <= 36500`,
+    ),
     check(
       "lessons_passing_score_check",
       sql`${table.passingScore} >= 1 and ${table.passingScore} <= 100`,
@@ -2454,7 +2407,7 @@ type CourseSnapshotRecord = Omit<
 > & {
   createdAt: string;
   updatedAt: string;
-  firstPublishedAt?: string | null;
+  firstPublishedAt: string | null;
   notifyMembersOnModuleRelease?: boolean;
 };
 
@@ -2490,8 +2443,8 @@ type CourseSnapshotLesson = Omit<
   typeof lessons.$inferSelect,
   "organizationId" | "visibility" | "availableAt" | "createdAt" | "updatedAt"
 > & {
-  organizationId?: string;
-  visibility?: (typeof learningContentVisibilityEnum.enumValues)[number];
+  organizationId: string;
+  visibility: (typeof learningContentVisibilityEnum.enumValues)[number];
   availableAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -2499,39 +2452,27 @@ type CourseSnapshotLesson = Omit<
   pages: CourseSnapshotPage[];
 };
 
-type CourseSnapshotSection = Omit<
-  typeof moduleSections.$inferSelect,
-  "organizationId" | "visibility" | "createdAt" | "updatedAt"
-> & {
-  organizationId?: string;
-  visibility?: (typeof learningContentVisibilityEnum.enumValues)[number];
-  createdAt: string;
-  updatedAt: string;
-  lessons: CourseSnapshotLesson[];
-};
-
 type CourseSnapshotModule = Omit<
   typeof modules.$inferSelect,
   "createdAt" | "updatedAt" | "kind" | "linkedCourseId"
 > & {
-  kind?: (typeof moduleKindEnum.enumValues)[number];
-  linkedCourseId?: string | null;
-  targetVersionIdAtCapture?: string | null;
+  kind: (typeof moduleKindEnum.enumValues)[number];
+  linkedCourseId: string | null;
+  targetVersionIdAtCapture: string | null;
   createdAt: string;
   updatedAt: string;
   sortOrder: number;
-  indentLevel?: number;
+  indentLevel: number;
   dripDays: number;
-  accessMode?: (typeof courseModuleAccessModeEnum.enumValues)[number];
-  delayPendingState?: (typeof courseModuleAccessStateEnum.enumValues)[number];
-  availableFrom?: string | null;
-  availableUntil?: string | null;
-  windowDefaultState?: (typeof courseModuleAccessStateEnum.enumValues)[number];
-  windowState?: (typeof courseModuleAccessStateEnum.enumValues)[number];
-  requestAccessEnabled?: boolean;
+  accessMode: (typeof courseModuleAccessModeEnum.enumValues)[number];
+  delayPendingState: (typeof courseModuleAccessStateEnum.enumValues)[number];
+  availableFrom: string | null;
+  availableUntil: string | null;
+  windowDefaultState: (typeof courseModuleAccessStateEnum.enumValues)[number];
+  windowState: (typeof courseModuleAccessStateEnum.enumValues)[number];
+  requestAccessEnabled: boolean;
   isRequired: boolean;
   lessons: CourseSnapshotLesson[];
-  sections: CourseSnapshotSection[];
 };
 
 export type CourseWidgetSnapshot = Omit<
@@ -2575,15 +2516,15 @@ export type CourseAuthorSnapshot = Omit<
 };
 
 export type CourseVersionSnapshot = {
-  schemaVersion: 2 | 3 | 4 | 5;
-  accessPolicyVersion?: 1;
-  moduleKindVersion?: 1;
-  courseOutlineVersion?: 1;
+  schemaVersion: 6;
+  accessPolicyVersion: 2;
+  moduleKindVersion: 1;
+  courseOutlineVersion: 1;
   capturedAt: string;
   course: CourseSnapshotRecord;
   learningGoals?: CourseLearningGoalSnapshot[];
   authors?: CourseAuthorSnapshot[];
-  widgets?: CourseWidgetSnapshot[];
+  widgets: CourseWidgetSnapshot[];
   modules: CourseSnapshotModule[];
 };
 
@@ -10713,7 +10654,6 @@ export type Module = typeof modules.$inferSelect;
 export type Lesson = typeof lessons.$inferSelect;
 export type LessonBookmark = typeof lessonBookmarks.$inferSelect;
 export type MemberSidebarLink = typeof memberSidebarLinks.$inferSelect;
-export type ModuleSection = typeof moduleSections.$inferSelect;
 export type LessonPage = typeof lessonPages.$inferSelect;
 export type EditorPresence = typeof editorPresences.$inferSelect;
 export type StockImageSelection = typeof stockImageSelections.$inferSelect;

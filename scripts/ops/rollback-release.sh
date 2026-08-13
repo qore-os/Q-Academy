@@ -145,7 +145,8 @@ else
 fi
 [[ "$target_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || fail "invalid source-bound rollback tag"
 [[ "${CONFIRM_ROLLBACK_TAG:-}" == "$target_tag" ]] || fail "CONFIRM_ROLLBACK_TAG must equal the target"
-[[ "${MIGRATIONS_BACKWARD_COMPATIBLE:-false}" == "true" ]] || fail "migration compatibility must be explicitly approved"
+[[ "${MIGRATIONS_BACKWARD_COMPATIBLE:-false}" == "true" ]] ||
+  fail "migration rollback must be explicitly requested; automatic database/image compatibility is enforced separately"
 
 target_release_images=()
 target_runtime_components=(app tenant-ops media-runner media-preflight s3-app-principal-preflight)
@@ -176,6 +177,12 @@ run bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" apply \
 run bash "$ROOT_DIR/scripts/ops/docker-egress-firewall.sh" verify \
   --project "$project_name"
 
+media_bucket="$(production_env_value "$env_file" MEDIA_S3_BUCKET)" || fail "MEDIA_S3_BUCKET is invalid"
+run "${compose[@]}" run --rm --no-deps database-config-preflight
+run "${compose[@]}" up -d --no-recreate --wait --wait-timeout 900 postgres clamav
+run verify_release_database_schema_contract "$target_tag" "${compose[@]}" ||
+  fail "rollback target is incompatible with the applied database schema contract"
+
 if ai_api_key_file_is_configured "$env_file"; then
   run_with_timeout "$AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS" \
     "${compose[@]}" run --rm --no-deps --no-build --pull never ai-provider-preflight
@@ -183,9 +190,6 @@ else
   printf 'External AI is disabled; skipping the Terra provider preflight.\n'
 fi
 
-media_bucket="$(production_env_value "$env_file" MEDIA_S3_BUCKET)" || fail "MEDIA_S3_BUCKET is invalid"
-run "${compose[@]}" run --rm --no-deps database-config-preflight
-run "${compose[@]}" up -d --no-recreate --wait --wait-timeout 900 postgres clamav
 run "${compose[@]}" run --rm --no-deps -e DATABASE_ROLE_MODE=validate database-role
 run_with_timeout "$S3_APP_PRINCIPAL_PREFLIGHT_TIMEOUT_SECONDS" \
   "${compose[@]}" run --rm --no-deps s3-app-principal-preflight \

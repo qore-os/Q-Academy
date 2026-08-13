@@ -112,12 +112,7 @@ export function isValidPublishedCourseSnapshot(
 ): snapshot is CourseVersionSnapshot {
   if (!snapshot || typeof snapshot !== "object") return false;
   const candidate = snapshot as Record<string, unknown>;
-  if (
-    candidate.schemaVersion !== 2 &&
-    candidate.schemaVersion !== 3 &&
-    candidate.schemaVersion !== 4 &&
-    candidate.schemaVersion !== 5
-  ) {
+  if (candidate.schemaVersion !== 6) {
     return false;
   }
   if (!validDateString(candidate.capturedAt)) return false;
@@ -127,55 +122,32 @@ export function isValidPublishedCourseSnapshot(
     return false;
   }
   if (!Array.isArray(candidate.modules)) return false;
-  const hasAccessPolicy = candidate.accessPolicyVersion === 1;
+  const hasAccessPolicy = candidate.accessPolicyVersion === 2;
   const hasModuleKind = candidate.moduleKindVersion === 1;
   const hasCourseOutline = candidate.courseOutlineVersion === 1;
-  if (
-    candidate.schemaVersion === 3 &&
-    candidate.accessPolicyVersion !== undefined &&
-    !hasAccessPolicy
-  ) {
-    return false;
-  }
   if (candidate.moduleKindVersion !== undefined && !hasModuleKind) {
     return false;
   }
-  if (
-    candidate.courseOutlineVersion !== undefined &&
-    !hasCourseOutline
-  ) {
+  if (candidate.courseOutlineVersion !== undefined && !hasCourseOutline) {
     return false;
   }
-  const hasStrictOutline =
-    candidate.schemaVersion === 4 || candidate.schemaVersion === 5;
-  if (
-    hasStrictOutline &&
-    (!hasAccessPolicy || !hasModuleKind || !hasCourseOutline)
-  ) {
+  if (!hasAccessPolicy || !hasModuleKind || !hasCourseOutline) {
     return false;
   }
-  if (
-    candidate.schemaVersion === 5 &&
-    !validCourseWidgets(candidate.widgets, courseId, organizationId)
-  ) {
+  if (!validCourseWidgets(candidate.widgets, courseId, organizationId)) {
     return false;
   }
   const moduleIds = new Set<string>();
-  const sectionIds = new Set<string>();
   const lessonIds = new Set<string>();
 
-  const validLesson = (
-    lessonEntry: unknown,
-    moduleId: string,
-    sectionId: string | null,
-  ) => {
+  const validLesson = (lessonEntry: unknown, moduleId: string) => {
     if (!lessonEntry || typeof lessonEntry !== "object") return false;
     const lesson = lessonEntry as Record<string, unknown>;
     if (
+      "sectionId" in lesson ||
       typeof lesson.id !== "string" ||
       lessonIds.has(lesson.id) ||
       lesson.moduleId !== moduleId ||
-      lesson.sectionId !== sectionId ||
       !validContentBlocks(lesson.blocks) ||
       !Array.isArray(lesson.pages)
     ) {
@@ -198,7 +170,11 @@ export function isValidPublishedCourseSnapshot(
       hasAccessPolicy &&
       (lesson.organizationId !== organizationId ||
         !contentVisibilities.has(String(lesson.visibility)) ||
-        !validDateString(lesson.availableAt, true))
+        !validDateString(lesson.availableAt, true) ||
+        !Number.isInteger(lesson.dripDays) ||
+        Number(lesson.dripDays) < 0 ||
+        Number(lesson.dripDays) > 36_500 ||
+        typeof lesson.unlockAfterPrevious !== "boolean")
     ) {
       return false;
     }
@@ -211,18 +187,18 @@ export function isValidPublishedCourseSnapshot(
     if (!entry || typeof entry !== "object") return false;
     const learningModule = entry as Record<string, unknown>;
     if (
+      "sections" in learningModule ||
       typeof learningModule.id !== "string" ||
       moduleIds.has(learningModule.id) ||
       !Array.isArray(learningModule.lessons) ||
-      !Array.isArray(learningModule.sections) ||
       (hasModuleKind &&
         learningModule.kind !== "learning" &&
         learningModule.kind !== "exam" &&
-        (!hasStrictOutline || learningModule.kind !== "link"))
+        learningModule.kind !== "link")
     ) {
       return false;
     }
-    if (hasStrictOutline) {
+    {
       const indentLevel = learningModule.indentLevel;
       if (
         !Number.isInteger(indentLevel) ||
@@ -241,7 +217,6 @@ export function isValidPublishedCourseSnapshot(
           learningModule.linkedCourseId === courseId ||
           typeof learningModule.targetVersionIdAtCapture !== "string" ||
           learningModule.lessons.length !== 0 ||
-          learningModule.sections.length !== 0 ||
           learningModule.isRequired !== false)
       ) {
         return false;
@@ -258,33 +233,7 @@ export function isValidPublishedCourseSnapshot(
     }
     moduleIds.add(learningModule.id);
     for (const lessonEntry of learningModule.lessons) {
-      if (!validLesson(lessonEntry, learningModule.id, null)) return false;
-    }
-    for (const sectionEntry of learningModule.sections) {
-      if (
-        !sectionEntry ||
-        typeof sectionEntry !== "object" ||
-        !Array.isArray((sectionEntry as Record<string, unknown>).lessons)
-      ) {
-        return false;
-      }
-      const section = sectionEntry as Record<string, unknown>;
-      if (
-        typeof section.id !== "string" ||
-        sectionIds.has(section.id) ||
-        section.moduleId !== learningModule.id ||
-        (hasAccessPolicy &&
-          (section.organizationId !== organizationId ||
-            !contentVisibilities.has(String(section.visibility))))
-      ) {
-        return false;
-      }
-      sectionIds.add(section.id);
-      for (const lessonEntry of section.lessons as unknown[]) {
-        if (!validLesson(lessonEntry, learningModule.id, section.id)) {
-          return false;
-        }
-      }
+      if (!validLesson(lessonEntry, learningModule.id)) return false;
     }
     if (hasAccessPolicy) {
       const availableFrom = learningModule.availableFrom;
@@ -293,17 +242,15 @@ export function isValidPublishedCourseSnapshot(
       if (
         learningModule.organizationId !== organizationId ||
         !moduleAccessModes.has(accessMode) ||
-        !configuredAccessStates.has(
-          String(learningModule.delayPendingState),
-        ) ||
+        !configuredAccessStates.has(String(learningModule.delayPendingState)) ||
         !configuredAccessStates.has(
           String(learningModule.windowDefaultState),
         ) ||
         !configuredAccessStates.has(String(learningModule.windowState)) ||
         typeof learningModule.requestAccessEnabled !== "boolean" ||
-        typeof learningModule.dripDays !== "number" ||
-        learningModule.dripDays < 0 ||
-        learningModule.dripDays > 36_500 ||
+        !Number.isInteger(learningModule.dripDays) ||
+        Number(learningModule.dripDays) < 0 ||
+        Number(learningModule.dripDays) > 36_500 ||
         !validDateString(availableFrom, true) ||
         !validDateString(availableUntil, true) ||
         (accessMode === "date_window" &&
@@ -315,17 +262,11 @@ export function isValidPublishedCourseSnapshot(
         (typeof availableFrom === "string" &&
           typeof availableUntil === "string" &&
           Date.parse(availableUntil) <= Date.parse(availableFrom)) ||
-        !["locked", "hidden"].includes(
-          String(learningModule.delayPendingState),
-        )
+        !["locked", "hidden"].includes(String(learningModule.delayPendingState))
       ) {
         return false;
       }
     }
   }
-  return (
-    candidate.schemaVersion === 2 ||
-    candidate.accessPolicyVersion === undefined ||
-    validDateString(course.firstPublishedAt)
-  );
+  return validDateString(course.firstPublishedAt);
 }

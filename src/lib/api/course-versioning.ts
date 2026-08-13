@@ -13,7 +13,6 @@ import {
   courseWidgets,
   lessonPages,
   lessons,
-  moduleSections,
   modules,
   mediaAssetDerivatives,
   mediaAssets,
@@ -110,7 +109,6 @@ export async function buildCourseVersionSnapshot(
       lock table
       "course_modules",
       "modules",
-      "module_sections",
       "lessons",
       "lesson_pages",
       "content_blocks",
@@ -249,22 +247,6 @@ export async function buildCourseVersionSnapshot(
       requirePublished: publicationMode,
     },
   );
-  const sectionRows = moduleIds.length
-    ? await transaction
-        .select()
-        .from(moduleSections)
-        .where(
-          and(
-            eq(moduleSections.organizationId, course.organizationId),
-            inArray(moduleSections.moduleId, moduleIds),
-          ),
-        )
-        .orderBy(
-          asc(moduleSections.moduleId),
-          asc(moduleSections.sortOrder),
-          asc(moduleSections.id),
-        )
-    : [];
   const lessonRows = moduleIds.length
     ? await transaction
         .select()
@@ -401,8 +383,12 @@ export async function buildCourseVersionSnapshot(
           ),
         ),
       ];
-      if (sourceAssetIds.length !== new Set(framePosters.map(({ block }) => block.data.mediaAssetId)).size ||
-          framePosters.some(({ block }) => !block.data.mediaAssetId)) {
+      if (
+        sourceAssetIds.length !==
+          new Set(framePosters.map(({ block }) => block.data.mediaAssetId))
+            .size ||
+        framePosters.some(({ block }) => !block.data.mediaAssetId)
+      ) {
         throw new ApiError(
           422,
           "validation_error",
@@ -434,10 +420,7 @@ export async function buildCourseVersionSnapshot(
           .innerJoin(
             mediaAssetDerivatives,
             and(
-              eq(
-                mediaAssetDerivatives.processingJobId,
-                mediaProcessingJobs.id,
-              ),
+              eq(mediaAssetDerivatives.processingJobId, mediaProcessingJobs.id),
               eq(
                 mediaAssetDerivatives.organizationId,
                 mediaProcessingJobs.organizationId,
@@ -543,26 +526,9 @@ export async function buildCourseVersionSnapshot(
     lessonsByModule.set(lesson.moduleId, moduleLessons);
   }
 
-  const sectionsByModule = new Map<
-    string,
-    CourseVersionSnapshot["modules"][number]["sections"]
-  >();
-  for (const section of sectionRows) {
-    const sections = sectionsByModule.get(section.moduleId) ?? [];
-    sections.push({
-      ...section,
-      createdAt: section.createdAt.toISOString(),
-      updatedAt: section.updatedAt.toISOString(),
-      lessons: (lessonsByModule.get(section.moduleId) ?? []).filter(
-        (lesson) => lesson.sectionId === section.id,
-      ),
-    });
-    sectionsByModule.set(section.moduleId, sections);
-  }
-
   const snapshot: CourseVersionSnapshot = {
-    schemaVersion: 5,
-    accessPolicyVersion: 1,
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
     moduleKindVersion: 1,
     courseOutlineVersion: 1,
     capturedAt: capturedAt.toISOString(),
@@ -604,10 +570,7 @@ export async function buildCourseVersionSnapshot(
       availableUntil: learningModule.availableUntil?.toISOString() ?? null,
       createdAt: learningModule.createdAt.toISOString(),
       updatedAt: learningModule.updatedAt.toISOString(),
-      lessons: (lessonsByModule.get(learningModule.id) ?? []).filter(
-        (lesson) => !lesson.sectionId,
-      ),
-      sections: sectionsByModule.get(learningModule.id) ?? [],
+      lessons: lessonsByModule.get(learningModule.id) ?? [],
     })),
   };
   if (publicationMode) {

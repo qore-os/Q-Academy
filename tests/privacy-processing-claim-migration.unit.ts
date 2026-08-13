@@ -99,10 +99,10 @@ test("0069 remains immutable while later migrations append to the journal", () =
     breakpoints: true,
   });
   assert.deepEqual(journal.entries.at(-1), {
-    idx: 81,
+    idx: 82,
     version: "7",
-    when: 1786547863520,
-    tag: "0081_great_lila_cheney",
+    when: 1786632153991,
+    tag: "0082_flatten_course_sections",
     breakpoints: true,
   });
 });

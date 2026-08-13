@@ -103,8 +103,10 @@ test("module access requests serialize, withdraw, approve and reject stale targe
 
     const publishedAt = new Date(startedAt.getTime() - 30_000);
     const snapshot = {
-      schemaVersion: 3,
-      accessPolicyVersion: 1,
+      schemaVersion: 6,
+      accessPolicyVersion: 2,
+      moduleKindVersion: 1,
+      courseOutlineVersion: 1,
       capturedAt: publishedAt.toISOString(),
       course: {
         id: courseId,
@@ -125,12 +127,20 @@ test("module access requests serialize, withdraw, approve and reject stale targe
         publishedVersionId: null,
         firstPublishedAt: new Date(startedAt.getTime() - 60_000).toISOString(),
         createdById: identity.admin_id,
+        createdAt: publishedAt.toISOString(),
+        updatedAt: publishedAt.toISOString(),
       },
+      learningGoals: [],
+      authors: [],
+      widgets: [],
       modules: [
         {
           id: moduleId,
           organizationId: identity.organization_id,
           title: moduleTitle,
+          kind: "learning",
+          linkedCourseId: null,
+          targetVersionIdAtCapture: null,
           description: "Gesperrtes anfragbares Testmodul.",
           folder: "Tests",
           isReusable: true,
@@ -138,6 +148,7 @@ test("module access requests serialize, withdraw, approve and reject stale targe
           createdAt: publishedAt.toISOString(),
           updatedAt: publishedAt.toISOString(),
           sortOrder: 0,
+          indentLevel: 0,
           accessMode: "locked",
           dripDays: 0,
           delayPendingState: "locked",
@@ -148,7 +159,6 @@ test("module access requests serialize, withdraw, approve and reject stale targe
           requestAccessEnabled: true,
           isRequired: true,
           lessons: [],
-          sections: [],
         },
       ],
     };

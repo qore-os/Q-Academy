@@ -661,11 +661,6 @@ const requestSchemas: Record<string, OpenApiMap> = {
   ),
   ModuleCreate: zodRequestSchema(apiSchemas.moduleCreateSchema),
   ModuleUpdate: zodRequestSchema(apiSchemas.moduleUpdateSchema),
-  SectionCreate: zodRequestSchema(apiSchemas.sectionCreateSchema),
-  SectionUpdate: zodRequestSchema(apiSchemas.sectionUpdateSchema),
-  SectionLessonVisibilityUpdate: zodRequestSchema(
-    apiSchemas.sectionLessonVisibilityUpdateSchema,
-  ),
   CourseModuleAttach: zodRequestSchema(apiSchemas.courseModuleAttachSchema, {
     availableFrom: nullableDateTimeSchema,
     availableUntil: nullableDateTimeSchema,
@@ -7025,27 +7020,6 @@ paths["/modules/{id}/lessons"] = {
   }),
 };
 
-paths["/modules/{id}/sections"] = {
-  get: apiOperation({
-    tag: "Content",
-    summary: "List module sections",
-    operationId: "listModuleSections",
-    scopes: ["modules:read"],
-    parameters: [id],
-    list: true,
-  }),
-  post: apiOperation({
-    tag: "Content",
-    summary: "Create module section",
-    operationId: "createModuleSection",
-    scopes: ["modules:write"],
-    parameters: [id],
-    requestSchema: "SectionCreate",
-    status: "201",
-    idempotent: true,
-  }),
-};
-
 paths["/notifications"] = {
   get: apiOperation({
     tag: "Notifications",
@@ -7236,74 +7210,6 @@ paths["/search"] = {
     ],
     list: true,
   }),
-};
-
-paths["/sections/{id}"] = {
-  get: apiOperation({
-    tag: "Content",
-    summary: "Get module section",
-    operationId: "getModuleSection",
-    scopes: ["modules:read"],
-    parameters: [id],
-  }),
-  patch: apiOperation({
-    tag: "Content",
-    summary: "Update module section",
-    operationId: "updateModuleSection",
-    scopes: ["modules:write"],
-    parameters: [id],
-    requestSchema: "SectionUpdate",
-    idempotent: true,
-  }),
-  delete: apiOperation({
-    tag: "Content",
-    summary: "Delete module section",
-    operationId: "deleteModuleSection",
-    scopes: ["modules:write"],
-    parameters: [id],
-    idempotent: true,
-  }),
-};
-
-paths["/sections/{id}/lessons"] = {
-  get: apiOperation({
-    tag: "Content",
-    summary: "List section lessons",
-    operationId: "listSectionLessons",
-    scopes: ["modules:read"],
-    parameters: [id],
-    list: true,
-  }),
-  post: apiOperation({
-    tag: "Content",
-    summary: "Create section lesson",
-    operationId: "createSectionLesson",
-    scopes: ["modules:write"],
-    parameters: [id],
-    requestSchema: "LessonCreate",
-    status: "201",
-    idempotent: true,
-  }),
-};
-
-const sectionLessonVisibilityUpdate = apiOperation({
-  tag: "Content",
-  summary: "Set visibility for all section lessons",
-  operationId: "updateSectionLessonVisibility",
-  scopes: ["modules:write"],
-  parameters: [id],
-  requestSchema: "SectionLessonVisibilityUpdate",
-  idempotent: true,
-  description:
-    "Atomically updates every tenant-bound lesson currently assigned to the section. Published course snapshots remain unchanged until the course is published again.",
-});
-
-paths["/sections/{id}/lesson-visibility"] = {
-  put: {
-    ...sectionLessonVisibilityUpdate,
-    operationId: "putSectionLessonVisibility",
-  },
-  patch: sectionLessonVisibilityUpdate,
 };
 
 paths["/submissions"] = {
@@ -8416,7 +8322,7 @@ export const openApiDocument = {
     },
     {
       name: "Content",
-      description: "Sections, lessons, pages, and content blocks.",
+      description: "Lessons, pages, and content blocks.",
     },
     { name: "Members", description: "Tenant members and lifecycle." },
     {

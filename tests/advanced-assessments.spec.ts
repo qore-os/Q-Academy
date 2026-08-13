@@ -160,19 +160,10 @@ test("advanced assessments enforce published rules without leaking answer keys",
         (${fixture.organization_id}, ${primaryCourseId}, ${moduleId}, 0, true),
         (${fixture.organization_id}, ${secondaryCourseId}, ${moduleId}, 0, true)
     `;
-    const [section] = await sql<Array<{ id: string }>>`
-      insert into module_sections (
-        organization_id, module_id, title, sort_order, status
-      )
-      values (${fixture.organization_id}, ${moduleId}, 'Pruefungen', 0, 'published')
-      returning id
-    `;
-
     const lessonRows = await sql<Array<{ id: string; slug: string }>>`
       insert into lessons (
         organization_id,
         module_id,
-        section_id,
         title,
         slug,
         summary,
@@ -186,22 +177,22 @@ test("advanced assessments enforce published rules without leaking answer keys",
         available_at
       ) values
         (
-          ${fixture.organization_id}, ${moduleId}, ${section.id}, ${mainTitle}, ${mainLessonSlug},
+          ${fixture.organization_id}, ${moduleId}, ${mainTitle}, ${mainLessonSlug},
           'Eine von zwei richtigen Antworten reicht.', 'quiz', 10,
           50, 3, true, 0, 'published', null
         ),
         (
-          ${fixture.organization_id}, ${moduleId}, ${section.id}, ${limitTitle}, ${limitLessonSlug},
+          ${fixture.organization_id}, ${moduleId}, ${limitTitle}, ${limitLessonSlug},
           'Nach einem Fehlversuch ist das Quiz gesperrt.', 'quiz', 10,
           100, 1, false, 1, 'published', null
         ),
         (
-          ${fixture.organization_id}, ${moduleId}, ${section.id}, ${lockedTitle}, ${lockedLessonSlug},
+          ${fixture.organization_id}, ${moduleId}, ${lockedTitle}, ${lockedLessonSlug},
           'Diese Pruefung ist zeitlich gesperrt.', 'quiz', 10,
           100, 2, false, 2, 'published', now() + interval '7 days'
         ),
         (
-          ${fixture.organization_id}, ${moduleId}, ${section.id}, ${draftTitle}, ${draftLessonSlug},
+          ${fixture.organization_id}, ${moduleId}, ${draftTitle}, ${draftLessonSlug},
           'Diese Pruefung ist nur im Entwurf.', 'quiz', 10,
           100, 2, false, 3, 'draft', null
         )

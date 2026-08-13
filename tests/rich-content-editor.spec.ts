@@ -45,16 +45,12 @@ test("course editor supports media, duplication and drag sorting", async ({
       )
       values (${fixture.organization_id}, ${courseId}, ${moduleId}, 0, 0, true)
     `;
-    const [section] = await client<{ id: string }[]>`
-      insert into module_sections (organization_id, module_id, title, sort_order)
-      values (${fixture.organization_id}, ${moduleId}, 'Start', 0) returning id
-    `;
     const [lesson] = await client<{ id: string }[]>`
       insert into lessons (
-        organization_id, module_id, section_id, title, slug, type, status,
+        organization_id, module_id, title, slug, type, status,
         duration_minutes, sort_order
       ) values (
-        ${fixture.organization_id}, ${moduleId}, ${section.id},
+        ${fixture.organization_id}, ${moduleId},
         'Medienlektion', ${`medien-${suffix}`},
         'lesson', 'published', 20, 0
       ) returning id

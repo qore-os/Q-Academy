@@ -14,6 +14,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { assertUtf8DatabaseEncoding } from "../src/lib/database-encoding";
+import { isValidPublishedCourseSnapshot } from "../src/lib/course-snapshot-validation";
 
 const databaseName =
   process.env.MIGRATION_TEST_DATABASE ?? "q_academy_migration_test";
@@ -476,19 +477,36 @@ try {
       organization_id, course_id, version, snapshot, published_at
     ) values (
       ${legacyLearningOrganization.id}, ${legacyLearningCourse.id}, 1,
-      jsonb_build_object(
-        'modules', jsonb_build_array(
-          jsonb_build_object(
-            'lessons', jsonb_build_array(
-              jsonb_build_object(
-                'id', ${legacyLearningLesson.id}::text,
-                'title', 'Legacy snapshot lesson'
-              )
-            ),
-            'sections', '[]'::jsonb
-          )
-        )
-      ),
+      ${JSON.stringify({
+        schemaVersion: 2,
+        capturedAt: "2025-02-01T10:00:00.000Z",
+        course: {
+          id: legacyLearningCourse.id,
+          organizationId: legacyLearningOrganization.id,
+        },
+        modules: [
+          {
+            id: legacyLearningModule.id,
+            sortOrder: 0,
+            dripDays: 3,
+            isRequired: true,
+            lessons: [
+              {
+                id: legacyLearningLesson.id,
+                moduleId: legacyLearningModule.id,
+                sectionId: null,
+                title: "Legacy snapshot lesson",
+                sortOrder: 0,
+                status: "published",
+                availableAt: null,
+                blocks: [],
+                pages: [],
+              },
+            ],
+            sections: [],
+          },
+        ],
+      })}::jsonb,
       '2025-02-01T10:00:00.000Z'
     ) returning id
   `;
@@ -744,6 +762,361 @@ try {
     ) returning id
   `;
 
+  const [legacySectionCourse] = await testClient<[{ id: string }]>`
+    insert into courses (
+      organization_id, title, slug, short_description, description
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, 'Legacy section course',
+      'legacy-section-course', 'Legacy section course',
+      'Legacy section course'
+    ) returning id
+  `;
+  const [legacySectionModule] = await testClient<[{ id: string }]>`
+    insert into modules (organization_id, title, kind)
+    values (
+      ${legacyOrbitSourceOrganizationId}, 'Legacy section module', 'learning'
+    ) returning id
+  `;
+  const legacySectionRows = await testClient<
+    Array<{ id: string; title: string }>
+  >`
+    insert into module_sections (
+      organization_id, module_id, title, sort_order, status, visibility,
+      unlock_after_previous, drip_days
+    ) values
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        'First section', 20, 'published', 'visible', true, 4
+      ),
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        'Second section', 10, 'archived', 'draft', false, 7
+      )
+    returning id, title
+  `;
+  const legacyFirstSection = legacySectionRows.find(
+    (section) => section.title === "First section",
+  )!;
+  const legacySecondSection = legacySectionRows.find(
+    (section) => section.title === "Second section",
+  )!;
+  const legacyFlattenLessons = await testClient<
+    Array<{ id: string; title: string }>
+  >`
+    insert into lessons (
+      organization_id, module_id, section_id, title, slug, sort_order,
+      status, visibility
+    ) values
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id}, null,
+        'Direct lesson', 'direct-lesson', -100, 'published', 'visible'
+      ),
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        ${legacyFirstSection.id}, 'Draft leading lesson',
+        'draft-leading-lesson', 0, 'published', 'draft'
+      ),
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        ${legacyFirstSection.id}, 'First section lesson',
+        'first-section-lesson', 1, 'published', 'visible'
+      ),
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        ${legacyFirstSection.id}, 'Draft interleaved lesson',
+        'draft-interleaved-lesson', 2, 'published', 'draft'
+      ),
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        ${legacyFirstSection.id}, 'Sequential section lesson',
+        'sequential-section-lesson', 3, 'published', 'visible'
+      ),
+      (
+        ${legacyOrbitSourceOrganizationId}, ${legacySectionModule.id},
+        ${legacySecondSection.id}, 'Archived section lesson',
+        'archived-section-lesson', 99, 'published', 'visible'
+      )
+    returning id, title
+  `;
+  const legacyLessonByTitle = new Map(
+    legacyFlattenLessons.map((lesson) => [lesson.title, lesson]),
+  );
+  const legacySectionSnapshot = {
+    schemaVersion: 5,
+    accessPolicyVersion: 1,
+    moduleKindVersion: 1,
+    courseOutlineVersion: 1,
+    capturedAt: "2026-08-12T10:00:00.000Z",
+    course: {
+      id: legacySectionCourse.id,
+      organizationId: legacyOrbitSourceOrganizationId,
+      firstPublishedAt: "2026-08-12T10:00:00.000Z",
+    },
+    widgets: [],
+    modules: [
+      {
+        id: legacySectionModule.id,
+        organizationId: legacyOrbitSourceOrganizationId,
+        kind: "learning",
+        sortOrder: 0,
+        indentLevel: 0,
+        accessMode: "visible",
+        dripDays: 0,
+        delayPendingState: "locked",
+        availableFrom: null,
+        availableUntil: null,
+        windowDefaultState: "locked",
+        windowState: "available",
+        requestAccessEnabled: false,
+        isRequired: true,
+        lessons: [
+          {
+            id: legacyLessonByTitle.get("Direct lesson")!.id,
+            organizationId: legacyOrbitSourceOrganizationId,
+            moduleId: legacySectionModule.id,
+            sectionId: null,
+            sortOrder: -100,
+            status: "published",
+            visibility: "visible",
+            availableAt: null,
+            blocks: [],
+            pages: [],
+          },
+        ],
+        sections: [
+          {
+            id: legacyFirstSection.id,
+            moduleId: legacySectionModule.id,
+            organizationId: legacyOrbitSourceOrganizationId,
+            sortOrder: 20,
+            status: "published",
+            visibility: "visible",
+            unlockAfterPrevious: true,
+            dripDays: 4,
+            lessons: [
+              {
+                id: legacyLessonByTitle.get("Draft leading lesson")!.id,
+                organizationId: legacyOrbitSourceOrganizationId,
+                moduleId: legacySectionModule.id,
+                sectionId: legacyFirstSection.id,
+                sortOrder: 0,
+                status: "published",
+                visibility: "draft",
+                availableAt: null,
+                blocks: [],
+                pages: [],
+              },
+              {
+                id: legacyLessonByTitle.get("First section lesson")!.id,
+                organizationId: legacyOrbitSourceOrganizationId,
+                moduleId: legacySectionModule.id,
+                sectionId: legacyFirstSection.id,
+                sortOrder: 1,
+                status: "published",
+                visibility: "visible",
+                availableAt: null,
+                blocks: [],
+                pages: [],
+              },
+              {
+                id: legacyLessonByTitle.get("Draft interleaved lesson")!.id,
+                organizationId: legacyOrbitSourceOrganizationId,
+                moduleId: legacySectionModule.id,
+                sectionId: legacyFirstSection.id,
+                sortOrder: 2,
+                status: "published",
+                visibility: "draft",
+                availableAt: null,
+                blocks: [],
+                pages: [],
+              },
+              {
+                id: legacyLessonByTitle.get("Sequential section lesson")!.id,
+                organizationId: legacyOrbitSourceOrganizationId,
+                moduleId: legacySectionModule.id,
+                sectionId: legacyFirstSection.id,
+                sortOrder: 3,
+                status: "published",
+                visibility: "visible",
+                availableAt: null,
+                blocks: [],
+                pages: [],
+              },
+            ],
+          },
+          {
+            id: legacySecondSection.id,
+            moduleId: legacySectionModule.id,
+            organizationId: legacyOrbitSourceOrganizationId,
+            sortOrder: 10,
+            status: "archived",
+            visibility: "draft",
+            unlockAfterPrevious: false,
+            dripDays: 7,
+            lessons: [
+              {
+                id: legacyLessonByTitle.get("Archived section lesson")!.id,
+                organizationId: legacyOrbitSourceOrganizationId,
+                moduleId: legacySectionModule.id,
+                sectionId: legacySecondSection.id,
+                sortOrder: 99,
+                status: "published",
+                visibility: "visible",
+                availableAt: null,
+                blocks: [],
+                pages: [],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const [legacySectionVersion] = await testClient<[{ id: string }]>`
+    insert into course_versions (
+      organization_id, course_id, version, snapshot, published_at
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, ${legacySectionCourse.id}, 1,
+      ${JSON.stringify(legacySectionSnapshot)}::jsonb, now()
+    ) returning id
+  `;
+  const legacyOutlineSnapshot = {
+    schemaVersion: 4,
+    accessPolicyVersion: 1,
+    moduleKindVersion: 1,
+    courseOutlineVersion: 1,
+    capturedAt: "2026-08-11T10:00:00.000Z",
+    course: {
+      id: legacySectionCourse.id,
+      organizationId: legacyOrbitSourceOrganizationId,
+      firstPublishedAt: "2026-08-10T10:00:00.000Z",
+    },
+    modules: [
+      {
+        id: legacySectionModule.id,
+        organizationId: legacyOrbitSourceOrganizationId,
+        kind: "learning",
+        linkedCourseId: null,
+        targetVersionIdAtCapture: null,
+        sortOrder: 0,
+        indentLevel: 0,
+        accessMode: "delay_days",
+        dripDays: 6,
+        delayPendingState: "hidden",
+        availableFrom: null,
+        availableUntil: null,
+        windowDefaultState: "locked",
+        windowState: "available",
+        requestAccessEnabled: true,
+        isRequired: true,
+        lessons: [
+          {
+            id: legacyLessonByTitle.get("Direct lesson")!.id,
+            organizationId: legacyOrbitSourceOrganizationId,
+            moduleId: legacySectionModule.id,
+            sectionId: null,
+            sortOrder: 0,
+            status: "published",
+            visibility: "coming_soon",
+            availableAt: null,
+            blocks: [],
+            pages: [],
+          },
+        ],
+        sections: [],
+      },
+    ],
+  };
+  const [legacyOutlineVersion] = await testClient<[{ id: string }]>`
+    insert into course_versions (
+      organization_id, course_id, version, snapshot, published_at
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, ${legacySectionCourse.id}, 2,
+      ${JSON.stringify(legacyOutlineSnapshot)}::jsonb, now()
+    ) returning id
+  `;
+  const legacyKindSnapshot = {
+    schemaVersion: 3,
+    moduleKindVersion: 1,
+    capturedAt: "2026-08-10T10:00:00.000Z",
+    course: {
+      id: legacySectionCourse.id,
+      organizationId: legacyOrbitSourceOrganizationId,
+    },
+    modules: [
+      {
+        id: legacySectionModule.id,
+        kind: "learning",
+        sortOrder: 0,
+        dripDays: 0,
+        isRequired: true,
+        lessons: [],
+        sections: [],
+      },
+    ],
+  };
+  const [legacyKindVersion] = await testClient<[{ id: string }]>`
+    insert into course_versions (
+      organization_id, course_id, version, snapshot, published_at
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, ${legacySectionCourse.id}, 3,
+      ${JSON.stringify(legacyKindSnapshot)}::jsonb, now()
+    ) returning id
+  `;
+  const [legacyDraftVersion] = await testClient<[{ id: string }]>`
+    insert into course_versions (
+      organization_id, course_id, version, snapshot, published_at
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, ${legacySectionCourse.id}, 4,
+      ${JSON.stringify({
+        schemaVersion: 5,
+        accessPolicyVersion: 1,
+        moduleKindVersion: 1,
+        courseOutlineVersion: 1,
+        capturedAt: "2026-08-13T08:00:00.000Z",
+        course: {
+          id: legacySectionCourse.id,
+          organizationId: legacyOrbitSourceOrganizationId,
+          firstPublishedAt: null,
+        },
+        widgets: [],
+        modules: [],
+      })}::jsonb,
+      null
+    ) returning id
+  `;
+  const [malformedSnapshotCourse] = await testClient<[{ id: string }]>`
+    insert into courses (
+      organization_id, title, slug, short_description, description
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, 'Malformed snapshot course',
+      'malformed-snapshot-course', 'Malformed snapshot course',
+      'Malformed snapshot course'
+    ) returning id
+  `;
+  const [malformedSnapshotVersion] = await testClient<[{ id: string }]>`
+    insert into course_versions (
+      organization_id, course_id, version, snapshot, published_at
+    ) values (
+      ${legacyOrbitSourceOrganizationId}, ${malformedSnapshotCourse.id}, 1,
+      ${JSON.stringify({
+        schemaVersion: 5,
+        accessPolicyVersion: 1,
+        moduleKindVersion: 1,
+        courseOutlineVersion: 1,
+        capturedAt: "2026-08-12T10:00:00.000Z",
+        course: {
+          id: malformedSnapshotCourse.id,
+          organizationId: legacyOrbitSourceOrganizationId,
+          firstPublishedAt: "2026-08-12T10:00:00.000Z",
+        },
+        widgets: [],
+        modules: "invalid",
+      })}::jsonb,
+      now()
+    ) returning id
+  `;
+
   try {
     await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
     throw new Error(
@@ -763,7 +1136,335 @@ try {
     delete from orbit_transfer_items where id = ${invalidLegacyOrbitItem.id}
   `;
 
+  try {
+    await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+    throw new Error("Migration 0082 accepted a malformed course snapshot.");
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes("snapshot modules must be an array")
+    ) {
+      throw error;
+    }
+  }
+  await testClient`
+    delete from course_versions where id = ${malformedSnapshotVersion.id}
+  `;
+  await testClient`
+    delete from courses where id = ${malformedSnapshotCourse.id}
+  `;
+
+  await testClient`
+    update lessons
+    set sort_order = 2
+    where id = ${legacyLessonByTitle.get("Direct lesson")!.id}
+  `;
+  try {
+    await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+    throw new Error(
+      "Migration 0082 accepted interleaved live section lessons.",
+    );
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes("cannot flatten course sections losslessly")
+    ) {
+      throw error;
+    }
+  }
+  await testClient`
+    update lessons
+    set sort_order = -100
+    where id = ${legacyLessonByTitle.get("Direct lesson")!.id}
+  `;
+
+  await testClient`
+    update course_versions
+    set snapshot = jsonb_set(snapshot, '{modules,0,lessons,0,sortOrder}', '2'::jsonb)
+    where id = ${legacySectionVersion.id}
+  `;
+  try {
+    await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+    throw new Error(
+      "Migration 0082 accepted interleaved snapshot section lessons.",
+    );
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes("cannot flatten course version")
+    ) {
+      throw error;
+    }
+  }
+  await testClient`
+    update course_versions
+    set snapshot = ${JSON.stringify(legacySectionSnapshot)}::jsonb
+    where id = ${legacySectionVersion.id}
+  `;
+
   await migrate(drizzle(testClient), { migrationsFolder: "drizzle" });
+
+  const flattenedLessonRows = await testClient<
+    Array<{
+      title: string;
+      sortOrder: number;
+      status: string;
+      visibility: string;
+      dripDays: number;
+      unlockAfterPrevious: boolean;
+    }>
+  >`
+    select
+      title,
+      sort_order as "sortOrder",
+      status,
+      visibility,
+      drip_days as "dripDays",
+      unlock_after_previous as "unlockAfterPrevious"
+    from lessons
+    where module_id = ${legacySectionModule.id}
+    order by sort_order, id
+  `;
+  if (
+    JSON.stringify(flattenedLessonRows) !==
+    JSON.stringify([
+      {
+        title: "Direct lesson",
+        sortOrder: 0,
+        status: "published",
+        visibility: "visible",
+        dripDays: 0,
+        unlockAfterPrevious: false,
+      },
+      {
+        title: "Draft leading lesson",
+        sortOrder: 1,
+        status: "published",
+        visibility: "draft",
+        dripDays: 4,
+        unlockAfterPrevious: false,
+      },
+      {
+        title: "First section lesson",
+        sortOrder: 2,
+        status: "published",
+        visibility: "visible",
+        dripDays: 4,
+        unlockAfterPrevious: false,
+      },
+      {
+        title: "Draft interleaved lesson",
+        sortOrder: 3,
+        status: "published",
+        visibility: "draft",
+        dripDays: 4,
+        unlockAfterPrevious: false,
+      },
+      {
+        title: "Sequential section lesson",
+        sortOrder: 4,
+        status: "published",
+        visibility: "visible",
+        dripDays: 4,
+        unlockAfterPrevious: true,
+      },
+      {
+        title: "Archived section lesson",
+        sortOrder: 5,
+        status: "archived",
+        visibility: "draft",
+        dripDays: 7,
+        unlockAfterPrevious: false,
+      },
+    ])
+  ) {
+    throw new Error("Migration 0082 did not preserve flattened lesson access.");
+  }
+  const [flattenedVersion] = await testClient<
+    Array<{
+      schemaVersion: number;
+      accessPolicyVersion: number;
+      hasSections: boolean;
+      lessons: Array<{
+        id: string;
+        sortOrder: number;
+        status: string;
+        visibility: string;
+        dripDays: number;
+        unlockAfterPrevious: boolean;
+      }>;
+    }>
+  >`
+    select
+      (snapshot ->> 'schemaVersion')::int as "schemaVersion",
+      (snapshot ->> 'accessPolicyVersion')::int as "accessPolicyVersion",
+      snapshot -> 'modules' -> 0 ? 'sections' as "hasSections",
+      snapshot -> 'modules' -> 0 -> 'lessons' as lessons
+    from course_versions
+    where id = ${legacySectionVersion.id}
+  `;
+  const expectedSnapshotLessons = flattenedLessonRows.map((lesson) => ({
+    id: legacyLessonByTitle.get(lesson.title)!.id,
+    sortOrder: lesson.sortOrder,
+    status: lesson.status,
+    visibility: lesson.visibility,
+    dripDays: lesson.dripDays,
+    unlockAfterPrevious: lesson.unlockAfterPrevious,
+  }));
+  const actualSnapshotLessons = flattenedVersion.lessons.map((lesson) => ({
+    id: lesson.id,
+    sortOrder: lesson.sortOrder,
+    status: lesson.status,
+    visibility: lesson.visibility,
+    dripDays: lesson.dripDays,
+    unlockAfterPrevious: lesson.unlockAfterPrevious,
+  }));
+  if (
+    flattenedVersion.schemaVersion !== 6 ||
+    flattenedVersion.accessPolicyVersion !== 2 ||
+    flattenedVersion.hasSections ||
+    JSON.stringify(actualSnapshotLessons) !==
+      JSON.stringify(expectedSnapshotLessons)
+  ) {
+    throw new Error("Migration 0082 did not flatten the stored snapshot.");
+  }
+
+  const migratedHistoricalVersions = await testClient<
+    Array<{
+      id: string;
+      courseId: string;
+      organizationId: string;
+      snapshot: unknown;
+    }>
+  >`
+    select
+      id,
+      course_id as "courseId",
+      organization_id as "organizationId",
+      snapshot
+    from course_versions
+    where id in (
+      ${legacyLearningVersion.id},
+      ${legacyKindVersion.id},
+      ${legacyOutlineVersion.id},
+      ${legacySectionVersion.id}
+    )
+    order by id
+  `;
+  for (const migratedVersion of migratedHistoricalVersions) {
+    if (
+      !isValidPublishedCourseSnapshot(
+        migratedVersion.snapshot,
+        migratedVersion.courseId,
+        migratedVersion.organizationId,
+      )
+    ) {
+      throw new Error(
+        `Migration 0082 produced an invalid v6 snapshot from ${migratedVersion.id}.`,
+      );
+    }
+  }
+  const [migratedDraftVersion] = await testClient<
+    Array<{
+      courseId: string;
+      organizationId: string;
+      publishedAt: Date | null;
+      snapshot: {
+        schemaVersion: number;
+        accessPolicyVersion: number;
+        course: { id: string; organizationId: string; firstPublishedAt: null };
+        widgets: unknown[];
+        modules: unknown[];
+      };
+    }>
+  >`
+    select
+      course_id as "courseId",
+      organization_id as "organizationId",
+      published_at as "publishedAt",
+      snapshot
+    from course_versions
+    where id = ${legacyDraftVersion.id}
+  `;
+  if (
+    !migratedDraftVersion ||
+    migratedDraftVersion.courseId !== legacySectionCourse.id ||
+    migratedDraftVersion.organizationId !== legacyOrbitSourceOrganizationId ||
+    migratedDraftVersion.publishedAt !== null ||
+    migratedDraftVersion.snapshot.schemaVersion !== 6 ||
+    migratedDraftVersion.snapshot.accessPolicyVersion !== 2 ||
+    migratedDraftVersion.snapshot.course.id !== legacySectionCourse.id ||
+    migratedDraftVersion.snapshot.course.organizationId !==
+      legacyOrbitSourceOrganizationId ||
+    migratedDraftVersion.snapshot.course.firstPublishedAt !== null ||
+    migratedDraftVersion.snapshot.widgets.length !== 0 ||
+    migratedDraftVersion.snapshot.modules.length !== 0
+  ) {
+    throw new Error(
+      "Migration 0082 did not preserve a valid unpublished course version.",
+    );
+  }
+  const migratedLegacyLearning = migratedHistoricalVersions.find(
+    (version) => version.id === legacyLearningVersion.id,
+  );
+  const migratedLegacyKind = migratedHistoricalVersions.find(
+    (version) => version.id === legacyKindVersion.id,
+  );
+  const migratedLegacyOutline = migratedHistoricalVersions.find(
+    (version) => version.id === legacyOutlineVersion.id,
+  );
+  if (
+    !migratedLegacyLearning ||
+    !migratedLegacyKind ||
+    !migratedLegacyOutline
+  ) {
+    throw new Error("Migration 0082 lost a historical course version.");
+  }
+  if (
+    !isValidPublishedCourseSnapshot(
+      migratedLegacyLearning.snapshot,
+      migratedLegacyLearning.courseId,
+      migratedLegacyLearning.organizationId,
+    ) ||
+    migratedLegacyLearning.snapshot.modules[0]?.kind !== "learning" ||
+    migratedLegacyLearning.snapshot.modules[0]?.accessMode !== "delay_days" ||
+    migratedLegacyLearning.snapshot.modules[0]?.dripDays !== 3 ||
+    migratedLegacyLearning.snapshot.modules[0]?.indentLevel !== 0 ||
+    migratedLegacyLearning.snapshot.widgets.length !== 0 ||
+    migratedLegacyLearning.snapshot.course.firstPublishedAt !==
+      "2025-02-01T10:00:00.000Z"
+  ) {
+    throw new Error("Migration 0082 did not apply safe v2 snapshot defaults.");
+  }
+  if (
+    !isValidPublishedCourseSnapshot(
+      migratedLegacyKind.snapshot,
+      migratedLegacyKind.courseId,
+      migratedLegacyKind.organizationId,
+    ) ||
+    migratedLegacyKind.snapshot.modules[0]?.kind !== "learning" ||
+    migratedLegacyKind.snapshot.modules[0]?.accessMode !== "visible" ||
+    migratedLegacyKind.snapshot.modules[0]?.indentLevel !== 0 ||
+    migratedLegacyKind.snapshot.widgets.length !== 0 ||
+    migratedLegacyKind.snapshot.course.firstPublishedAt !==
+      "2026-08-10T10:00:00.000Z"
+  ) {
+    throw new Error("Migration 0082 did not apply safe v3 snapshot defaults.");
+  }
+  if (
+    !isValidPublishedCourseSnapshot(
+      migratedLegacyOutline.snapshot,
+      migratedLegacyOutline.courseId,
+      migratedLegacyOutline.organizationId,
+    ) ||
+    migratedLegacyOutline.snapshot.modules[0]?.accessMode !== "delay_days" ||
+    migratedLegacyOutline.snapshot.modules[0]?.dripDays !== 6 ||
+    migratedLegacyOutline.snapshot.modules[0]?.delayPendingState !== "hidden" ||
+    migratedLegacyOutline.snapshot.modules[0]?.requestAccessEnabled !== true ||
+    migratedLegacyOutline.snapshot.widgets.length !== 0
+  ) {
+    throw new Error("Migration 0082 did not preserve the v4 access policy.");
+  }
 
   const legacyOrbitRecovery = await testClient<
     Array<{
@@ -794,7 +1495,9 @@ try {
     order by asset.id
   `;
   if (legacyOrbitRecovery.length !== 2) {
-    throw new Error("Migration 0081 did not reserve every legacy Orbit object.");
+    throw new Error(
+      "Migration 0081 did not reserve every legacy Orbit object.",
+    );
   }
   const [legacyOrbitQuota] = await testClient<[{ quotaBytes: number }]>`
     select coalesce(sum(quota_bytes), 0)::bigint as "quotaBytes"
@@ -816,7 +1519,8 @@ try {
         `tenants/${legacyOrbitTargetOrganizationId}/assets/${reservation.id}/${source.safeFileName}` ||
       reservation.stagingStorageKey !==
         `incoming/tenants/${legacyOrbitTargetOrganizationId}/assets/${reservation.id}/source-${index ? "image" : "video"}.upload` ||
-      Number(reservation.declaredSizeBytes) !== Number(source.actualSizeBytes) ||
+      Number(reservation.declaredSizeBytes) !==
+        Number(source.actualSizeBytes) ||
       Number(reservation.quotaBytes) !== Number(source.actualSizeBytes) ||
       new Date(reservation.uploadExpiresAt).getTime() !==
         new Date(reservation.leaseExpiresAt).getTime() ||
@@ -1547,7 +2251,9 @@ try {
     recoveringMultipartSession.state !== "recovering" ||
     recoveringMultipartSession.providerUploadId !== null
   ) {
-    throw new Error("Multipart recovery claim did not preserve its DB invariant.");
+    throw new Error(
+      "Multipart recovery claim did not preserve its DB invariant.",
+    );
   }
   await expectConstraintViolation(
     () =>
@@ -2951,10 +3657,10 @@ try {
     `;
     const [lesson] = await tx<[{ id: string }]>`
       insert into lessons (
-        organization_id, module_id, title, slug, type, section_id
+        organization_id, module_id, title, slug, type
       ) values (
         ${organization.id}, ${learningModule.id}, 'Valid exam',
-        'valid-exam', 'exam', null
+        'valid-exam', 'exam'
       )
       returning id
     `;
@@ -2970,7 +3676,7 @@ try {
     };
   });
 
-  await expectConstraintViolation(
+  await expectDatabaseError(
     () =>
       testClient!.begin(async (tx) => {
         await tx`
@@ -2978,17 +3684,18 @@ try {
           values (${organization.id}, ${validExam.moduleId}, 'Forbidden section')
         `;
       }),
-    "Exam section insert",
+    ["42P01"],
+    "Removed module sections table",
   );
   await expectConstraintViolation(
     () =>
       testClient!.begin(async (tx) => {
         await tx`
           insert into lessons (
-            organization_id, module_id, title, slug, type, section_id
+            organization_id, module_id, title, slug, type
           ) values (
             ${organization.id}, ${validExam.moduleId}, 'Second exam',
-            'second-exam', 'exam', null
+            'second-exam', 'exam'
           )
         `;
       }),

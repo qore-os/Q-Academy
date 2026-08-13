@@ -27,7 +27,6 @@ type ExamPublicationBlock = {
 
 type ExamPublicationLesson = {
   id: string;
-  sectionId: string | null;
   type: string;
   status: string;
   visibility?: string;
@@ -43,7 +42,6 @@ type ExamPublicationLesson = {
 type ExamPublicationModule = {
   kind?: ModuleKind;
   lessons: ExamPublicationLesson[];
-  sections: Array<{ lessons: ExamPublicationLesson[] }>;
 };
 
 export function effectiveModuleKind(kind: unknown): ModuleKind {
@@ -56,25 +54,20 @@ export function examModulePublicationErrors(
   if (effectiveModuleKind(learningModule.kind) !== "exam") return [];
 
   const errors: string[] = [];
-  const allLessons = [
-    ...learningModule.lessons,
-    ...learningModule.sections.flatMap((section) => section.lessons),
-  ];
-  if (learningModule.sections.length > 0) {
-    errors.push("Pruefungsmodule duerfen keine Sektionen enthalten.");
-  }
-  if (allLessons.length !== 1) {
+  if (learningModule.lessons.length !== 1) {
     errors.push("Ein Pruefungsmodul benoetigt genau eine Pruefung.");
   }
-  const lesson = allLessons[0];
+  const lesson = learningModule.lessons[0];
   if (!lesson) return errors;
-  if (lesson.sectionId !== null || lesson.type !== "exam") {
-    errors.push("Die Pruefung muss ohne Sektion als Typ Pruefung angelegt sein.");
+  if (lesson.type !== "exam") {
+    errors.push("Die Pruefung muss als Typ Pruefung angelegt sein.");
   }
   const visibility =
     lesson.visibility ?? (lesson.status === "published" ? "visible" : "draft");
   if (lesson.status !== "published" || visibility !== "visible") {
-    errors.push("Die Pruefung muss fuer die Veroeffentlichung freigegeben sein.");
+    errors.push(
+      "Die Pruefung muss fuer die Veroeffentlichung freigegeben sein.",
+    );
   }
 
   const blocks = [

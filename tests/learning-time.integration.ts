@@ -94,8 +94,8 @@ async function accessibleFixture() {
     })
     .returning();
   const snapshot: CourseVersionSnapshot = {
-    schemaVersion: 4,
-    accessPolicyVersion: 1,
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
     moduleKindVersion: 1,
     courseOutlineVersion: 1,
     capturedAt: now.toISOString(),
@@ -128,7 +128,6 @@ async function accessibleFixture() {
             pages: [],
           },
         ],
-        sections: [],
       },
     ],
   };
@@ -307,10 +306,7 @@ test("learning-time heartbeat is idempotent, serialized and access-bound", async
     const nextSnapshot = structuredClone(fixture.snapshot);
     nextSnapshot.capturedAt = new Date(base.getTime() + 62_000).toISOString();
     const snapshotLesson = nextSnapshot.modules
-      .flatMap((learningModule) => [
-        ...learningModule.lessons,
-        ...learningModule.sections.flatMap((section) => section.lessons),
-      ])
+      .flatMap((learningModule) => learningModule.lessons)
       .find((lesson) => lesson.id === fixture.lessonId);
     assert.ok(snapshotLesson);
     snapshotLesson.title = nextLessonTitle;

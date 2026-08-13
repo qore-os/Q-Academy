@@ -40,7 +40,6 @@ test("a stale shared-block save never binds replacement media before its revisio
   const sourceCourseId = randomUUID();
   const targetCourseId = randomUUID();
   const moduleId = randomUUID();
-  const sectionId = randomUUID();
   const lessonId = randomUUID();
   const blockId = randomUUID();
   const originalAssetId = randomUUID();
@@ -101,19 +100,11 @@ test("a stale shared-block save never binds replacement media before its revisio
         (${fixture.organizationId}, ${targetCourseId}, ${moduleId}, 0, 0, true)
     `;
     await sql`
-      insert into module_sections (
-        id, organization_id, module_id, title, sort_order
-      ) values (
-        ${sectionId}, ${fixture.organizationId}, ${moduleId},
-        ${`Revision section ${suffix}`}, 0
-      )
-    `;
-    await sql`
       insert into lessons (
-        id, organization_id, module_id, section_id, title, slug, type,
+        id, organization_id, module_id, title, slug, type,
         status, duration_minutes, sort_order
       ) values (
-        ${lessonId}, ${fixture.organizationId}, ${moduleId}, ${sectionId},
+        ${lessonId}, ${fixture.organizationId}, ${moduleId},
         ${`Revision lesson ${suffix}`}, ${`revision-lesson-${suffix}`},
         'lesson', 'published', 10, 0
       )

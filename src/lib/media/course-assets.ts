@@ -20,19 +20,11 @@ import {
   canReadCourseMedia,
 } from "@/lib/media/access-policy";
 
-export type ExpectedCourseMediaKind =
-  | "image"
-  | "audio"
-  | "video"
-  | "document";
+export type ExpectedCourseMediaKind = "image" | "audio" | "video" | "document";
 
 function snapshotBlocks(snapshot: CourseVersionSnapshot) {
   return snapshot.modules.flatMap((learningModule) => {
-    const lessons = [
-      ...learningModule.lessons,
-      ...learningModule.sections.flatMap((section) => section.lessons),
-    ];
-    return lessons.flatMap((lesson) => [
+    return learningModule.lessons.flatMap((lesson) => [
       ...lesson.blocks,
       ...lesson.pages.flatMap((page) => page.blocks),
     ]);
@@ -56,16 +48,12 @@ export function courseSnapshotMediaAssets(snapshot: CourseVersionSnapshot) {
     assets.set(mediaAssetId, expectedKind);
   };
 
-  const coverMediaAssetId = courseCoverMediaAssetId(
-    snapshot.course.coverImage,
-  );
+  const coverMediaAssetId = courseCoverMediaAssetId(snapshot.course.coverImage);
   if (coverMediaAssetId) registerAsset(coverMediaAssetId, "image");
 
-  if (snapshot.schemaVersion === 5) {
-    for (const widget of snapshot.widgets ?? []) {
-      if (widget.type === "image_link" && widget.mediaAssetId) {
-        registerAsset(widget.mediaAssetId, "image");
-      }
+  for (const widget of snapshot.widgets ?? []) {
+    if (widget.type === "image_link" && widget.mediaAssetId) {
+      registerAsset(widget.mediaAssetId, "image");
     }
   }
 
@@ -129,8 +117,7 @@ export function courseSnapshotHasVideoComposition(
   snapshot: CourseVersionSnapshot,
 ) {
   return snapshotBlocks(snapshot).some(
-    (block) =>
-      block.type === "video" && Boolean(block.data.videoComposition),
+    (block) => block.type === "video" && Boolean(block.data.videoComposition),
   );
 }
 
@@ -146,7 +133,6 @@ export function courseSnapshotWidgetsReferenceMediaAsset(
   mediaAssetId: string,
 ) {
   return Boolean(
-    snapshot.schemaVersion === 5 &&
     snapshot.widgets?.some(
       (widget) =>
         widget.type === "image_link" && widget.mediaAssetId === mediaAssetId,
@@ -219,8 +205,9 @@ export async function bindReadyCourseMediaAssets(
             ),
           )
       : [];
-  const boundCourseIds = [...new Set(bindings.map((binding) => binding.courseId))]
-    .sort();
+  const boundCourseIds = [
+    ...new Set(bindings.map((binding) => binding.courseId)),
+  ].sort();
   const grants = boundCourseIds.length
     ? await transaction
         .select({
@@ -251,25 +238,23 @@ export async function bindReadyCourseMediaAssets(
     bindingsByAsset.set(binding.mediaAssetId, current);
   }
   const validAssets = new Map(rows.map((row) => [row.id, row]));
-  const invalid = assetIds.find(
-    (assetId) => {
-      const asset = validAssets.get(assetId);
-      if (!asset || asset.kind !== expectedAssets.get(assetId)) return true;
-      const permissions = bindingsByAsset.get(assetId) ?? [];
-      const accessFacts = {
-        role: actor.role,
-        uploadedByActor: asset.uploadedById === actor.id,
-        isBound: permissions.length > 0,
-        hasViewGrant: permissions.some(Boolean),
-        hasEditGrant: permissions.some(
-          (permission) => permission === "edit" || permission === "manage",
-        ),
-      };
-      return !(input.access === "manage"
-        ? canManageCourseMedia(accessFacts)
-        : canReadCourseMedia(accessFacts));
-    },
-  );
+  const invalid = assetIds.find((assetId) => {
+    const asset = validAssets.get(assetId);
+    if (!asset || asset.kind !== expectedAssets.get(assetId)) return true;
+    const permissions = bindingsByAsset.get(assetId) ?? [];
+    const accessFacts = {
+      role: actor.role,
+      uploadedByActor: asset.uploadedById === actor.id,
+      isBound: permissions.length > 0,
+      hasViewGrant: permissions.some(Boolean),
+      hasEditGrant: permissions.some(
+        (permission) => permission === "edit" || permission === "manage",
+      ),
+    };
+    return !(input.access === "manage"
+      ? canManageCourseMedia(accessFacts)
+      : canReadCourseMedia(accessFacts));
+  });
   if (invalid) {
     throw new ApiError(
       409,

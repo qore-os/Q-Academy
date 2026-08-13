@@ -102,18 +102,10 @@ test("members stay on the last published course version until republish", async 
       )
       values (${fixture.organization_id}, ${courseId}, ${moduleId}, 0, true)
     `;
-    const [section] = await client<{ id: string }[]>`
-      insert into module_sections (
-        organization_id, module_id, title, sort_order, status
-      )
-      values (${fixture.organization_id}, ${moduleId}, 'Start', 0, 'published')
-      returning id
-    `;
     const [lesson] = await client<{ id: string }[]>`
       insert into lessons (
         organization_id,
         module_id,
-        section_id,
         title,
         slug,
         summary,
@@ -124,7 +116,6 @@ test("members stay on the last published course version until republish", async 
       ) values (
         ${fixture.organization_id},
         ${moduleId},
-        ${section.id},
         ${lessonTitle},
         'stabile-lektion',
         'Diese Lektion behaelt ihre ID ueber alle Kursversionen.',
@@ -336,7 +327,7 @@ test("members stay on the last published course version until republish", async 
       select
         (select count(*)::int from course_versions where course_id = c.id) as version_count,
         cv.snapshot -> 'course' ->> 'title' as published_title,
-        cv.snapshot -> 'modules' -> 0 -> 'sections' -> 0 -> 'lessons' -> 0 -> 'blocks' -> 0 -> 'data' ->> 'text' as published_text
+        cv.snapshot -> 'modules' -> 0 -> 'lessons' -> 0 -> 'blocks' -> 0 -> 'data' ->> 'text' as published_text
       from courses c
       join course_versions cv on cv.id = c.published_version_id
       where c.id = ${courseId}

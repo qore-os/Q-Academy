@@ -37,7 +37,7 @@ Mitglieder- und Datenprofildetails, Community-Profile und Rich-Text-Eingaben,
 Kursdetail und Lektionsleser sowie die zentralen Bereiche des Kurseditors.
 
 Zusaetzliche typisierte Kataloge decken Community-Mitglieder- und Admin-
-Oberflaechen, stabile Community-/Kurseditor-/Hub-Action-Codes, Sektion-/
+Oberflaechen, stabile Community-/Kurseditor-/Hub-Action-Codes,
 Lektionskopien, Plattform-Custom-Code, Ankuendigungen und weitere Fachdialoge
 ab. Die Vertraege vergleichen fuer `de`, `en`, `it`, `es` und `fr` identische
 Keys, Interpolationsplatzhalter und nichtleere Werte; das E-Mail-Center behaelt

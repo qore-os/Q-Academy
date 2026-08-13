@@ -2,7 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
-import { lessons, modules, moduleSections } from "@/db/schema";
+import { lessons, modules } from "@/db/schema";
 import { createLessonPageWithTitleSync } from "@/lib/lesson-page-title-sync-service";
 import type { ModuleStructureTransaction } from "@/lib/module-structure-service";
 import { slugify } from "@/lib/utils";
@@ -23,7 +23,6 @@ export async function createModuleWithStructure(
     folder: string;
     isReusable: boolean;
     estimatedMinutes: number;
-    createLearningSection?: boolean;
   },
 ) {
   const [learningModule] = await transaction
@@ -41,23 +40,11 @@ export async function createModuleWithStructure(
     .returning();
 
   if (input.kind === "link") {
-    return { learningModule, lesson: null, page: null, section: null };
+    return { learningModule, lesson: null, page: null };
   }
 
   if (input.kind === "learning") {
-    if (!input.createLearningSection) {
-      return { learningModule, lesson: null, page: null, section: null };
-    }
-    const [section] = await transaction
-      .insert(moduleSections)
-      .values({
-        organizationId: input.organizationId,
-        moduleId: learningModule.id,
-        title: "Start",
-        sortOrder: 0,
-      })
-      .returning();
-    return { learningModule, lesson: null, page: null, section };
+    return { learningModule, lesson: null, page: null };
   }
 
   const lessonSlug = uniqueContentSlug(input.title);
@@ -66,7 +53,6 @@ export async function createModuleWithStructure(
     .values({
       organizationId: input.organizationId,
       moduleId: learningModule.id,
-      sectionId: null,
       title: input.title,
       slug: lessonSlug,
       summary: input.description,
@@ -91,7 +77,7 @@ export async function createModuleWithStructure(
       status: "published",
     },
   });
-  return { learningModule, lesson, page, section: null };
+  return { learningModule, lesson, page };
 }
 
 export type CreatedModuleStructure = Awaited<

@@ -18,7 +18,6 @@ import {
   lessons,
   mediaAssetDerivatives,
   mediaAssets,
-  moduleSections,
   modules,
   orbitAuditEvents,
   orbitInstances,
@@ -55,10 +54,7 @@ import {
   type MediaObjectIdentity,
 } from "@/lib/media/storage-key";
 import { requireOrbitAccess } from "@/lib/orbit/access";
-import {
-  resolvedOrbitPermissions,
-  type OrbitRole,
-} from "@/lib/orbit/policy";
+import { resolvedOrbitPermissions, type OrbitRole } from "@/lib/orbit/policy";
 import {
   orbitTransferConfirmationMatches,
   type OrbitTransferWarningCode,
@@ -155,7 +151,11 @@ function sourceMimeType(asset: SourceMedia) {
 function actualSize(asset: SourceMedia) {
   const size = Number(asset.actualSizeBytes);
   if (!Number.isSafeInteger(size) || size <= 0) {
-    throw new ApiError(409, "conflict", "Ein Quellmedium besitzt keine gueltige Groesse.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Ein Quellmedium besitzt keine gueltige Groesse.",
+    );
   }
   return size;
 }
@@ -180,7 +180,11 @@ async function lockAndAssertTransferAuthorization(input: {
     .limit(1)
     .for("update");
   if (!membership) {
-    throw new ApiError(403, "forbidden", "Die Orbit-Berechtigung wurde entzogen.");
+    throw new ApiError(
+      403,
+      "forbidden",
+      "Die Orbit-Berechtigung wurde entzogen.",
+    );
   }
   const [permissionSet] = membership.permissionSetId
     ? await input.tx
@@ -195,14 +199,22 @@ async function lockAndAssertTransferAuthorization(input: {
         .limit(1)
     : [{ permissions: null }];
   if (membership.permissionSetId && !permissionSet) {
-    throw new ApiError(403, "forbidden", "Die Orbit-Berechtigung wurde entzogen.");
+    throw new ApiError(
+      403,
+      "forbidden",
+      "Die Orbit-Berechtigung wurde entzogen.",
+    );
   }
   const permissions = resolvedOrbitPermissions({
     role: membership.role as OrbitRole,
     permissionSet: permissionSet?.permissions ?? null,
   });
   if (!permissions.has("transfers:create")) {
-    throw new ApiError(403, "forbidden", "Die Orbit-Berechtigung wurde entzogen.");
+    throw new ApiError(
+      403,
+      "forbidden",
+      "Die Orbit-Berechtigung wurde entzogen.",
+    );
   }
   return membership.role;
 }
@@ -220,7 +232,11 @@ async function loadPreflight(
   });
   const normalizedCourseIds = [...new Set(input.sourceCourseIds)].sort();
   if (!normalizedCourseIds.length || normalizedCourseIds.length > 25) {
-    throw new ApiError(422, "validation_error", "Es muessen 1 bis 25 eindeutige Kurse ausgewaehlt werden.");
+    throw new ApiError(
+      422,
+      "validation_error",
+      "Es muessen 1 bis 25 eindeutige Kurse ausgewaehlt werden.",
+    );
   }
   const instanceRows = await db
     .select()
@@ -241,16 +257,31 @@ async function loadPreflight(
     (instance) => instance.organizationId === input.targetOrganizationId,
   );
   if (!sourceInstance || !targetInstance) {
-    throw new ApiError(404, "not_found", "Quell- oder Zielinstanz ist nicht Teil der Orbit-Organisation.");
+    throw new ApiError(
+      404,
+      "not_found",
+      "Quell- oder Zielinstanz ist nicht Teil der Orbit-Organisation.",
+    );
   }
-  if (sourceInstance.status !== "active" || targetInstance.status !== "active") {
-    throw new ApiError(409, "conflict", "Quell- und Zielinstanz muessen aktiv sein.");
+  if (
+    sourceInstance.status !== "active" ||
+    targetInstance.status !== "active"
+  ) {
+    throw new ApiError(
+      409,
+      "conflict",
+      "Quell- und Zielinstanz muessen aktiv sein.",
+    );
   }
   if (
     !sourceInstance.entitlements.includes("content_transfer") ||
     !targetInstance.entitlements.includes("content_transfer")
   ) {
-    throw new ApiError(409, "conflict", "Content-Transfer ist fuer eine der Instanzen nicht freigeschaltet.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Content-Transfer ist fuer eine der Instanzen nicht freigeschaltet.",
+    );
   }
 
   const courseRows = await db
@@ -273,7 +304,11 @@ async function loadPreflight(
     )
     .orderBy(asc(courses.id));
   if (courseRows.length !== normalizedCourseIds.length) {
-    throw new ApiError(404, "not_found", "Mindestens ein publizierter Quellkurs wurde nicht gefunden.");
+    throw new ApiError(
+      404,
+      "not_found",
+      "Mindestens ein publizierter Quellkurs wurde nicht gefunden.",
+    );
   }
   for (const row of courseRows) {
     if (
@@ -283,7 +318,11 @@ async function loadPreflight(
         input.sourceOrganizationId,
       )
     ) {
-      throw new ApiError(409, "conflict", "Ein Quellkurs besitzt keinen gueltigen publizierten Snapshot.");
+      throw new ApiError(
+        409,
+        "conflict",
+        "Ein Quellkurs besitzt keinen gueltigen publizierten Snapshot.",
+      );
     }
     if (courseSnapshotHasVideoComposition(row.version.snapshot)) {
       throw new ApiError(
@@ -303,10 +342,16 @@ async function loadPreflight(
 
   const expectedMedia = new Map<string, string>();
   for (const row of courseRows) {
-    for (const [assetId, kind] of courseSnapshotMediaAssets(row.version.snapshot)) {
+    for (const [assetId, kind] of courseSnapshotMediaAssets(
+      row.version.snapshot,
+    )) {
       const previous = expectedMedia.get(assetId);
       if (previous && previous !== kind) {
-        throw new ApiError(409, "conflict", "Ein Quellmedium wird widerspruechlich verwendet.");
+        throw new ApiError(
+          409,
+          "conflict",
+          "Ein Quellmedium wird widerspruechlich verwendet.",
+        );
       }
       expectedMedia.set(assetId, kind);
     }
@@ -337,9 +382,16 @@ async function loadPreflight(
         !asset.actualSizeBytes,
     )
   ) {
-    throw new ApiError(409, "conflict", "Alle referenzierten Kursmedien muessen bereit und kopierbar sein.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Alle referenzierten Kursmedien muessen bereit und kopierbar sein.",
+    );
   }
-  const mediaBytes = mediaRows.reduce((sum, asset) => sum + actualSize(asset), 0);
+  const mediaBytes = mediaRows.reduce(
+    (sum, asset) => sum + actualSize(asset),
+    0,
+  );
 
   let sourceAttributions: ReturnType<
     typeof extractOrbitTransferSourceAttributions
@@ -369,78 +421,85 @@ async function loadPreflight(
       "Ein Transfer kann hoechstens 1.000 eindeutige Quellautoren enthalten.",
     );
   }
-  const sourceAuthorIds = sourceAttributions.map((author) => author.sourceUserId);
-  const [[targetCounts], targetAuthorRows, sourceAuthorRows] = await Promise.all([
-    db
-      .select({
-        courseCount: sql<number>`(select count(*)::int from ${courses} where ${courses.organizationId} = ${input.targetOrganizationId})`,
-        userCount: sql<number>`(select count(*)::int from ${users} where ${users.organizationId} = ${input.targetOrganizationId} and ${users.status} = 'active')`,
-        mediaBytes: sql<number>`(
+  const sourceAuthorIds = sourceAttributions.map(
+    (author) => author.sourceUserId,
+  );
+  const [[targetCounts], targetAuthorRows, sourceAuthorRows] =
+    await Promise.all([
+      db
+        .select({
+          courseCount: sql<number>`(select count(*)::int from ${courses} where ${courses.organizationId} = ${input.targetOrganizationId})`,
+          userCount: sql<number>`(select count(*)::int from ${users} where ${users.organizationId} = ${input.targetOrganizationId} and ${users.status} = 'active')`,
+          mediaBytes: sql<number>`(
           coalesce((select sum(${mediaAssets.quotaBytes}) from ${mediaAssets} where ${mediaAssets.organizationId} = ${input.targetOrganizationId}), 0) +
           coalesce((select sum(${mediaAssetDerivatives.sizeBytes}) from ${mediaAssetDerivatives} where ${mediaAssetDerivatives.organizationId} = ${input.targetOrganizationId}), 0)
         )::bigint`,
-      })
-      .from(orbitInstances)
-      .where(
-        and(
-          eq(orbitInstances.workspaceId, workspaceId),
-          eq(orbitInstances.organizationId, input.targetOrganizationId),
+        })
+        .from(orbitInstances)
+        .where(
+          and(
+            eq(orbitInstances.workspaceId, workspaceId),
+            eq(orbitInstances.organizationId, input.targetOrganizationId),
+          ),
+        )
+        .limit(1),
+      db
+        .select({
+          id: users.id,
+          email: users.email,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          avatarUrl: users.avatarUrl,
+          jobTitle: users.jobTitle,
+          bio: users.bio,
+          role: users.role,
+          status: users.status,
+        })
+        .from(users)
+        .where(
+          and(
+            eq(users.organizationId, input.targetOrganizationId),
+            eq(users.status, "active"),
+            inArray(users.role, ORBIT_TRANSFER_AUTHOR_ROLES),
+          ),
+        )
+        .orderBy(
+          sql`case when ${users.role} = 'owner' then 0 when ${users.role} = 'admin' then 1 else 2 end`,
+          users.lastName,
+          users.firstName,
+          users.id,
         ),
-      )
-      .limit(1),
-    db
-      .select({
-        id: users.id,
-        email: users.email,
-        firstName: users.firstName,
-        lastName: users.lastName,
-        avatarUrl: users.avatarUrl,
-        jobTitle: users.jobTitle,
-        bio: users.bio,
-        role: users.role,
-        status: users.status,
-      })
-      .from(users)
-      .where(
-        and(
-          eq(users.organizationId, input.targetOrganizationId),
-          eq(users.status, "active"),
-          inArray(users.role, ORBIT_TRANSFER_AUTHOR_ROLES),
-        ),
-      )
-      .orderBy(
-        sql`case when ${users.role} = 'owner' then 0 when ${users.role} = 'admin' then 1 else 2 end`,
-        users.lastName,
-        users.firstName,
-        users.id,
-      ),
-    sourceAuthorIds.length
-      ? db
-          .select({
-            id: users.id,
-            email: users.email,
-            firstName: users.firstName,
-            lastName: users.lastName,
-            avatarUrl: users.avatarUrl,
-            jobTitle: users.jobTitle,
-            bio: users.bio,
-            role: users.role,
-            status: users.status,
-          })
-          .from(users)
-          .where(
-            and(
-              eq(users.organizationId, input.sourceOrganizationId),
-              inArray(users.id, sourceAuthorIds),
-            ),
-          )
-      : Promise.resolve([]),
-  ]);
+      sourceAuthorIds.length
+        ? db
+            .select({
+              id: users.id,
+              email: users.email,
+              firstName: users.firstName,
+              lastName: users.lastName,
+              avatarUrl: users.avatarUrl,
+              jobTitle: users.jobTitle,
+              bio: users.bio,
+              role: users.role,
+              status: users.status,
+            })
+            .from(users)
+            .where(
+              and(
+                eq(users.organizationId, input.sourceOrganizationId),
+                inArray(users.id, sourceAuthorIds),
+              ),
+            )
+        : Promise.resolve([]),
+    ]);
   const targetOwner = targetAuthorRows.find(
     (candidate) => candidate.role === "owner" || candidate.role === "admin",
   );
   if (!targetOwner) {
-    throw new ApiError(409, "conflict", "Die Zielinstanz benoetigt einen aktiven Eigentuemer oder Administrator.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Die Zielinstanz benoetigt einen aktiven Eigentuemer oder Administrator.",
+    );
   }
   const authorResolution = resolveOrbitTransferAuthorMappings({
     attributions: sourceAttributions,
@@ -459,10 +518,18 @@ async function loadPreflight(
   const targetUserCount = Number(targetCounts?.userCount ?? 0);
   const targetMediaBytes = Number(targetCounts?.mediaBytes ?? 0);
   if (targetCourseCount + courseRows.length > targetInstance.courseLimit) {
-    throw new ApiError(409, "conflict", "Der Transfer wuerde das Kurslimit der Zielinstanz ueberschreiten.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Der Transfer wuerde das Kurslimit der Zielinstanz ueberschreiten.",
+    );
   }
   if (targetMediaBytes + mediaBytes > mediaStorageLimits().tenantQuotaBytes) {
-    throw new ApiError(409, "conflict", "Der Transfer wuerde das Medienkontingent der Zielinstanz ueberschreiten.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Der Transfer wuerde das Medienkontingent der Zielinstanz ueberschreiten.",
+    );
   }
   const warnings: OrbitTransferWarningCode[] = [];
   if (targetUserCount > targetInstance.seatLimit) {
@@ -482,10 +549,7 @@ async function loadPreflight(
   }
   const hasTenantBoundBlock = courseRows.some((row) =>
     row.version.snapshot.modules.some((learningModule) =>
-      [
-        ...learningModule.lessons,
-        ...learningModule.sections.flatMap((section) => section.lessons),
-      ].some((lesson) =>
+      [...learningModule.lessons].some((lesson) =>
         [...lesson.blocks, ...lesson.pages.flatMap((page) => page.blocks)].some(
           (block) => Boolean(block.data.agentId || block.data.formId),
         ),
@@ -598,7 +662,12 @@ export async function preflightOrbitTransfer(
 
 function objectName(storageKey: string) {
   const name = storageKey.split("/").at(-1);
-  if (!name) throw new ApiError(409, "conflict", "Ein Quellmedium besitzt keinen gueltigen Speicherschluessel.");
+  if (!name)
+    throw new ApiError(
+      409,
+      "conflict",
+      "Ein Quellmedium besitzt keinen gueltigen Speicherschluessel.",
+    );
   return name;
 }
 
@@ -620,7 +689,11 @@ async function copyTransferMedia(input: {
     safeFileName: objectName(input.source.stagingStorageKey),
   });
   if (!storageKey || !stagingStorageKey || !input.source.contentSha256) {
-    throw new ApiError(409, "conflict", "Der Zielschluessel fuer ein Kursmedium ist ungueltig.");
+    throw new ApiError(
+      409,
+      "conflict",
+      "Der Zielschluessel fuer ein Kursmedium ist ungueltig.",
+    );
   }
   const targetStaging: MediaObjectIdentity = {
     organizationId: input.targetOrganizationId,
@@ -686,7 +759,8 @@ async function copyTransferMedia(input: {
 function targetSlug(source: SourceCourse, targetId: string, used: Set<string>) {
   const base = (slugify(source.course.title) || "kurs").slice(0, 160);
   let candidate = base;
-  if (used.has(candidate)) candidate = `${base.slice(0, 151)}-${targetId.slice(0, 8)}`;
+  if (used.has(candidate))
+    candidate = `${base.slice(0, 151)}-${targetId.slice(0, 8)}`;
   let suffix = 2;
   while (used.has(candidate)) {
     candidate = `${base.slice(0, 168)}-${suffix}`;
@@ -774,37 +848,22 @@ async function insertSnapshotGraph(
       accessMode: learningModule.accessMode ?? "visible",
       dripDays: learningModule.dripDays,
       delayPendingState: learningModule.delayPendingState ?? "locked",
-      availableFrom: learningModule.availableFrom ? new Date(learningModule.availableFrom) : null,
-      availableUntil: learningModule.availableUntil ? new Date(learningModule.availableUntil) : null,
+      availableFrom: learningModule.availableFrom
+        ? new Date(learningModule.availableFrom)
+        : null,
+      availableUntil: learningModule.availableUntil
+        ? new Date(learningModule.availableUntil)
+        : null,
       windowDefaultState: learningModule.windowDefaultState ?? "locked",
       windowState: learningModule.windowState ?? "available",
       requestAccessEnabled: learningModule.requestAccessEnabled ?? false,
       isRequired: learningModule.isRequired,
     });
-    for (const section of learningModule.sections) {
-      await tx.insert(moduleSections).values({
-        id: section.id,
-        organizationId,
-        moduleId: learningModule.id,
-        title: section.title,
-        description: section.description,
-        sortOrder: section.sortOrder,
-        status: section.status,
-        visibility: section.visibility ?? "visible",
-        unlockAfterPrevious: section.unlockAfterPrevious,
-        dripDays: section.dripDays,
-      });
-    }
-    const snapshotLessons = [
-      ...learningModule.lessons,
-      ...learningModule.sections.flatMap((section) => section.lessons),
-    ];
-    for (const lesson of snapshotLessons) {
+    for (const lesson of learningModule.lessons) {
       await tx.insert(lessons).values({
         id: lesson.id,
         organizationId,
         moduleId: learningModule.id,
-        sectionId: lesson.sectionId,
         title: lesson.title,
         slug: lesson.slug,
         summary: lesson.summary,
@@ -822,6 +881,8 @@ async function insertSnapshotGraph(
         status: lesson.status,
         visibility: lesson.visibility ?? "visible",
         availableAt: lesson.availableAt ? new Date(lesson.availableAt) : null,
+        dripDays: lesson.dripDays,
+        unlockAfterPrevious: lesson.unlockAfterPrevious,
       });
       if (lesson.blocks.length) {
         await tx.insert(contentBlocks).values(
@@ -921,11 +982,19 @@ export async function createOrbitTransfer(input: {
       );
     }
     if (replay.status === "processing" || replay.status === "planned") {
-      throw new ApiError(409, "conflict", "Der idempotente Transfer wird bereits verarbeitet.");
+      throw new ApiError(
+        409,
+        "conflict",
+        "Der idempotente Transfer wird bereits verarbeitet.",
+      );
     }
     return { job: publicOrbitTransferJob(replay), created: false };
   }
-  const preflight = await loadPreflight(input.user, input.workspaceId, input.request);
+  const preflight = await loadPreflight(
+    input.user,
+    input.workspaceId,
+    input.request,
+  );
   if (
     !preflight.confirmationToken ||
     !preflight.authorMappingsComplete ||
@@ -942,9 +1011,15 @@ export async function createOrbitTransfer(input: {
       "Der Transfer-Preflight, seine Autoren-Zuordnung oder seine Warnungsbestaetigung ist nicht mehr aktuell.",
     );
   }
-  const courseIdMap = new Map(preflight.courses.map((row) => [row.course.id, randomUUID()]));
-  const versionIdMap = new Map(preflight.courses.map((row) => [row.version.id, randomUUID()]));
-  const mediaIdMap = new Map(preflight.media.map((asset) => [asset.id, randomUUID()]));
+  const courseIdMap = new Map(
+    preflight.courses.map((row) => [row.course.id, randomUUID()]),
+  );
+  const versionIdMap = new Map(
+    preflight.courses.map((row) => [row.version.id, randomUUID()]),
+  );
+  const mediaIdMap = new Map(
+    preflight.media.map((asset) => [asset.id, randomUUID()]),
+  );
   const transferClaimToken = randomUUID();
   const claim = await db.transaction(async (tx) => {
     await tx.execute(
@@ -970,10 +1045,18 @@ export async function createOrbitTransfer(input: {
         );
       }
       if (existing.requestHash !== requestHash) {
-        throw new ApiError(409, "idempotency_conflict", "Der Idempotency-Key wurde fuer eine andere Transferanfrage verwendet.");
+        throw new ApiError(
+          409,
+          "idempotency_conflict",
+          "Der Idempotency-Key wurde fuer eine andere Transferanfrage verwendet.",
+        );
       }
       if (existing.status === "processing" || existing.status === "planned") {
-        throw new ApiError(409, "conflict", "Der idempotente Transfer wird bereits verarbeitet.");
+        throw new ApiError(
+          409,
+          "conflict",
+          "Der idempotente Transfer wird bereits verarbeitet.",
+        );
       }
       return { existing } as const;
     }
@@ -1145,7 +1228,11 @@ export async function createOrbitTransfer(input: {
       ],
     });
     if (finalAccess.actor.accountId !== preflight.actorAccountId) {
-      throw new ApiError(403, "forbidden", "Die Orbit-Identitaet hat sich geaendert.");
+      throw new ApiError(
+        403,
+        "forbidden",
+        "Die Orbit-Identitaet hat sich geaendert.",
+      );
     }
     await heartbeat.assertActive();
     await heartbeat.stop();
@@ -1190,10 +1277,12 @@ export async function createOrbitTransfer(input: {
         )
         .for("update");
       const sourceInstance = currentInstances.find(
-        (instance) => instance.organizationId === input.request.sourceOrganizationId,
+        (instance) =>
+          instance.organizationId === input.request.sourceOrganizationId,
       );
       const targetInstance = currentInstances.find(
-        (instance) => instance.organizationId === input.request.targetOrganizationId,
+        (instance) =>
+          instance.organizationId === input.request.targetOrganizationId,
       );
       if (
         !sourceInstance ||
@@ -1203,7 +1292,11 @@ export async function createOrbitTransfer(input: {
         !sourceInstance.entitlements.includes("content_transfer") ||
         !targetInstance.entitlements.includes("content_transfer")
       ) {
-        throw new ApiError(409, "conflict", "Quell- oder Zielinstanz ist nicht mehr fuer Transfers verfuegbar.");
+        throw new ApiError(
+          409,
+          "conflict",
+          "Quell- oder Zielinstanz ist nicht mehr fuer Transfers verfuegbar.",
+        );
       }
       if (currentRole === "partner") {
         const now = new Date();
@@ -1243,15 +1336,26 @@ export async function createOrbitTransfer(input: {
           !activeOrganizations.has(input.request.sourceOrganizationId) ||
           !activeOrganizations.has(input.request.targetOrganizationId)
         ) {
-          throw new ApiError(403, "forbidden", "Die Orbit-Delegation wurde entzogen.");
+          throw new ApiError(
+            403,
+            "forbidden",
+            "Die Orbit-Delegation wurde entzogen.",
+          );
         }
       }
       const [courseCount] = await tx
         .select({ count: sql<number>`count(*)::int` })
         .from(courses)
         .where(eq(courses.organizationId, input.request.targetOrganizationId));
-      if (Number(courseCount?.count ?? 0) + preflight.courses.length > targetInstance.courseLimit) {
-        throw new ApiError(409, "conflict", "Das Kurslimit der Zielinstanz wurde zwischenzeitlich erreicht.");
+      if (
+        Number(courseCount?.count ?? 0) + preflight.courses.length >
+        targetInstance.courseLimit
+      ) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "Das Kurslimit der Zielinstanz wurde zwischenzeitlich erreicht.",
+        );
       }
       const [mediaUsage] = await tx
         .select({
@@ -1264,12 +1368,21 @@ export async function createOrbitTransfer(input: {
         .where(
           and(
             eq(orbitInstances.workspaceId, input.workspaceId),
-            eq(orbitInstances.organizationId, input.request.targetOrganizationId),
+            eq(
+              orbitInstances.organizationId,
+              input.request.targetOrganizationId,
+            ),
           ),
         )
         .limit(1);
-      if (Number(mediaUsage?.bytes ?? 0) > mediaStorageLimits().tenantQuotaBytes) {
-        throw new ApiError(409, "conflict", "Das Medienkontingent der Zielinstanz wurde zwischenzeitlich erreicht.");
+      if (
+        Number(mediaUsage?.bytes ?? 0) > mediaStorageLimits().tenantQuotaBytes
+      ) {
+        throw new ApiError(
+          409,
+          "conflict",
+          "Das Medienkontingent der Zielinstanz wurde zwischenzeitlich erreicht.",
+        );
       }
       const mappedTargetUserIds = [
         ...new Set([
@@ -1344,11 +1457,14 @@ export async function createOrbitTransfer(input: {
         }),
       );
       const existingSlugs = new Set(
-        (await tx
-          .select({ slug: courses.slug })
-          .from(courses)
-          .where(eq(courses.organizationId, input.request.targetOrganizationId)))
-          .map((row) => row.slug),
+        (
+          await tx
+            .select({ slug: courses.slug })
+            .from(courses)
+            .where(
+              eq(courses.organizationId, input.request.targetOrganizationId),
+            )
+        ).map((row) => row.slug),
       );
       const capturedAt = new Date();
       const prepared = preflight.courses.map((source) => {
@@ -1372,8 +1488,18 @@ export async function createOrbitTransfer(input: {
           mediaIdMap,
           capturedAt,
         });
-        if (!isValidPublishedCourseSnapshot(remapped.snapshot, targetCourseId, input.request.targetOrganizationId)) {
-          throw new ApiError(409, "conflict", "Der isolierte Ziel-Snapshot ist ungueltig.");
+        if (
+          !isValidPublishedCourseSnapshot(
+            remapped.snapshot,
+            targetCourseId,
+            input.request.targetOrganizationId,
+          )
+        ) {
+          throw new ApiError(
+            409,
+            "conflict",
+            "Der isolierte Ziel-Snapshot ist ungueltig.",
+          );
         }
         return {
           source,
@@ -1406,13 +1532,20 @@ export async function createOrbitTransfer(input: {
           .where(
             and(
               eq(mediaAssets.id, asset.targetId),
-              eq(mediaAssets.organizationId, input.request.targetOrganizationId),
+              eq(
+                mediaAssets.organizationId,
+                input.request.targetOrganizationId,
+              ),
               eq(mediaAssets.status, "pending"),
             ),
           )
           .returning({ id: mediaAssets.id });
         if (!promoted) {
-          throw new ApiError(409, "conflict", "Eine Medienreservierung ist nicht mehr verfuegbar.");
+          throw new ApiError(
+            409,
+            "conflict",
+            "Eine Medienreservierung ist nicht mehr verfuegbar.",
+          );
         }
       }
       await tx.insert(courses).values(
@@ -1460,14 +1593,19 @@ export async function createOrbitTransfer(input: {
         });
         await tx
           .update(courses)
-          .set({ publishedVersionId: course.targetVersionId, updatedAt: capturedAt })
+          .set({
+            publishedVersionId: course.targetVersionId,
+            updatedAt: capturedAt,
+          })
           .where(
             and(
               eq(courses.id, course.targetCourseId),
               eq(courses.organizationId, input.request.targetOrganizationId),
             ),
           );
-        const referencedAssets = [...courseSnapshotMediaAssets(course.snapshot).keys()];
+        const referencedAssets = [
+          ...courseSnapshotMediaAssets(course.snapshot).keys(),
+        ];
         if (referencedAssets.length) {
           await tx.insert(courseMediaAssets).values(
             referencedAssets.map((mediaAssetId) => ({
@@ -1479,7 +1617,8 @@ export async function createOrbitTransfer(input: {
           );
         }
         const linkModules = course.snapshot.modules.filter(
-          (learningModule) => learningModule.kind === "link" && learningModule.linkedCourseId,
+          (learningModule) =>
+            learningModule.kind === "link" && learningModule.linkedCourseId,
         );
         if (linkModules.length) {
           await tx.insert(publishedCourseLinkEdges).values(
@@ -1524,7 +1663,12 @@ export async function createOrbitTransfer(input: {
           ),
         )
         .returning();
-      if (!job) throw new ApiError(409, "conflict", "Der Transfer-Claim wurde verloren.");
+      if (!job)
+        throw new ApiError(
+          409,
+          "conflict",
+          "Der Transfer-Claim wurde verloren.",
+        );
       await tx.insert(orbitAuditEvents).values({
         workspaceId: input.workspaceId,
         actorAccountId: claim.job.requestedByAccountId,
@@ -1546,75 +1690,81 @@ export async function createOrbitTransfer(input: {
     return { job: publicOrbitTransferJob(completed), created: true };
   } catch (error) {
     await heartbeat.stop();
-    const failureCode = error instanceof ApiError ? error.code : "transfer_execution_failed";
+    const failureCode =
+      error instanceof ApiError ? error.code : "transfer_execution_failed";
     const now = new Date();
-    const recovery = await db.transaction(async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(orbitTransferJobs)
-        .where(eq(orbitTransferJobs.id, claim.job.id))
-        .limit(1)
-        .for("update");
-      if (current?.status === "completed") {
-        return { completed: current, failed: false } as const;
-      }
-      if (
-        !current ||
-        current.status !== "processing" ||
-        current.claimToken !== transferClaimToken ||
-        !current.leaseExpiresAt ||
-        current.leaseExpiresAt <= now
-      ) {
-        return { completed: null, failed: false } as const;
-      }
-      const [failed] = await tx
-        .update(orbitTransferJobs)
-        .set({
-          status: "failed",
-          failureCode,
-          claimToken: null,
-          leaseExpiresAt: null,
-          completedAt: sql`clock_timestamp()`,
-          updatedAt: sql`clock_timestamp()`,
-        })
-        .where(
-          and(
-            eq(orbitTransferJobs.id, claim.job.id),
-            eq(orbitTransferJobs.status, "processing"),
-            eq(orbitTransferJobs.claimToken, transferClaimToken),
-          ),
-        )
-        .returning({ id: orbitTransferJobs.id });
-      if (!failed) return { completed: null, failed: false } as const;
-      if (mediaIdMap.size) {
-        const cleanupAfter = orbitTransferLeaseDeadline(now);
-        await tx
-          .update(mediaAssets)
-          .set({ uploadExpiresAt: cleanupAfter, updatedAt: now })
+    const recovery = await db
+      .transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(orbitTransferJobs)
+          .where(eq(orbitTransferJobs.id, claim.job.id))
+          .limit(1)
+          .for("update");
+        if (current?.status === "completed") {
+          return { completed: current, failed: false } as const;
+        }
+        if (
+          !current ||
+          current.status !== "processing" ||
+          current.claimToken !== transferClaimToken ||
+          !current.leaseExpiresAt ||
+          current.leaseExpiresAt <= now
+        ) {
+          return { completed: null, failed: false } as const;
+        }
+        const [failed] = await tx
+          .update(orbitTransferJobs)
+          .set({
+            status: "failed",
+            failureCode,
+            claimToken: null,
+            leaseExpiresAt: null,
+            completedAt: sql`clock_timestamp()`,
+            updatedAt: sql`clock_timestamp()`,
+          })
           .where(
             and(
-              eq(mediaAssets.organizationId, input.request.targetOrganizationId),
-              eq(mediaAssets.status, "pending"),
-              inArray(mediaAssets.id, [...mediaIdMap.values()]),
+              eq(orbitTransferJobs.id, claim.job.id),
+              eq(orbitTransferJobs.status, "processing"),
+              eq(orbitTransferJobs.claimToken, transferClaimToken),
             ),
-          );
-      }
-      await tx.insert(orbitAuditEvents).values({
-        workspaceId: input.workspaceId,
-        actorAccountId: claim.job.requestedByAccountId,
-        action: "transfer.failed",
-        resourceType: "transfer_job",
-        resourceId: claim.job.id,
-        sourceOrganizationId: input.request.sourceOrganizationId,
-        targetOrganizationId: input.request.targetOrganizationId,
-        outcome: "failed",
-        metadata: {
-          failureCode,
-          authorMappingCount: preflight.authorMappings.length,
-        },
-      });
-      return { completed: null, failed: true } as const;
-    }).catch(() => null);
+          )
+          .returning({ id: orbitTransferJobs.id });
+        if (!failed) return { completed: null, failed: false } as const;
+        if (mediaIdMap.size) {
+          const cleanupAfter = orbitTransferLeaseDeadline(now);
+          await tx
+            .update(mediaAssets)
+            .set({ uploadExpiresAt: cleanupAfter, updatedAt: now })
+            .where(
+              and(
+                eq(
+                  mediaAssets.organizationId,
+                  input.request.targetOrganizationId,
+                ),
+                eq(mediaAssets.status, "pending"),
+                inArray(mediaAssets.id, [...mediaIdMap.values()]),
+              ),
+            );
+        }
+        await tx.insert(orbitAuditEvents).values({
+          workspaceId: input.workspaceId,
+          actorAccountId: claim.job.requestedByAccountId,
+          action: "transfer.failed",
+          resourceType: "transfer_job",
+          resourceId: claim.job.id,
+          sourceOrganizationId: input.request.sourceOrganizationId,
+          targetOrganizationId: input.request.targetOrganizationId,
+          outcome: "failed",
+          metadata: {
+            failureCode,
+            authorMappingCount: preflight.authorMappings.length,
+          },
+        });
+        return { completed: null, failed: true } as const;
+      })
+      .catch(() => null);
     if (recovery?.completed) {
       return { job: publicOrbitTransferJob(recovery.completed), created: true };
     }
@@ -1626,7 +1776,10 @@ export async function createOrbitTransfer(input: {
         .limit(1)
         .catch(() => []);
       if (completedAfterCas?.status === "completed") {
-        return { job: publicOrbitTransferJob(completedAfterCas), created: true };
+        return {
+          job: publicOrbitTransferJob(completedAfterCas),
+          created: true,
+        };
       }
     }
     throw error;

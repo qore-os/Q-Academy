@@ -18,9 +18,9 @@ import {
   learningAccessForState,
   nextPreviousListedModuleCompleted,
   resolveCourseLearningAccessAnchor,
+  resolveCourseLessonAccessSequence,
   resolveCourseModuleAccess,
   type CourseModuleAccessOverride,
-  type LearningAccessReason,
   type LearningItemAccess,
 } from "@/lib/course-module-access-policy";
 import {
@@ -43,27 +43,15 @@ export type {
   LearningItemAccess,
 } from "@/lib/course-module-access-policy";
 
-type PublishedSnapshotSection =
-  CourseVersionSnapshot["modules"][number]["sections"][number];
-
 export type ResolvedLearningLesson = {
   lesson: PublishedSnapshotLesson;
   access: LearningItemAccess;
   required: boolean;
-  sectionId: string | null;
-};
-
-export type ResolvedLearningSection = {
-  section: PublishedSnapshotSection;
-  access: LearningItemAccess;
-  completed: boolean;
-  lessons: ResolvedLearningLesson[];
 };
 
 export type ResolvedLearningModule = {
   module: PublishedSnapshotModule;
   access: LearningItemAccess;
-  sections: ResolvedLearningSection[];
   lessons: ResolvedLearningLesson[];
 };
 
@@ -81,8 +69,6 @@ export type CourseLearningAccess = {
 };
 
 export type LearningAccessReader = Pick<typeof db, "select">;
-
-const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1_000;
 
 function applyActiveExamContentLock(
   access: CourseLearningAccess,
@@ -111,12 +97,6 @@ function applyActiveExamContentLock(
     lessons: resolvedModule.lessons.map(
       (lesson) => lessons.get(lesson.lesson.id) ?? lesson,
     ),
-    sections: resolvedModule.sections.map((section) => ({
-      ...section,
-      lessons: section.lessons.map(
-        (lesson) => lessons.get(lesson.lesson.id) ?? lesson,
-      ),
-    })),
   }));
   return { ...access, modules, lessons };
 }
@@ -128,46 +108,11 @@ function sortedByOrder<T extends { sortOrder: number; id: string }>(rows: T[]) {
   );
 }
 
-function addDays(date: Date, days: number) {
-  return new Date(date.getTime() + Math.max(0, days) * DAY_IN_MILLISECONDS);
-}
-
-function contentIsPublished(input: {
-  status: string;
-  visibility?: string;
-}) {
+function contentIsPublished(input: { status: string; visibility?: string }) {
   return input.status === "published" && input.visibility !== "draft";
 }
 
-function visibilityAccess(visibility: string | undefined) {
-  return visibility === "coming_soon"
-    ? learningAccessForState("coming_soon", { reasons: ["coming_soon"] })
-    : learningAccessForState("available");
-}
-
-function timeAccess(
-  now: Date,
-  reason: LearningAccessReason,
-  availableAt: Date,
-) {
-  return availableAt.getTime() > now.getTime()
-    ? learningAccessForState("locked", { reasons: [reason], availableAt })
-    : learningAccessForState("available");
-}
-
-function publishedSections(learningModule: PublishedSnapshotModule) {
-  return sortedByOrder(
-    learningModule.sections.filter((section) => contentIsPublished(section)),
-  );
-}
-
-function publishedSectionLessons(section: PublishedSnapshotSection) {
-  return sortedByOrder(
-    section.lessons.filter((lesson) => contentIsPublished(lesson)),
-  );
-}
-
-function publishedUnsectionedLessons(learningModule: PublishedSnapshotModule) {
+function publishedModuleLessons(learningModule: PublishedSnapshotModule) {
   return sortedByOrder(
     learningModule.lessons.filter((lesson) => contentIsPublished(lesson)),
   );
@@ -176,10 +121,7 @@ function publishedUnsectionedLessons(learningModule: PublishedSnapshotModule) {
 export function publishedLessonsForModule(
   learningModule: PublishedSnapshotModule,
 ) {
-  return sortedByOrder([
-    ...publishedUnsectionedLessons(learningModule),
-    ...publishedSections(learningModule).flatMap(publishedSectionLessons),
-  ]);
+  return publishedModuleLessons(learningModule);
 }
 
 export function allPublishedLearningLessonIds(snapshot: CourseVersionSnapshot) {
@@ -236,25 +178,6 @@ export function calculateRequiredCourseProgress(
   return Math.round((completed / requiredLessonIds.length) * 100);
 }
 
-function resolveLessonOwnAccess(
-  lesson: PublishedSnapshotLesson,
-  now: Date,
-) {
-  let access = visibilityAccess(lesson.visibility);
-  if (lesson.availableAt) {
-    const availableAt = new Date(lesson.availableAt);
-    access = combineLearningAccess(
-      access,
-      Number.isNaN(availableAt.getTime())
-        ? learningAccessForState("hidden", {
-            reasons: ["invalid_configuration"],
-          })
-        : timeAccess(now, "lesson_schedule", availableAt),
-    );
-  }
-  return access;
-}
-
 export function resolvePublishedCourseLearningAccess(input: {
   published: PublishedCourseContent;
   enrollment: { id: string; enrolledAt: Date };
@@ -275,103 +198,59 @@ export function resolvePublishedCourseLearningAccess(input: {
   });
   const lessonMap = new Map<string, ResolvedLearningLesson>();
   let previousListedModuleCompleted = true;
+  const orderedModules = sortedByOrder(input.published.snapshot.modules);
+  const moduleSequence = orderedModules.map((learningModule) => {
+    const moduleAccess = resolveCourseModuleAccess({
+      configuration: learningModule,
+      accessAnchor: accessStartedAt,
+      previousModuleCompleted: previousListedModuleCompleted,
+      override: input.moduleOverrides?.get(learningModule.id),
+      requestStatus: input.moduleRequestStatuses?.get(learningModule.id),
+      now,
+    });
+    const moduleLessons = publishedModuleLessons(learningModule);
+    previousListedModuleCompleted = nextPreviousListedModuleCompleted({
+      previousCompleted: previousListedModuleCompleted,
+      moduleKind: learningModule.kind ?? "learning",
+      moduleListed: moduleAccess.listed,
+      moduleLessonsCompleted: moduleLessons.every((lesson) =>
+        input.completedLessonIds.has(lesson.id),
+      ),
+    });
+    return { learningModule, moduleAccess, moduleLessons };
+  });
+  const ownLessonAccessGroups = resolveCourseLessonAccessSequence({
+    lessonGroups: moduleSequence.map(({ moduleAccess, moduleLessons }) => ({
+      lessons: moduleLessons,
+      participates: moduleAccess.listed,
+    })),
+    accessAnchor: accessStartedAt,
+    completedLessonIds: input.completedLessonIds,
+    now,
+  });
 
-  const modules = sortedByOrder(input.published.snapshot.modules).map(
-    (learningModule): ResolvedLearningModule => {
-      const moduleAccess = resolveCourseModuleAccess({
-        configuration: learningModule,
-        accessAnchor: accessStartedAt,
-        previousModuleCompleted: previousListedModuleCompleted,
-        override: input.moduleOverrides?.get(learningModule.id),
-        requestStatus: input.moduleRequestStatuses?.get(learningModule.id),
-        now,
-      });
-
-      const resolvedSections: ResolvedLearningSection[] = [];
-      for (const section of publishedSections(learningModule)) {
-        const sectionLessons = publishedSectionLessons(section);
-        let ownSectionAccess = visibilityAccess(section.visibility);
-        if (section.dripDays > 0) {
-          ownSectionAccess = combineLearningAccess(
-            ownSectionAccess,
-            timeAccess(
-              now,
-              "section_drip",
-              addDays(accessStartedAt, section.dripDays),
-            ),
-          );
+  const modules = moduleSequence.map(
+    (
+      { learningModule, moduleAccess, moduleLessons },
+      moduleIndex,
+    ): ResolvedLearningModule => {
+      const ownLessonAccess = ownLessonAccessGroups[moduleIndex] ?? [];
+      const resolvedLessons = moduleLessons.map((lesson, lessonIndex) => {
+        const lessonAccess = ownLessonAccess[lessonIndex];
+        if (!lessonAccess || lessonAccess.lesson.id !== lesson.id) {
+          throw new Error("Published lesson access could not be resolved.");
         }
-        const sectionAccess = combineLearningAccess(
-          ownSectionAccess,
-          moduleAccess,
-        );
-        let previousLessonCompleted = true;
-        const resolvedLessons = sectionLessons.map((lesson) => {
-          let ownLessonAccess = resolveLessonOwnAccess(lesson, now);
-          if (section.unlockAfterPrevious && !previousLessonCompleted) {
-            ownLessonAccess = combineLearningAccess(
-              ownLessonAccess,
-              learningAccessForState("locked", {
-                reasons: ["previous_lesson"],
-              }),
-            );
-          }
-          const resolvedLesson: ResolvedLearningLesson = {
-            lesson,
-            access: combineLearningAccess(ownLessonAccess, sectionAccess),
-            required: learningModule.isRequired,
-            sectionId: section.id,
-          };
-          lessonMap.set(lesson.id, resolvedLesson);
-          previousLessonCompleted = input.completedLessonIds.has(lesson.id);
-          return resolvedLesson;
-        });
-        resolvedSections.push({
-          section,
-          access: sectionAccess,
-          completed: sectionLessons.every((lesson) =>
-            input.completedLessonIds.has(lesson.id),
-          ),
-          lessons: resolvedLessons,
-        });
-      }
-
-      const unsectionedLessons = publishedUnsectionedLessons(
-        learningModule,
-      ).map((lesson) => {
         const resolvedLesson: ResolvedLearningLesson = {
           lesson,
-          access: combineLearningAccess(
-            resolveLessonOwnAccess(lesson, now),
-            moduleAccess,
-          ),
+          access: combineLearningAccess(lessonAccess.access, moduleAccess),
           required: learningModule.isRequired,
-          sectionId: null,
         };
         lessonMap.set(lesson.id, resolvedLesson);
         return resolvedLesson;
       });
-      const resolvedLessons = [
-        ...unsectionedLessons,
-        ...resolvedSections.flatMap((section) => section.lessons),
-      ].sort(
-        (left, right) =>
-          left.lesson.sortOrder - right.lesson.sortOrder ||
-          left.lesson.id.localeCompare(right.lesson.id),
-      );
-
-      previousListedModuleCompleted = nextPreviousListedModuleCompleted({
-        previousCompleted: previousListedModuleCompleted,
-        moduleKind: learningModule.kind ?? "learning",
-        moduleListed: moduleAccess.listed,
-        moduleLessonsCompleted: resolvedLessons.every(({ lesson }) =>
-          input.completedLessonIds.has(lesson.id),
-        ),
-      });
       return {
         module: learningModule,
         access: moduleAccess,
-        sections: resolvedSections,
         lessons: resolvedLessons,
       };
     },
@@ -479,10 +358,7 @@ export async function getCourseLearningAccess(
       .from(courseModuleAccessOverrides)
       .where(
         and(
-          eq(
-            courseModuleAccessOverrides.organizationId,
-            input.organizationId,
-          ),
+          eq(courseModuleAccessOverrides.organizationId, input.organizationId),
           eq(courseModuleAccessOverrides.userId, input.userId),
           eq(courseModuleAccessOverrides.courseId, input.courseId),
         ),
@@ -492,10 +368,7 @@ export async function getCourseLearningAccess(
       .from(courseModuleAccessRequests)
       .where(
         and(
-          eq(
-            courseModuleAccessRequests.organizationId,
-            input.organizationId,
-          ),
+          eq(courseModuleAccessRequests.organizationId, input.organizationId),
           eq(courseModuleAccessRequests.userId, input.userId),
           eq(courseModuleAccessRequests.courseId, input.courseId),
           eq(courseModuleAccessRequests.status, "pending"),

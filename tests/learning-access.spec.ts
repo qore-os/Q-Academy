@@ -38,14 +38,12 @@ test("published learning access enforces drip, sequence and status on every path
   const secondarySlug = `learning-access-shared-${suffix}`;
   const courseTitle = `Access Kurs ${suffix}`;
   const moduleTitle = `Access Modul ${suffix}`;
-  const firstSectionTitle = `Start ${suffix}`;
-  const secondSectionTitle = `Sequenz ${suffix}`;
   const firstLessonTitle = `Offene Lektion ${suffix}`;
   const secondLessonTitle = `Sequenzlektion ${suffix}`;
-  const afterEmptyTitle = `Nach leerer Sektion ${suffix}`;
+  const freeLessonTitle = `Freie Lektion ${suffix}`;
   const scheduledTitle = `Terminlektion ${suffix}`;
   const draftLessonTitle = `Entwurfslektion ${suffix}`;
-  const hiddenSectionLessonTitle = `Versteckte Sektionslektion ${suffix}`;
+  const inheritedDraftLessonTitle = `Verborgene Entwurfslektion ${suffix}`;
   const visibleText = `Publizierter Reader-Inhalt ${suffix}`;
   const visiblePageText = `Publizierte Seite ${suffix}`;
   const draftPageText = `Versteckte Entwurfsseite ${suffix}`;
@@ -57,7 +55,7 @@ test("published learning access enforces drip, sequence and status on every path
   let apiKeyId = "";
   let firstLessonId = "";
   let secondLessonId = "";
-  let afterEmptyLessonId = "";
+  let freeLessonId = "";
   let scheduledLessonId = "";
   let draftLessonId = "";
   let quizBlockId = "";
@@ -130,43 +128,25 @@ test("published learning access enforces drip, sequence and status on every path
           'delay_days', 10, true)
     `;
 
-    const sections = await sql<Array<{ id: string; title: string }>>`
-      insert into module_sections (
-        organization_id, module_id, title, sort_order, status,
-        unlock_after_previous, drip_days
-      ) values
-        (${fixture.organization_id}, ${moduleId}, ${firstSectionTitle}, 0, 'published', true, 0),
-        (${fixture.organization_id}, ${moduleId}, ${secondSectionTitle}, 1, 'published', true, 0),
-        (${fixture.organization_id}, ${moduleId}, ${`Leer ${suffix}`}, 2, 'published', false, 0),
-        (${fixture.organization_id}, ${moduleId}, ${`Nach Leer ${suffix}`}, 3, 'published', true, 0),
-        (${fixture.organization_id}, ${moduleId}, ${`Entwurfssektion ${suffix}`}, 4, 'draft', false, 0)
-      returning id, title
-    `;
-    const sectionId = (title: string) => {
-      const section = sections.find((row) => row.title === title);
-      if (!section) throw new Error(`Section fixture missing: ${title}`);
-      return section.id;
-    };
-
     const insertedLessons = await sql<
       Array<{ id: string; title: string }>
     >`
       insert into lessons (
-        organization_id, module_id, section_id, title, slug, type, duration_minutes,
-        sort_order, status, available_at
+        organization_id, module_id, title, slug, type, duration_minutes,
+        sort_order, status, unlock_after_previous, drip_days, available_at
       ) values
-        (${fixture.organization_id}, ${moduleId}, ${sectionId(firstSectionTitle)}, ${firstLessonTitle},
-          ${`open-${suffix}`}, 'lesson', 10, 0, 'published', null),
-        (${fixture.organization_id}, ${moduleId}, ${sectionId(firstSectionTitle)}, ${draftLessonTitle},
-          ${`draft-${suffix}`}, 'lesson', 10, 5, 'draft', null),
-        (${fixture.organization_id}, ${moduleId}, ${sectionId(firstSectionTitle)}, ${secondLessonTitle},
-          ${`sequence-${suffix}`}, 'lesson', 10, 1, 'published', null),
-        (${fixture.organization_id}, ${moduleId}, ${sectionId(`Nach Leer ${suffix}`)}, ${afterEmptyTitle},
-          ${`empty-${suffix}`}, 'lesson', 10, 2, 'published', null),
-        (${fixture.organization_id}, ${moduleId}, ${sectionId(`Entwurfssektion ${suffix}`)}, ${hiddenSectionLessonTitle},
-          ${`hidden-section-${suffix}`}, 'lesson', 10, 6, 'published', null),
-        (${fixture.organization_id}, ${moduleId}, null, ${scheduledTitle}, ${`scheduled-${suffix}`},
-          'quiz', 10, 3, 'published', now() + interval '5 days')
+        (${fixture.organization_id}, ${moduleId}, ${firstLessonTitle},
+          ${`open-${suffix}`}, 'lesson', 10, 0, 'published', false, 0, null),
+        (${fixture.organization_id}, ${moduleId}, ${draftLessonTitle},
+          ${`draft-${suffix}`}, 'lesson', 10, 5, 'draft', false, 0, null),
+        (${fixture.organization_id}, ${moduleId}, ${secondLessonTitle},
+          ${`sequence-${suffix}`}, 'lesson', 10, 1, 'published', true, 0, null),
+        (${fixture.organization_id}, ${moduleId}, ${freeLessonTitle},
+          ${`free-${suffix}`}, 'lesson', 10, 2, 'published', false, 0, null),
+        (${fixture.organization_id}, ${moduleId}, ${inheritedDraftLessonTitle},
+          ${`inherited-draft-${suffix}`}, 'lesson', 10, 6, 'draft', false, 0, null),
+        (${fixture.organization_id}, ${moduleId}, ${scheduledTitle}, ${`scheduled-${suffix}`},
+          'quiz', 10, 3, 'published', false, 0, now() + interval '5 days')
       returning id, title
     `;
     const lessonId = (title: string) => {
@@ -176,7 +156,7 @@ test("published learning access enforces drip, sequence and status on every path
     };
     firstLessonId = lessonId(firstLessonTitle);
     secondLessonId = lessonId(secondLessonTitle);
-    afterEmptyLessonId = lessonId(afterEmptyTitle);
+    freeLessonId = lessonId(freeLessonTitle);
     scheduledLessonId = lessonId(scheduledTitle);
     draftLessonId = lessonId(draftLessonTitle);
 
@@ -330,7 +310,7 @@ test("published learning access enforces drip, sequence and status on every path
     await expect(page.getByText(firstLessonTitle, { exact: true })).toBeVisible();
     await expect(page.getByText(draftLessonTitle, { exact: true })).toBeHidden();
     await expect(
-      page.getByText(hiddenSectionLessonTitle, { exact: true }),
+      page.getByText(inheritedDraftLessonTitle, { exact: true }),
     ).toBeHidden();
     await expect(page.locator(`[data-locked-lesson="${firstLessonId}"]`)).toBeVisible();
     await expect(page.getByText(/Verfuegbar ab/).first()).toBeVisible();
@@ -389,7 +369,7 @@ test("published learning access enforces drip, sequence and status on every path
     ).toBeVisible();
     await expect(page.locator(`[data-locked-lesson="${secondLessonId}"]`)).toBeVisible();
     await expect(
-      page.getByRole("link", { name: new RegExp(afterEmptyTitle) }),
+      page.getByRole("link", { name: new RegExp(freeLessonTitle) }),
     ).toBeVisible();
     await expect(
       page.locator(`[data-locked-lesson="${scheduledLessonId}"]`),
@@ -414,12 +394,12 @@ test("published learning access enforces drip, sequence and status on every path
     await expect(page.getByText(draftPageText, { exact: true })).toBeHidden();
     const nextLink = page
       .locator(
-        `a[href="/academy/courses/${slug}/learn/${afterEmptyLessonId}"]`,
+        `a[href="/academy/courses/${slug}/learn/${freeLessonId}"]`,
       )
       .last();
     await expect(nextLink).toHaveAttribute(
       "href",
-      `/academy/courses/${slug}/learn/${afterEmptyLessonId}`,
+      `/academy/courses/${slug}/learn/${freeLessonId}`,
     );
 
     await sql`
@@ -543,28 +523,17 @@ test("published learning access enforces drip, sequence and status on every path
       await login(adminPage, "admin");
       await adminPage.goto(`/admin/courses/${courseId}`);
       await adminPage
-        .getByRole("tab", { name: courseBuilderCopy.tabs.access, exact: true })
-        .click();
-      const sectionForm = adminPage
-        .locator("form")
-        .filter({ hasText: secondSectionTitle });
-      await sectionForm.getByLabel("Status").selectOption("draft");
-      await sectionForm.getByLabel("Freigabe nach Tagen").fill("4");
-      await sectionForm.getByRole("button", { name: "Speichern" }).click();
-      await expect(
-        adminPage.getByText("Sektionseinstellungen gespeichert.", {
-          exact: true,
-        }),
-      ).toBeVisible();
-      await adminPage.getByRole("tab", { name: "Inhalte" }).click();
-      await adminPage
-        .getByRole("button", { name: new RegExp(firstLessonTitle) })
+        .getByRole("button", { name: new RegExp(`^1\\. ${firstLessonTitle}`) })
         .click();
       const lessonForm = adminPage
         .locator("form")
         .filter({ has: adminPage.getByLabel("Lektionsstatus") });
       await lessonForm.getByLabel("Lektionsstatus").selectOption("archived");
       await lessonForm.getByLabel("Verfuegbar ab").fill("2030-01-02T09:30");
+      await lessonForm.getByLabel("Freigabe nach Tagen").fill("4");
+      await lessonForm
+        .getByLabel(courseBuilderCopy.access.lessonsInOrder)
+        .check();
       await lessonForm.getByRole("button", { name: "Speichern" }).click();
       await expect(
         adminPage.getByText("Lektionseinstellungen gespeichert.", {
@@ -573,25 +542,24 @@ test("published learning access enforces drip, sequence and status on every path
       ).toBeVisible();
       const [builderState] = await sql<
         Array<{
-          section_status: string;
-          section_drip: number;
           lesson_status: string;
+          lesson_drip: number;
+          lesson_unlock_after_previous: boolean;
           lesson_available: Date | null;
         }>
       >`
         select
-          s.status as section_status,
-          s.drip_days as section_drip,
           l.status as lesson_status,
+          l.drip_days as lesson_drip,
+          l.unlock_after_previous as lesson_unlock_after_previous,
           l.available_at as lesson_available
-        from module_sections s
-        join lessons l on l.id = ${firstLessonId}
-        where s.id = ${sectionId(secondSectionTitle)}
+        from lessons l
+        where l.id = ${firstLessonId}
       `;
       expect(builderState).toMatchObject({
-        section_status: "draft",
-        section_drip: 4,
         lesson_status: "archived",
+        lesson_drip: 4,
+        lesson_unlock_after_previous: true,
       });
       expect(builderState.lesson_available?.toISOString()).toBe(
         new Date("2030-01-02T09:30").toISOString(),
@@ -627,7 +595,7 @@ test("published learning access enforces drip, sequence and status on every path
         delete from activity_events
         where entity_id in (
           ${courseId}, ${moduleId || null}, ${firstLessonId || null},
-          ${secondLessonId || null}, ${afterEmptyLessonId || null},
+          ${secondLessonId || null}, ${freeLessonId || null},
           ${scheduledLessonId || null}, ${draftLessonId || null}
         ) or metadata ->> 'courseId' = ${courseId}
       `;

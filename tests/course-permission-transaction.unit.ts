@@ -77,8 +77,8 @@ test("course writers recheck permissions inside their transactions", () => {
   }
 
   for (const action of [
-    "createModuleSectionAction",
     "createModuleLessonAction",
+    "moveCourseLessonAction",
     "createLessonPageAction",
     "updateCourseLessonTitleAction",
     "updateLessonPageTitleAction",
@@ -87,13 +87,12 @@ test("course writers recheck permissions inside their transactions", () => {
     "deleteCourseContentBlockAction",
     "duplicateCourseContentBlockAction",
     "reorderCourseContentBlocksAction",
-    "updateModuleSectionAccessAction",
     "updateCourseLessonAccessAction",
     "updateCourseLessonAssessmentAction",
   ]) {
     assert.match(
       actionSource(builder, action),
-      /requireSharedModuleContentPermission\(tx, user, courseId/,
+      /requireSharedModuleContentPermission\(\s*tx,\s*user,\s*courseId/,
       action,
     );
   }

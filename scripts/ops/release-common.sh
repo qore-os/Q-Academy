@@ -40,7 +40,7 @@ MEDIA_WORK_SENTINEL_VALUE=q-academy-media-processing-v1
 CADDY_SITES_DIRECTORY_DEFAULT=/etc/q-academy/caddy-sites
 LEGACY_RELEASE_STATE_SCHEMA_VERSION=2
 RELEASE_STATE_SCHEMA_VERSION=3
-PENDING_RELEASE_SCHEMA_VERSION=1
+PENDING_RELEASE_SCHEMA_VERSION=2
 PRODUCTION_COMPOSE_PROJECT=q-academy
 RELEASE_LOCK_FILE_DEFAULT=/var/lock/q-academy-release.lock
 BACKUP_LOCK_FILE_DEFAULT=/var/lock/q-academy-backup.lock
@@ -58,6 +58,17 @@ AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS=90
 STRATO_PRIVACY_SWEEPER_WAIT_TIMEOUT_SECONDS=1800
 AI_TEXT_RUNTIME_CONTRACT=gpt-5.6-terra-chat-completions-v1
 TRANSCRIPTION_RUNTIME_CONTRACT=openai-diarized-transcription-v1
+DATABASE_SCHEMA_CONTRACT_LABEL=com.q-academy.database-schema-contract
+LEGACY_COURSE_SECTIONS_SCHEMA_CONTRACT=legacy-course-sections
+FLAT_COURSE_LESSONS_SCHEMA_CONTRACT=flat-course-lessons-v1
+FLAT_COURSE_LESSONS_MIGRATION_TIMESTAMP=1786632153991
+DATABASE_SCHEMA_RUNTIME_COMPONENTS=(
+  app
+  tenant-ops
+  media-runner
+  media-preflight
+  dispatcher
+)
 MEDIA_STORAGE_RELEASE_STATE_VARIABLES=(
   MEDIA_S3_COMPATIBILITY_MODE
   MEDIA_S3_ENDPOINT
@@ -77,6 +88,104 @@ verify_ai_runtime_contract_images() {
     [[ "$text_contract" == "$AI_TEXT_RUNTIME_CONTRACT" ]] || return 1
     [[ "$transcript_contract" == "$TRANSCRIPTION_RUNTIME_CONTRACT" ]] || return 1
   done
+}
+
+release_course_hierarchy_contract_state() {
+  local release_tag="$1"
+  local component image contract component_contract release_contract=""
+  [[ "$release_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  for component in "${DATABASE_SCHEMA_RUNTIME_COMPONENTS[@]}"; do
+    image="q-academy-${component}:${release_tag}"
+    contract="$(
+      docker image inspect --format \
+        "{{ index .Config.Labels \"$DATABASE_SCHEMA_CONTRACT_LABEL\" }}" \
+        "$image" 2>/dev/null
+    )" || return 1
+    case "$contract" in
+      "$FLAT_COURSE_LESSONS_SCHEMA_CONTRACT")
+        component_contract="$FLAT_COURSE_LESSONS_SCHEMA_CONTRACT"
+        ;;
+      ""|'<no value>'|"$LEGACY_COURSE_SECTIONS_SCHEMA_CONTRACT")
+        component_contract="$LEGACY_COURSE_SECTIONS_SCHEMA_CONTRACT"
+        ;;
+      *)
+        printf 'Release image %s has an unknown database schema contract.\n' "$image" >&2
+        return 1
+        ;;
+    esac
+    if [[ -n "$release_contract" && "$release_contract" != "$component_contract" ]]; then
+      printf 'Release %s mixes incompatible database schema contracts.\n' "$release_tag" >&2
+      return 1
+    fi
+    release_contract="$component_contract"
+  done
+  printf '%s' "$release_contract"
+}
+
+verify_database_schema_contract_images() {
+  local release_tag="$1"
+  local release_contract
+  release_contract="$(release_course_hierarchy_contract_state "$release_tag")" || return 1
+  [[ "$release_contract" == "$FLAT_COURSE_LESSONS_SCHEMA_CONTRACT" ]]
+}
+
+database_course_hierarchy_contract_state() {
+  local state
+  (($# > 0)) || {
+    printf 'Compose command is required to inspect the database schema contract.\n' >&2
+    return 1
+  }
+  state="$(
+    "$@" exec -T \
+      -e "Q_ACADEMY_FLAT_COURSE_MIGRATION_TIMESTAMP=$FLAT_COURSE_LESSONS_MIGRATION_TIMESTAMP" \
+      postgres sh -euc '
+      export PGPASSWORD="$POSTGRES_PASSWORD"
+      migration_table="$(
+        psql \
+          --host=127.0.0.1 \
+          --username="$POSTGRES_USER" \
+          --dbname="$POSTGRES_DB" \
+          --set=ON_ERROR_STOP=1 \
+          --tuples-only \
+          --no-align \
+          --command="select to_regclass('\''drizzle.__drizzle_migrations'\'')"
+      )"
+      if [ -z "$migration_table" ]; then
+        printf "legacy-course-sections\n"
+        exit 0
+      fi
+      psql \
+        --host=127.0.0.1 \
+        --username="$POSTGRES_USER" \
+        --dbname="$POSTGRES_DB" \
+        --set=ON_ERROR_STOP=1 \
+        --tuples-only \
+        --no-align \
+        --command="select case when coalesce(max(created_at), 0) >= $Q_ACADEMY_FLAT_COURSE_MIGRATION_TIMESTAMP then '\''flat-course-lessons-v1'\'' else '\''legacy-course-sections'\'' end from drizzle.__drizzle_migrations"
+    ' | tr -d '[:space:]'
+  )" || return 1
+  case "$state" in
+    legacy-course-sections|flat-course-lessons-v1)
+      printf '%s' "$state"
+      ;;
+    *)
+      printf 'Database returned an invalid course hierarchy contract state.\n' >&2
+      return 1
+      ;;
+  esac
+}
+
+verify_release_database_schema_contract() {
+  local release_tag="$1"
+  local database_contract release_contract
+  shift
+  database_contract="$(database_course_hierarchy_contract_state "$@")" || return 1
+  release_contract="$(release_course_hierarchy_contract_state "$release_tag")" || return 1
+  [[ "$database_contract" == "$release_contract" ]] || {
+    printf 'Database schema contract %s does not match release %s contract %s. Use the exact compatible release or restore its verified database backup; a manual compatibility override is not accepted.\n' \
+      "$database_contract" "$release_tag" "$release_contract" >&2
+    return 1
+  }
 }
 
 verify_caddy_sites_directory() {
@@ -254,6 +363,110 @@ predeploy_backup_decision() {
   fi
 }
 
+release_backup_evidence_sha256() {
+  local from_tag="$1"
+  local to_tag="$2"
+  local controller_commit="$3"
+  local backup_required="$4"
+  local backup_path="$5"
+  local backup_sha256="$6"
+  local restore_verified="$7"
+
+  printf '%s\0' \
+    q-academy-predeploy-backup-v1 \
+    "$from_tag" \
+    "$to_tag" \
+    "$controller_commit" \
+    "$backup_required" \
+    "$backup_path" \
+    "$backup_sha256" \
+    "$restore_verified" |
+    sha256sum |
+    awk '{ print $1 }'
+}
+
+verify_release_backup_evidence() {
+  local from_tag="$1"
+  local to_tag="$2"
+  local controller_commit="$3"
+  local backup_required="$4"
+  local backup_path="$5"
+  local backup_sha256="$6"
+  local restore_verified="$7"
+  local evidence_sha256="$8"
+  local resolved_path actual_output actual_sha256 expected_evidence_sha256
+
+  [[ -z "$from_tag" || "$from_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$to_tag" =~ ^git-[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$controller_commit" =~ ^[a-f0-9]{40,64}$ ]] || return 1
+  [[ "$to_tag" == "git-${controller_commit}" ]] || return 1
+  [[ "$backup_required" == "true" || "$backup_required" == "false" ]] || return 1
+  [[ "$restore_verified" == "true" || "$restore_verified" == "false" ]] || return 1
+  [[ "$evidence_sha256" =~ ^[a-f0-9]{64}$ ]] || return 1
+
+  if [[ "$backup_required" == "true" ]]; then
+    [[ "$restore_verified" == "true" ]] || {
+      printf 'Required pre-deployment backup lacks restore-verification evidence.\n' >&2
+      return 1
+    }
+    [[ "$backup_path" =~ ^/[A-Za-z0-9._/-]+/q-academy-[0-9]{8}T[0-9]{6}Z[.]dump$ ]] || {
+      printf 'Pre-deployment backup path is invalid.\n' >&2
+      return 1
+    }
+    [[ "$backup_path" != *'/../'* && "$backup_path" != */.. && "$backup_path" != *'//'* ]] || {
+      printf 'Pre-deployment backup path is not canonical.\n' >&2
+      return 1
+    }
+    [[ "$backup_sha256" =~ ^[a-f0-9]{64}$ ]] || {
+      printf 'Pre-deployment backup digest is invalid.\n' >&2
+      return 1
+    }
+    [[ -f "$backup_path" && ! -L "$backup_path" ]] || {
+      printf 'Pre-deployment backup is missing or unsafe: %s\n' "$backup_path" >&2
+      return 1
+    }
+    resolved_path="$(readlink -f -- "$backup_path")" || return 1
+    [[ "$resolved_path" == "$backup_path" ]] || {
+      printf 'Pre-deployment backup path does not resolve to itself.\n' >&2
+      return 1
+    }
+    [[ "$(stat -c '%u:%g:%a' -- "$backup_path")" == "0:0:600" ]] || {
+      printf 'Pre-deployment backup must be root-owned with mode 0600.\n' >&2
+      return 1
+    }
+    [[ -s "$backup_path" ]] || {
+      printf 'Pre-deployment backup is empty.\n' >&2
+      return 1
+    }
+    actual_output="$(sha256sum -- "$backup_path")" || return 1
+    actual_sha256="${actual_output%% *}"
+    [[ "$actual_sha256" == "$backup_sha256" ]] || {
+      printf 'Pre-deployment backup digest does not match the pending release evidence.\n' >&2
+      return 1
+    }
+  else
+    [[ "$restore_verified" == "false" && -z "$backup_path" && -z "$backup_sha256" ]] || {
+      printf 'Skipped pre-deployment backup contains contradictory evidence.\n' >&2
+      return 1
+    }
+  fi
+
+  expected_evidence_sha256="$(
+    release_backup_evidence_sha256 \
+      "$from_tag" \
+      "$to_tag" \
+      "$controller_commit" \
+      "$backup_required" \
+      "$backup_path" \
+      "$backup_sha256" \
+      "$restore_verified"
+  )" || return 1
+  [[ "$evidence_sha256" == "$expected_evidence_sha256" ]] || {
+    printf 'Pre-deployment backup evidence is not bound to this release target.\n' >&2
+    return 1
+  }
+}
+
 production_env_value() {
   local env_file="$1"
   local name="$2"
@@ -271,7 +484,8 @@ production_env_value() {
 
 validate_pending_release_marker() {
   local marker_file="$1"
-  local schema from_tag to_tag controller_commit phase migrations_may_have_run created_at
+  local schema from_tag to_tag controller_commit phase migrations_may_have_run
+  local backup_required backup_path backup_sha256 restore_verified evidence_sha256 created_at
 
   [[ "$marker_file" == /* ]] || {
     printf 'Pending release marker path must be absolute.\n' >&2
@@ -289,12 +503,17 @@ validate_pending_release_marker() {
       allowed["CONTROLLER_COMMIT"] = 1
       allowed["PHASE"] = 1
       allowed["MIGRATIONS_MAY_HAVE_RUN"] = 1
+      allowed["PREDEPLOY_BACKUP_REQUIRED"] = 1
+      allowed["PREDEPLOY_BACKUP_PATH"] = 1
+      allowed["PREDEPLOY_BACKUP_SHA256"] = 1
+      allowed["PREDEPLOY_BACKUP_RESTORE_VERIFIED"] = 1
+      allowed["PREDEPLOY_BACKUP_EVIDENCE_SHA256"] = 1
       allowed["CREATED_AT"] = 1
     }
     !($1 in allowed) { invalid = 1 }
-    END { exit (NR == 7 && !invalid) ? 0 : 1 }
+    END { exit (NR == 12 && !invalid) ? 0 : 1 }
   ' "$marker_file" || {
-    printf 'Pending release marker must contain exactly the seven contract fields.\n' >&2
+    printf 'Pending release marker must contain exactly the twelve contract fields.\n' >&2
     return 1
   }
   [[ "$(stat -c '%u:%g:%a' "$marker_file")" == "0:0:600" ]] || {
@@ -307,6 +526,11 @@ validate_pending_release_marker() {
   controller_commit="$(production_env_value "$marker_file" CONTROLLER_COMMIT)" || return 1
   phase="$(production_env_value "$marker_file" PHASE)" || return 1
   migrations_may_have_run="$(production_env_value "$marker_file" MIGRATIONS_MAY_HAVE_RUN)" || return 1
+  backup_required="$(production_env_value "$marker_file" PREDEPLOY_BACKUP_REQUIRED)" || return 1
+  backup_path="$(production_env_value "$marker_file" PREDEPLOY_BACKUP_PATH)" || return 1
+  backup_sha256="$(production_env_value "$marker_file" PREDEPLOY_BACKUP_SHA256)" || return 1
+  restore_verified="$(production_env_value "$marker_file" PREDEPLOY_BACKUP_RESTORE_VERIFIED)" || return 1
+  evidence_sha256="$(production_env_value "$marker_file" PREDEPLOY_BACKUP_EVIDENCE_SHA256)" || return 1
   created_at="$(production_env_value "$marker_file" CREATED_AT)" || return 1
 
   [[ "$schema" == "$PENDING_RELEASE_SCHEMA_VERSION" ]] || {
@@ -337,6 +561,15 @@ validate_pending_release_marker() {
     printf 'Pending release migration phase is invalid.\n' >&2
     return 1
   }
+  verify_release_backup_evidence \
+    "$from_tag" \
+    "$to_tag" \
+    "$controller_commit" \
+    "$backup_required" \
+    "$backup_path" \
+    "$backup_sha256" \
+    "$restore_verified" \
+    "$evidence_sha256" || return 1
   [[ "$created_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || {
     printf 'Pending release timestamp is invalid.\n' >&2
     return 1
@@ -348,6 +581,11 @@ write_pending_release_marker() {
   local from_tag="$2"
   local to_tag="$3"
   local controller_commit="$4"
+  local backup_required="$5"
+  local backup_path="$6"
+  local backup_sha256="$7"
+  local restore_verified="$8"
+  local evidence_sha256="$9"
   local directory parent_directory directory_owner directory_mode temporary
 
   [[ "$EUID" -eq 0 ]] || {
@@ -363,6 +601,15 @@ write_pending_release_marker() {
   [[ -z "$from_tag" || "$from_tag" != "$to_tag" ]] || return 1
   [[ "$controller_commit" =~ ^[a-f0-9]{40,64}$ ]] || return 1
   [[ "$to_tag" == "git-${controller_commit}" ]] || return 1
+  verify_release_backup_evidence \
+    "$from_tag" \
+    "$to_tag" \
+    "$controller_commit" \
+    "$backup_required" \
+    "$backup_path" \
+    "$backup_sha256" \
+    "$restore_verified" \
+    "$evidence_sha256" || return 1
   [[ ! -e "$marker_file" && ! -L "$marker_file" ]] || {
     printf 'Refusing to replace an existing pending release marker.\n' >&2
     return 1
@@ -406,6 +653,11 @@ write_pending_release_marker() {
     printf 'CONTROLLER_COMMIT=%s\n' "$controller_commit"
     printf 'PHASE=migrations-may-have-run\n'
     printf 'MIGRATIONS_MAY_HAVE_RUN=true\n'
+    printf 'PREDEPLOY_BACKUP_REQUIRED=%s\n' "$backup_required"
+    printf 'PREDEPLOY_BACKUP_PATH=%s\n' "$backup_path"
+    printf 'PREDEPLOY_BACKUP_SHA256=%s\n' "$backup_sha256"
+    printf 'PREDEPLOY_BACKUP_RESTORE_VERIFIED=%s\n' "$restore_verified"
+    printf 'PREDEPLOY_BACKUP_EVIDENCE_SHA256=%s\n' "$evidence_sha256"
     printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } >"$temporary" ||
     ! chown root:root "$temporary" ||

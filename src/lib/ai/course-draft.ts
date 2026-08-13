@@ -36,11 +36,7 @@ export {
   type GeneratedCourseDraft,
 } from "@/lib/ai/course-draft-schema";
 
-const briefText = (
-  minimum: number,
-  maximum: number,
-  minimumMessage: string,
-) =>
+const briefText = (minimum: number, maximum: number, minimumMessage: string) =>
   z
     .string()
     .trim()
@@ -98,7 +94,10 @@ const scopeShape = {
 function clip(value: string, maximum: number) {
   const characters = Array.from(value);
   if (characters.length <= maximum) return value;
-  return `${characters.slice(0, maximum - 3).join("").trimEnd()}...`;
+  return `${characters
+    .slice(0, maximum - 3)
+    .join("")
+    .trimEnd()}...`;
 }
 
 export function fallbackCourseDraft(
@@ -111,109 +110,97 @@ export function fallbackCourseDraft(
   const modules = copy.modules.slice(0, shape.modules).map((module, index) => ({
     title: module.title,
     description: `${module.description} ${copy.topicFocus(brief.topic)}`,
-    sections: [
-      {
-        title: copy.sectionTitles[index === 0 ? 0 : 1],
-        description: copy.sectionDescription(
-          copy.tones[brief.tone],
-          brief.targetAudience,
-        ),
-        lessons: module.lessons
-          .slice(0, shape.lessonsPerModule)
-          .map((lessonTitle, lessonIndex) => {
-            const isFinalLesson =
-              index === shape.modules - 1 &&
-              lessonIndex === shape.lessonsPerModule - 1;
-            const blocks: GeneratedCourseBlock[] = [
-              {
-                type: "heading",
-                text: lessonTitle,
-              },
-              {
-                type: "text",
-                text: copy.lessonBody(
-                  brief.targetAudience,
-                  brief.topic,
-                  brief.learningGoal,
-                ),
-              },
-              {
-                type: "info",
-                title: copy.info.title,
-                text: copy.info.text,
-                accent: index % 2 === 0 ? "teal" : "navy",
-              },
-              {
-                type: "checklist",
-                title: copy.checklist.title,
-                items: [...copy.checklist.items],
-              },
-            ];
-            const pages = [
-              {
-                title: copy.learningPageTitle,
-                blocks,
-              },
-            ];
-            if (isFinalLesson) {
-              const assessmentBlocks: GeneratedCourseBlock[] = [
-                {
-                  type: "multiple_choice",
-                  title: copy.assessments.multipleChoice.title,
-                  prompt: copy.assessments.multipleChoice.prompt,
-                  options: [...copy.assessments.multipleChoice.options],
-                  correctOption: 0,
-                  feedback: copy.assessments.multipleChoice.feedback,
-                },
-                {
-                  type: "true_false",
-                  title: copy.assessments.trueFalse.title,
-                  prompt: copy.assessments.trueFalse.prompt,
-                  correctOption: 1,
-                  feedback: copy.assessments.trueFalse.feedback,
-                },
-                {
-                  type: "multi_select",
-                  title: copy.assessments.multiSelect.title,
-                  prompt: copy.assessments.multiSelect.prompt,
-                  options: [...copy.assessments.multiSelect.options],
-                  correctOptions: [0, 2],
-                  feedback: copy.assessments.multiSelect.feedback,
-                },
-                {
-                  type: "fill_blank",
-                  title: copy.assessments.fillBlank.title,
-                  prompt: copy.assessments.fillBlank.prompt,
-                  acceptedAnswers: [...copy.assessments.fillBlank.acceptedAnswers],
-                  caseSensitive: false,
-                  feedback: copy.assessments.fillBlank.feedback,
-                },
-                {
-                  type: "ordering",
-                  title: copy.assessments.ordering.title,
-                  prompt: copy.assessments.ordering.prompt,
-                  options: [...copy.assessments.ordering.options],
-                  feedback: copy.assessments.ordering.feedback,
-                },
-              ];
-              pages.push({
-                title: copy.assessmentPageTitle,
-                blocks: assessmentBlocks,
-              });
-            }
-            return {
-              title: lessonTitle,
-              summary: copy.lessonSummary(
-                brief.topic,
-                brief.targetAudience,
-              ),
-              type: isFinalLesson ? ("quiz" as const) : ("lesson" as const),
-              durationMinutes: brief.scope === "intensive" ? 25 : 20,
-              pages,
-            };
-          }),
-      },
-    ],
+    lessons: module.lessons
+      .slice(0, shape.lessonsPerModule)
+      .map((lessonTitle, lessonIndex) => {
+        const isFinalLesson =
+          index === shape.modules - 1 &&
+          lessonIndex === shape.lessonsPerModule - 1;
+        const blocks: GeneratedCourseBlock[] = [
+          {
+            type: "heading",
+            text: lessonTitle,
+          },
+          {
+            type: "text",
+            text: copy.lessonBody(
+              brief.targetAudience,
+              brief.topic,
+              brief.learningGoal,
+            ),
+          },
+          {
+            type: "info",
+            title: copy.info.title,
+            text: copy.info.text,
+            accent: index % 2 === 0 ? "teal" : "navy",
+          },
+          {
+            type: "checklist",
+            title: copy.checklist.title,
+            items: [...copy.checklist.items],
+          },
+        ];
+        const pages = [
+          {
+            title: copy.learningPageTitle,
+            blocks,
+          },
+        ];
+        if (isFinalLesson) {
+          const assessmentBlocks: GeneratedCourseBlock[] = [
+            {
+              type: "multiple_choice",
+              title: copy.assessments.multipleChoice.title,
+              prompt: copy.assessments.multipleChoice.prompt,
+              options: [...copy.assessments.multipleChoice.options],
+              correctOption: 0,
+              feedback: copy.assessments.multipleChoice.feedback,
+            },
+            {
+              type: "true_false",
+              title: copy.assessments.trueFalse.title,
+              prompt: copy.assessments.trueFalse.prompt,
+              correctOption: 1,
+              feedback: copy.assessments.trueFalse.feedback,
+            },
+            {
+              type: "multi_select",
+              title: copy.assessments.multiSelect.title,
+              prompt: copy.assessments.multiSelect.prompt,
+              options: [...copy.assessments.multiSelect.options],
+              correctOptions: [0, 2],
+              feedback: copy.assessments.multiSelect.feedback,
+            },
+            {
+              type: "fill_blank",
+              title: copy.assessments.fillBlank.title,
+              prompt: copy.assessments.fillBlank.prompt,
+              acceptedAnswers: [...copy.assessments.fillBlank.acceptedAnswers],
+              caseSensitive: false,
+              feedback: copy.assessments.fillBlank.feedback,
+            },
+            {
+              type: "ordering",
+              title: copy.assessments.ordering.title,
+              prompt: copy.assessments.ordering.prompt,
+              options: [...copy.assessments.ordering.options],
+              feedback: copy.assessments.ordering.feedback,
+            },
+          ];
+          pages.push({
+            title: copy.assessmentPageTitle,
+            blocks: assessmentBlocks,
+          });
+        }
+        return {
+          title: lessonTitle,
+          summary: copy.lessonSummary(brief.topic, brief.targetAudience),
+          type: isFinalLesson ? ("quiz" as const) : ("lesson" as const),
+          durationMinutes: brief.scope === "intensive" ? 25 : 20,
+          pages,
+        };
+      }),
   }));
 
   return generatedCourseDraftSchema.parse({
@@ -223,11 +210,7 @@ export function fallbackCourseDraft(
       500,
     ),
     description: clip(
-      copy.description(
-        brief.targetAudience,
-        brief.topic,
-        brief.learningGoal,
-      ),
+      copy.description(brief.targetAudience, brief.topic, brief.learningGoal),
       4_000,
     ),
     difficulty,
@@ -258,10 +241,7 @@ function assertScopeShape(draft: GeneratedCourseDraft, brief: AiCourseBrief) {
     throw new Error("AI provider returned an unexpected module count.");
   }
   for (const learningModule of draft.modules) {
-    const lessonCount = learningModule.sections.reduce(
-      (count, section) => count + section.lessons.length,
-      0,
-    );
+    const lessonCount = learningModule.lessons.length;
     if (lessonCount !== expected.lessonsPerModule) {
       throw new Error("AI provider returned an unexpected lesson count.");
     }
@@ -343,7 +323,10 @@ async function providerDraft(
   );
   const rawContent = parsedResponse.choices[0]?.message.content;
   const content = Array.isArray(rawContent)
-    ? rawContent.map((part) => part.text).join("").trim()
+    ? rawContent
+        .map((part) => part.text)
+        .join("")
+        .trim()
     : rawContent?.trim();
   if (!content) throw new Error("AI provider returned an empty completion.");
   const draft = generatedCourseDraftSchema.parse(JSON.parse(content));

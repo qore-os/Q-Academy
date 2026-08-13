@@ -14,8 +14,8 @@ Owner verwalten die Academy im Bereich `/admin`.
   Gruppen/Bundles zuweisen, Profile pflegen und bei einem geeigneten aktiven
   Admin die Owner-Uebergabe starten. Die Uebergabe verlangt ein frisches
   Passwort- oder OIDC-Step-up und meldet beide beteiligten Konten ab.
-- **Kurse:** Unter `/admin/courses` Kurse erstellen; Module, Sektionen,
-  Lektionen, Seiten und typisierte Bloecke bearbeiten; Vorschau pruefen und eine
+- **Kurse:** Unter `/admin/courses` Kurse erstellen; Module, Lektionen, Seiten
+  und typisierte Bloecke bearbeiten; Vorschau pruefen und eine
   versionierte Veroeffentlichung ausloesen. Kategorien mit Farbe, Beschreibung
   und Reihenfolge werden in derselben Kursverwaltung gepflegt. Die Kursoption
   fuer Modulfreigabe-Mails benachrichtigt berechtigte aktive Enrollments nur

@@ -16,6 +16,7 @@ const restore = readFileSync("scripts/ops/postgres-restore.sh", "utf8");
 const dockerfile = readFileSync("Dockerfile", "utf8");
 const compose = readFileSync("compose.production.yml", "utf8");
 const migrate = readFileSync("scripts/migrate.ts", "utf8");
+const deploymentRunbook = readFileSync("docs/ROOTSERVER_DEPLOYMENT.md", "utf8");
 const databasePreflight = readFileSync(
   "scripts/ops/database-config-preflight.sh",
   "utf8",
@@ -85,6 +86,7 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /flock -n 8/);
   assert.match(deploy, /Q_ACADEMY_BACKUP_LOCK_FD=8/);
   assert.match(deploy, /BACKUP_LOCK_FILE="\$backup_lock_file"/);
+  assert.match(deploy, /BACKUP_VERIFY_RESTORE=true/);
   assert.match(deploy, /git rev-parse --verify HEAD\^\{commit\}/);
   assert.match(deploy, /release tag must equal git-<full HEAD>/);
   assert.match(deploy, /git status --porcelain=v1 --untracked-files=all/);
@@ -101,9 +103,10 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   assert.match(deploy, /pg_class relation_record/);
   assert.match(deploy, /Fresh database has no application relations/);
   assert.match(deploy, /docker image inspect/);
+  assert.match(deploy, /verify_ai_runtime_contract_images "\$release_tag"/);
   assert.match(
     deploy,
-    /verify_ai_runtime_contract_images "\$release_tag"/,
+    /verify_database_schema_contract_images "\$release_tag"/,
   );
   assert.match(deploy, /Q_ACADEMY_KEY_ROTATION_IMAGE/);
   assert.match(deploy, /Q_ACADEMY_TENANT_OPS_IMAGE/);
@@ -225,13 +228,14 @@ test("release deployment is locked, backed up, immutable, and readiness-gated", 
   const backupDecision = deploy.indexOf(
     'backup_decision="$(predeploy_backup_decision "$initial_install" "$application_relation_count")"',
   );
-  assert.ok(roleValidation >= 0 && roleValidation < backupDecision);
+  assert.ok(roleValidation >= 0 && roleValidation < backupLock);
   assert.ok(appPrincipalPreflight > roleValidation);
-  assert.ok(appPrincipalPreflight < backupDecision);
-  assert.ok(backupDecision < backupLock);
-  assert.ok(backupLock < inheritedBackupContract);
+  assert.ok(appPrincipalPreflight < backupLock);
+  assert.ok(backupLock < writerStop);
+  assert.ok(writerStop < backupDecision);
+  assert.ok(backupDecision < inheritedBackupContract);
   assert.ok(inheritedBackupContract < backupRun);
-  assert.ok(backupRun < writerStop);
+  assert.ok(writerStop < backupRun);
   assert.ok(stratoSweeperIsolation > writerStop);
   assert.ok(stratoSweeperIsolation < roleReconciliation);
   assert.ok(roleReconciliation > writerStop);
@@ -485,12 +489,12 @@ test("boot reconcile is versioned, migration-free, and fail closed around Docker
 });
 
 test("pending releases are durable, controller-bound, and recover only explicitly", () => {
-  assert.match(common, /PENDING_RELEASE_SCHEMA_VERSION=1/);
+  assert.match(common, /PENDING_RELEASE_SCHEMA_VERSION=2/);
   assert.match(
     common,
     /PENDING_RELEASE_FILE_DEFAULT=\/var\/lib\/q-academy\/releases\/pending[.]env/,
   );
-  assert.match(common, /NR == 7 && !invalid/);
+  assert.match(common, /NR == 12 && !invalid/);
   for (const field of [
     "SCHEMA_VERSION",
     "FROM_TAG",
@@ -498,6 +502,11 @@ test("pending releases are durable, controller-bound, and recover only explicitl
     "CONTROLLER_COMMIT",
     "PHASE",
     "MIGRATIONS_MAY_HAVE_RUN",
+    "PREDEPLOY_BACKUP_REQUIRED",
+    "PREDEPLOY_BACKUP_PATH",
+    "PREDEPLOY_BACKUP_SHA256",
+    "PREDEPLOY_BACKUP_RESTORE_VERIFIED",
+    "PREDEPLOY_BACKUP_EVIDENCE_SHA256",
     "CREATED_AT",
   ]) {
     assert.match(common, new RegExp(`allowed\\["${field}"\\]`));
@@ -566,7 +575,7 @@ test("pending releases are durable, controller-bound, and recover only explicitl
   );
   assert.match(
     deploy,
-    /run write_pending_release_marker "\$pending_file" "\$previous_tag" "\$release_tag" "\$head_commit"/,
+    /run write_pending_release_marker[\s\\]+"\$pending_file"[\s\\]+"\$previous_tag"[\s\\]+"\$release_tag"[\s\\]+"\$head_commit"/,
   );
   const backupRun = deploy.indexOf(
     "scripts/ops/postgres-backup.sh",
@@ -657,6 +666,138 @@ test("pending releases are durable, controller-bound, and recover only explicitl
     { cwd: process.cwd(), encoding: "utf8" },
   );
   assert.equal(dockerFailure.status, 0, dockerFailure.stderr);
+});
+
+test("deploy reuses one restore-verified cutover backup and rejects altered evidence", () => {
+  const writerStop = deploy.indexOf(
+    'run "${compose[@]}" stop -t 30 "${DATABASE_WRITER_SERVICES[@]}"',
+  );
+  const backupFlow = deploy.indexOf(
+    'if [[ "$resume_failed_release" == "true" ]]',
+    writerStop,
+  );
+  const freshBackupBranch = deploy.indexOf("else", backupFlow);
+  const markerWrite = deploy.indexOf(
+    "run write_pending_release_marker",
+    backupFlow,
+  );
+  const migration = deploy.indexOf(
+    'run "${compose[@]}" run --rm --no-deps migrate',
+  );
+  const firstBackupInvocation = deploy.indexOf(
+    "scripts/ops/postgres-backup.sh",
+    freshBackupBranch,
+  );
+
+  assert.ok(writerStop >= 0 && writerStop < backupFlow);
+  assert.ok(backupFlow < freshBackupBranch);
+  assert.doesNotMatch(
+    deploy.slice(backupFlow, freshBackupBranch),
+    /postgres-backup[.]sh/,
+  );
+  assert.match(
+    deploy.slice(backupFlow, freshBackupBranch),
+    /verify_release_backup_evidence/,
+  );
+  assert.ok(freshBackupBranch < firstBackupInvocation);
+  assert.ok(firstBackupInvocation < markerWrite && markerWrite < migration);
+  assert.doesNotMatch(deploy.slice(markerWrite), /postgres-backup[.]sh/);
+  assert.match(
+    deploy.slice(freshBackupBranch, markerWrite),
+    /predeploy_backup_command=\(\s+env\s+BACKUP_VERIFY_RESTORE=true/,
+  );
+  assert.doesNotMatch(deploy, /BACKUP_VERIFY_RESTORE:-/);
+  for (const field of [
+    "PREDEPLOY_BACKUP_REQUIRED",
+    "PREDEPLOY_BACKUP_PATH",
+    "PREDEPLOY_BACKUP_SHA256",
+    "PREDEPLOY_BACKUP_RESTORE_VERIFIED",
+    "PREDEPLOY_BACKUP_EVIDENCE_SHA256",
+  ]) {
+    assert.match(
+      deploy.slice(markerWrite),
+      new RegExp(`printf '${field}=%s\\\\n'`),
+    );
+    assert.match(
+      deploy.slice(markerWrite),
+      new RegExp(`production_env_value "\\$state_file" ${field}`),
+    );
+  }
+
+  const controller = "a".repeat(40);
+  const fromController = "b".repeat(40);
+  const evidenceContract = String.raw`
+set -euo pipefail
+source scripts/ops/release-common.sh
+work="$(mktemp -d)"
+trap 'rm -rf -- "$work"' EXIT
+dump="$work/q-academy-20260813T120000Z.dump"
+marker="$work/pending.env"
+missing_marker="$work/missing.env"
+printf 'cutover-consistent-data\n' >"$dump"
+backup_sha256="$(sha256sum -- "$dump")"
+backup_sha256="${"$"}{backup_sha256%% *}"
+from_tag=git-${fromController}
+to_tag=git-${controller}
+controller_commit=${controller}
+evidence_sha256="$(release_backup_evidence_sha256 "$from_tag" "$to_tag" "$controller_commit" true "$dump" "$backup_sha256" true)"
+stat() {
+  local subject="${"$"}{!#}"
+  if [[ "$1" == -c && "$2" == '%u:%g:%a' && ( "$subject" == "$dump" || "$subject" == "$marker" ) ]]; then
+    printf '%s\n' '0:0:600'
+  else
+    command stat "$@"
+  fi
+}
+verify_release_backup_evidence "$from_tag" "$to_tag" "$controller_commit" true "$dump" "$backup_sha256" true "$evidence_sha256"
+cat >"$marker" <<MARKER
+SCHEMA_VERSION=2
+FROM_TAG=$from_tag
+TO_TAG=$to_tag
+CONTROLLER_COMMIT=$controller_commit
+PHASE=migrations-may-have-run
+MIGRATIONS_MAY_HAVE_RUN=true
+PREDEPLOY_BACKUP_REQUIRED=true
+PREDEPLOY_BACKUP_PATH=$dump
+PREDEPLOY_BACKUP_SHA256=$backup_sha256
+PREDEPLOY_BACKUP_RESTORE_VERIFIED=true
+PREDEPLOY_BACKUP_EVIDENCE_SHA256=$evidence_sha256
+CREATED_AT=2026-08-13T12:00:00Z
+MARKER
+chmod 600 "$marker"
+validate_pending_release_marker "$marker"
+
+printf 'tampered\n' >>"$dump"
+if verify_release_backup_evidence "$from_tag" "$to_tag" "$controller_commit" true "$dump" "$backup_sha256" true "$evidence_sha256" >/dev/null 2>&1; then
+  exit 20
+fi
+printf 'cutover-consistent-data\n' >"$dump"
+if verify_release_backup_evidence "$from_tag" "git-${"c".repeat(40)}" "${"c".repeat(40)}" true "$dump" "$backup_sha256" true "$evidence_sha256" >/dev/null 2>&1; then
+  exit 21
+fi
+mv "$dump" "$dump.missing"
+if validate_pending_release_marker "$marker" >/dev/null 2>&1; then
+  exit 22
+fi
+mv "$dump.missing" "$dump"
+sed "s/^PREDEPLOY_BACKUP_EVIDENCE_SHA256=.*/PREDEPLOY_BACKUP_EVIDENCE_SHA256=${"0".repeat(64)}/" "$marker" >"$missing_marker"
+mv "$missing_marker" "$marker"
+if validate_pending_release_marker "$marker" >/dev/null 2>&1; then
+  exit 23
+fi
+sed -i "/^PREDEPLOY_BACKUP_EVIDENCE_SHA256=/d" "$marker"
+if validate_pending_release_marker "$marker" >/dev/null 2>&1; then
+  exit 24
+fi
+printf 'release-backup-evidence-ok\n'
+`;
+  const result = spawnSync("bash", ["-s"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: evidenceContract,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "release-backup-evidence-ok\n");
 });
 
 test("external Caddy sites stay outside the release checkout and are verified", () => {
@@ -770,18 +911,18 @@ test("legacy release state is atomically bound to the active storage identity", 
     "ENVIRONMENT",
     'chmod 600 "$state" "$environment"',
     "stat() {",
-    "  if [[ \"$1\" == -c && \"$2\" == '%u:%g:%a' && \"$3\" == \"$state\" ]]; then",
+    '  if [[ "$1" == -c && "$2" == \'%u:%g:%a\' && "$3" == "$state" ]]; then',
     "    printf '%s\\n' '0:0:600'",
     "  else",
-    "    command stat \"$@\"",
+    '    command stat "$@"',
     "  fi",
     "}",
     "docker() {",
-    "  if [[ \"$1\" == ps ]]; then",
+    '  if [[ "$1" == ps ]]; then',
     `    printf '%s\\n' '${containerId}'`,
-    "  elif [[ \"$1\" == inspect && \"$3\" == '{{.Config.Image}}' ]]; then",
+    '  elif [[ "$1" == inspect && "$3" == \'{{.Config.Image}}\' ]]; then',
     `    printf '%s\\n' 'q-academy-app:git-${commit}'`,
-    "  elif [[ \"$1\" == inspect ]]; then",
+    '  elif [[ "$1" == inspect ]]; then',
     "    printf '%s\\n' \\",
     "      'MEDIA_S3_COMPATIBILITY_MODE=strato-hidrive' \\",
     "      'MEDIA_S3_ENDPOINT=https://s3.hidrive.strato.com' \\",
@@ -797,7 +938,9 @@ test("legacy release state is atomically bound to the active storage identity", 
     'upgrade_legacy_release_state "$state" "$environment"',
     'test "$(stat -c \'%a\' "$state")" = 600',
     'test "$(production_env_value "$state" SCHEMA_VERSION)" = 3',
-    'test "$(production_env_value "$state" CURRENT_TAG)" = "git-' + commit + '"',
+    'test "$(production_env_value "$state" CURRENT_TAG)" = "git-' +
+      commit +
+      '"',
     'media_storage_release_state_matches "$state" "$environment"',
     'test -z "$(find "$work" -maxdepth 1 -name \'*.upgrade.*\' -print -quit)"',
     "sed -i 's/^SCHEMA_VERSION=3$/SCHEMA_VERSION=2/' \"$state\"",
@@ -1045,12 +1188,13 @@ test("child backup validates the inherited deployment lock without self-deadlock
 test("app rollback requires explicit compatibility and never mutates the database", () => {
   assert.match(rollback, /CONFIRM_ROLLBACK_TAG/);
   assert.match(rollback, /MIGRATIONS_BACKWARD_COMPATIBLE/);
-  assert.match(rollback, /docker image inspect/);
-  assert.match(rollback, /target release image is not present locally/);
   assert.match(
     rollback,
-    /verify_ai_runtime_contract_images "\$target_tag"/,
+    /automatic database\/image compatibility is enforced separately/,
   );
+  assert.match(rollback, /docker image inspect/);
+  assert.match(rollback, /target release image is not present locally/);
+  assert.match(rollback, /verify_ai_runtime_contract_images "\$target_tag"/);
   assert.match(
     rollback,
     /rollback target predates or disagrees with the required AI runtime contracts/,
@@ -1143,6 +1287,157 @@ test("app rollback requires explicit compatibility and never mutates the databas
   assert.ok(caddyVolumeInit >= 0 && caddyVolumeInit < caddyHealthGate);
   assert.ok(caddyHealthGate < externalReadiness);
   assert.ok(externalReadiness < releasePersistence);
+});
+
+test("migration 0082 is an automatic forward-only runtime boundary", () => {
+  assert.match(
+    dockerfile,
+    /com[.]q-academy[.]database-schema-contract="flat-course-lessons-v1"/,
+  );
+  assert.match(common, /FLAT_COURSE_LESSONS_MIGRATION_TIMESTAMP=1786632153991/);
+  assert.match(
+    common,
+    /DATABASE_SCHEMA_RUNTIME_COMPONENTS=\(\s+app\s+tenant-ops\s+media-runner\s+media-preflight\s+dispatcher\s+\)/,
+  );
+  assert.match(
+    common,
+    /coalesce\(max\(created_at\), 0\) >= \$Q_ACADEMY_FLAT_COURSE_MIGRATION_TIMESTAMP/,
+  );
+  assert.match(common, /a manual compatibility override is not accepted/);
+  assert.match(
+    deploymentRunbook,
+    /0082_flatten_course_sections[\s\S]*Forward-only/,
+  );
+  assert.match(
+    deploymentRunbook,
+    /MIGRATIONS_BACKWARD_COMPATIBLE=true[\s\S]*kann sie nicht ueberstimmen/,
+  );
+  assert.match(
+    deploymentRunbook,
+    /genau zwei Recovery-Pfade[\s\S]*Forward-Resume[\s\S]*Pre-Deployment-Backup/,
+  );
+
+  const deployImageGate = deploy.indexOf(
+    'verify_database_schema_contract_images "$release_tag"',
+  );
+  const deployMigration = deploy.indexOf(
+    'run "${compose[@]}" run --rm --no-deps migrate',
+  );
+  const deployDatabaseGate = deploy.indexOf(
+    'run verify_release_database_schema_contract "$release_tag"',
+    deployMigration,
+  );
+  const deployRuntime = deploy.indexOf(
+    'run "${compose[@]}" up -d --no-deps --wait --wait-timeout 300 "${DATABASE_RUNTIME_SERVICES[@]}"',
+    deployDatabaseGate,
+  );
+  assert.ok(deployImageGate >= 0 && deployImageGate < deployMigration);
+  assert.ok(
+    deployMigration < deployDatabaseGate && deployDatabaseGate < deployRuntime,
+  );
+
+  for (const [name, operation, tag] of [
+    ["rollback", rollback, "$target_tag"],
+    ["reconcile", reconcile, "$current_tag"],
+  ] as const) {
+    const postgresStart =
+      operation.indexOf(
+        "up -d --no-recreate --wait --wait-timeout 900 postgres clamav",
+      ) >= 0
+        ? operation.indexOf(
+            "up -d --no-recreate --wait --wait-timeout 900 postgres clamav",
+          )
+        : operation.indexOf("up -d --wait --wait-timeout 900 postgres clamav");
+    const databaseGate = operation.indexOf(
+      `verify_release_database_schema_contract "${tag}"`,
+      postgresStart,
+    );
+    const providerPreflight = operation.indexOf(
+      "ai-provider-preflight",
+      databaseGate,
+    );
+    const runtimeStart = operation.indexOf(
+      "up -d --no-deps --wait --wait-timeout 300",
+      databaseGate,
+    );
+    assert.ok(postgresStart >= 0 && postgresStart < databaseGate, name);
+    assert.ok(databaseGate < providerPreflight, name);
+    assert.ok(databaseGate < runtimeStart, name);
+  }
+
+  const contractScript = String.raw`
+set -euo pipefail
+source scripts/ops/release-common.sh
+Q_TEST_DATABASE_STATE=legacy-course-sections
+Q_TEST_IMAGE_CONTRACT=legacy-course-sections
+q_test_compose() {
+  [[ "$1" == exec && "$2" == -T && "$3" == -e ]]
+  [[ "$4" == "Q_ACADEMY_FLAT_COURSE_MIGRATION_TIMESTAMP=$FLAT_COURSE_LESSONS_MIGRATION_TIMESTAMP" ]]
+  [[ "$5" == postgres && "$6" == sh && "$7" == -euc ]]
+  printf '%s\n' "$Q_TEST_DATABASE_STATE"
+}
+docker() {
+  [[ "$1" == image && "$2" == inspect && "$3" == --format ]]
+  [[ "$4" == *database-schema-contract* ]]
+  [[ "$5" =~ ^q-academy-(app|tenant-ops|media-runner|media-preflight|dispatcher):git-[a-f0-9]{40}$ ]]
+  printf '%s\n' "$Q_TEST_IMAGE_CONTRACT"
+}
+release_tag=git-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+# The database and every runtime image must belong to the same side of 0082.
+verify_release_database_schema_contract "$release_tag" q_test_compose
+
+Q_TEST_IMAGE_CONTRACT=""
+verify_release_database_schema_contract "$release_tag" q_test_compose
+Q_TEST_IMAGE_CONTRACT="<no value>"
+verify_release_database_schema_contract "$release_tag" q_test_compose
+
+Q_TEST_IMAGE_CONTRACT="$FLAT_COURSE_LESSONS_SCHEMA_CONTRACT"
+if verify_release_database_schema_contract "$release_tag" q_test_compose 2>/dev/null; then
+  exit 20
+fi
+
+Q_TEST_DATABASE_STATE=flat-course-lessons-v1
+verify_release_database_schema_contract "$release_tag" q_test_compose
+Q_TEST_IMAGE_CONTRACT=legacy-course-sections
+if verify_release_database_schema_contract "$release_tag" q_test_compose 2>/dev/null; then
+  exit 21
+fi
+Q_TEST_IMAGE_CONTRACT=""
+if verify_release_database_schema_contract "$release_tag" q_test_compose 2>/dev/null; then
+  exit 22
+fi
+
+Q_TEST_IMAGE_CONTRACT=mixed
+docker() {
+  [[ "$1" == image && "$2" == inspect && "$3" == --format ]]
+  [[ "$4" == *database-schema-contract* ]]
+  if [[ "$5" == q-academy-app:* ]]; then
+    printf '%s\n' "$FLAT_COURSE_LESSONS_SCHEMA_CONTRACT"
+  else
+    printf '%s\n' "<no value>"
+  fi
+}
+if verify_release_database_schema_contract "$release_tag" q_test_compose 2>/dev/null; then
+  exit 23
+fi
+
+Q_TEST_DATABASE_STATE=unknown
+if verify_release_database_schema_contract "$release_tag" q_test_compose 2>/dev/null; then
+  exit 24
+fi
+if verify_database_schema_contract_images latest; then
+  exit 25
+fi
+printf 'database-schema-contract-ok\n'
+`;
+  const result = spawnSync("bash", ["-s"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    input: contractScript,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "database-schema-contract-ok\n");
 });
 
 test("runtime AI contract labels reject pre-migration images before activation", () => {
@@ -1483,10 +1778,7 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /CI_CADDY_SOURCE_DATE_EPOCH: "[0-9]{10}"/,
   );
-  assert.match(
-    continuousIntegration,
-    /CI_CADDY_X_TEXT_VERSION: "0[.]39[.]0"/,
-  );
+  assert.match(continuousIntegration, /CI_CADDY_X_TEXT_VERSION: "0[.]39[.]0"/);
   assert.match(
     continuousIntegration,
     /CI_CADDY_X_TEXT_MODULE_SUM: "h1:[A-Za-z0-9+/]{43}="/,
@@ -1495,10 +1787,7 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
     continuousIntegration,
     /CI_CADDY_X_TEXT_GO_MOD_SUM: "h1:[A-Za-z0-9+/]{43}="/,
   );
-  assert.match(
-    continuousIntegration,
-    /CI_CADDY_GRPC_VERSION: "1[.]82[.]1"/,
-  );
+  assert.match(continuousIntegration, /CI_CADDY_GRPC_VERSION: "1[.]82[.]1"/);
   assert.match(
     continuousIntegration,
     /CI_CADDY_GRPC_MODULE_SUM: "h1:[A-Za-z0-9+/]{43}="/,
@@ -1539,19 +1828,13 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
       continuousIntegration,
       new RegExp(`--build-arg ${name}="\\$CI_${name}"`),
     );
-    assert.match(
-      createReleaseArtifact,
-      new RegExp(`Q_ACADEMY_${name}`),
-    );
+    assert.match(createReleaseArtifact, new RegExp(`Q_ACADEMY_${name}`));
   }
   assert.match(
     createReleaseArtifact,
     /sha256sum -- "\$caddy_module_patch_lock"/,
   );
-  assert.match(
-    createReleaseArtifact,
-    /evidence\/caddy-module-patch[.]lock/,
-  );
+  assert.match(createReleaseArtifact, /evidence\/caddy-module-patch[.]lock/);
   const pinnedNodeImage =
     "node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3";
   assert.equal(continuousIntegration.split(pinnedNodeImage).length - 1, 2);

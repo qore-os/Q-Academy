@@ -131,8 +131,8 @@ test(
         ) values (
           ${courseVersionId}, ${organizationId}, ${course!.id}, 1,
           ${sql.json({
-            schemaVersion: 4,
-            accessPolicyVersion: 1,
+            schemaVersion: 6,
+            accessPolicyVersion: 2,
             moduleKindVersion: 1,
             courseOutlineVersion: 1,
             capturedAt: new Date().toISOString(),

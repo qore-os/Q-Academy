@@ -213,7 +213,6 @@ test("member render lookup requires the exact published job and primary asset", 
             pages: [],
           },
         ],
-        sections: [],
       },
     ],
   };

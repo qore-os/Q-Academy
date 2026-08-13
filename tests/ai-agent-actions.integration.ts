@@ -5,6 +5,7 @@ import test, { after } from "node:test";
 import postgres from "postgres";
 
 import { postgresClient } from "../src/db/index";
+import type { CourseVersionSnapshot } from "../src/db/schema";
 import {
   cancelAiAgentActionRequest,
   createAiAgentActionRequest,
@@ -103,13 +104,47 @@ test(
       ) returning id
     `;
     const courseVersionId = randomUUID();
+    const capturedAt = new Date().toISOString();
+    const courseSnapshot: CourseVersionSnapshot = {
+      schemaVersion: 6,
+      accessPolicyVersion: 2,
+      moduleKindVersion: 1,
+      courseOutlineVersion: 1,
+      capturedAt,
+      course: {
+        id: course!.id,
+        organizationId,
+        categoryId: null,
+        title: `Action course ${suffix}`,
+        slug: `action-course-${suffix}`,
+        shortDescription: "Approval target",
+        description: "Course access is granted only after approval.",
+        coverImage: null,
+        status: "published",
+        difficulty: "Grundlagen",
+        estimatedMinutes: 60,
+        certificateEnabled: true,
+        featured: false,
+        visibleInCatalog: true,
+        showProgressPercentage: true,
+        publishedVersionId: courseVersionId,
+        firstPublishedAt: capturedAt,
+        createdById: owner.id,
+        createdAt: capturedAt,
+        updatedAt: capturedAt,
+      },
+      learningGoals: [],
+      authors: [],
+      widgets: [],
+      modules: [],
+    };
     await sql`
       insert into course_versions (
         id, organization_id, course_id, version, snapshot, changelog,
         published_at, created_by_id
       ) values (
         ${courseVersionId}, ${organizationId}, ${course!.id}, 1,
-        ${sql.json({ schemaVersion: 4, course: { id: course!.id } })},
+        ${sql.json(courseSnapshot)},
         'Action approval test', now(), ${owner.id}
       )
     `;

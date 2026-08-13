@@ -16,7 +16,6 @@ import {
   lessonPages,
   lessons,
   modules,
-  moduleSections,
   mediaAssets,
   mediaProcessingJobs,
   type ContentBlockData,
@@ -140,7 +139,6 @@ import {
 import { slugify } from "@/lib/utils";
 import {
   copyLessonToCourseTarget,
-  copySectionToCourseTarget,
   courseContentCopyErrorReason,
 } from "@/lib/course-content-copy-service";
 import { type CourseContentCopyActionCode } from "@/lib/i18n/course-content-copy";
@@ -317,7 +315,7 @@ function revalidateCourse(courseId: string) {
 function courseContentCopyFailure(
   code: Exclude<
     CourseContentCopyActionCode,
-    "course_content_copy.lesson_copied" | "course_content_copy.section_copied"
+    "course_content_copy.lesson_copied"
   >,
 ): CourseBuilderActionResult {
   return {
@@ -454,40 +452,6 @@ async function lessonInCourse(
       ),
     )
     .where(eq(lessons.id, lessonId))
-    .limit(1);
-  return row ?? null;
-}
-
-async function sectionInCourse(
-  courseId: string,
-  sectionId: string,
-  organizationId: string,
-) {
-  const [row] = await db
-    .select({ id: moduleSections.id })
-    .from(moduleSections)
-    .innerJoin(
-      modules,
-      and(
-        eq(modules.id, moduleSections.moduleId),
-        eq(modules.organizationId, organizationId),
-      ),
-    )
-    .innerJoin(
-      courseModules,
-      and(
-        eq(courseModules.moduleId, modules.id),
-        eq(courseModules.courseId, courseId),
-      ),
-    )
-    .innerJoin(
-      courses,
-      and(
-        eq(courses.id, courseModules.courseId),
-        eq(courses.organizationId, organizationId),
-      ),
-    )
-    .where(eq(moduleSections.id, sectionId))
     .limit(1);
   return row ?? null;
 }
@@ -1486,7 +1450,6 @@ export async function createCourseModuleAction(
 
   let created: {
     moduleId: string;
-    sectionId?: string;
     lessonId?: string;
     pageId?: string;
   };
@@ -1543,7 +1506,6 @@ export async function createCourseModuleAction(
         folder: parsed.data.folder,
         estimatedMinutes: parsed.data.estimatedMinutes,
         isReusable: parsed.data.isReusable,
-        createLearningSection: true,
       });
       const createdModule = createdStructure.learningModule;
       await tx.insert(courseModules).values({
@@ -1569,7 +1531,6 @@ export async function createCourseModuleAction(
       });
       return {
         moduleId: createdModule.id,
-        sectionId: createdStructure.section?.id,
         lessonId: createdStructure.lesson?.id,
         pageId: createdStructure.page?.id,
       };
@@ -1583,7 +1544,7 @@ export async function createCourseModuleAction(
   return success(
     "course_builder.module.created",
     created.moduleId,
-    created.sectionId,
+    undefined,
     created.lessonId,
     created.pageId,
   );
@@ -1980,70 +1941,6 @@ export async function detachCourseModuleAction(
   return success("course_builder.module.detached", moduleId);
 }
 
-export async function createModuleSectionAction(
-  courseId: string,
-  moduleId: string,
-  formData: FormData,
-): Promise<CourseBuilderActionResult> {
-  const { user } = await requireCoursePermission(courseId, "edit");
-  const parsed = z
-    .object({
-      courseId: idSchema,
-      moduleId: idSchema,
-      title: z.string().min(2).max(220),
-      description: z.string().max(3_000),
-    })
-    .safeParse({
-      courseId,
-      moduleId,
-      title: value(formData, "title"),
-      description: value(formData, "description"),
-    });
-  if (!parsed.success) return failure("course_builder.invalid_input");
-  if (
-    !(await moduleInCourse(
-      parsed.data.courseId,
-      parsed.data.moduleId,
-      user.organizationId,
-    ))
-  ) {
-    return failure("course_builder.unavailable");
-  }
-  const sectionMutation = await runCourseBuilderMutation(() =>
-    db.transaction(async (tx) => {
-      await requireSharedModuleContentPermission(tx, user, courseId, {
-        type: "module",
-        id: parsed.data.moduleId,
-      });
-      await assertLearningModuleStructureMutation(tx, {
-        organizationId: user.organizationId,
-        moduleId: parsed.data.moduleId,
-      });
-      const [last] = await tx
-        .select({ sortOrder: moduleSections.sortOrder })
-        .from(moduleSections)
-        .where(eq(moduleSections.moduleId, parsed.data.moduleId))
-        .orderBy(desc(moduleSections.sortOrder))
-        .limit(1);
-      const [createdSection] = await tx
-        .insert(moduleSections)
-        .values({
-          organizationId: user.organizationId,
-          moduleId: parsed.data.moduleId,
-          title: parsed.data.title,
-          description: parsed.data.description || null,
-          sortOrder: (last?.sortOrder ?? -1) + 1,
-        })
-        .returning({ id: moduleSections.id });
-      return createdSection;
-    }),
-  );
-  if ("error" in sectionMutation) return failure(sectionMutation.error);
-  const section = sectionMutation.value;
-  revalidateCourse(courseId);
-  return success("course_builder.section.created", section.id);
-}
-
 export async function createModuleLessonAction(
   courseId: string,
   moduleId: string,
@@ -2054,7 +1951,6 @@ export async function createModuleLessonAction(
     .object({
       courseId: idSchema,
       moduleId: idSchema,
-      sectionId: idSchema.nullable(),
       title: z.string().min(2).max(220),
       summary: z.string().max(3_000),
       type: lessonTypeSchema,
@@ -2063,7 +1959,6 @@ export async function createModuleLessonAction(
     .safeParse({
       courseId,
       moduleId,
-      sectionId: value(formData, "sectionId") || null,
       title: value(formData, "title"),
       summary: value(formData, "summary"),
       type: value(formData, "type"),
@@ -2090,25 +1985,6 @@ export async function createModuleLessonAction(
         organizationId: user.organizationId,
         moduleId: parsed.data.moduleId,
       });
-      if (parsed.data.sectionId) {
-        const [section] = await tx
-          .select({ id: moduleSections.id })
-          .from(moduleSections)
-          .where(
-            and(
-              eq(moduleSections.id, parsed.data.sectionId),
-              eq(moduleSections.moduleId, parsed.data.moduleId),
-            ),
-          )
-          .limit(1);
-        if (!section) {
-          throw new ApiError(
-            422,
-            "validation_error",
-            "Diese Sektion gehoert nicht zum Modul.",
-          );
-        }
-      }
       const [last] = await tx
         .select({ sortOrder: lessons.sortOrder })
         .from(lessons)
@@ -2120,7 +1996,6 @@ export async function createModuleLessonAction(
         .values({
           organizationId: user.organizationId,
           moduleId: parsed.data.moduleId,
-          sectionId: parsed.data.sectionId,
           title: parsed.data.title,
           slug: uniqueSlug(parsed.data.title),
           summary: parsed.data.summary || null,
@@ -2141,6 +2016,114 @@ export async function createModuleLessonAction(
   return success("course_builder.lesson.created", lesson.id);
 }
 
+export async function moveCourseLessonAction(
+  courseId: string,
+  lessonId: string,
+  direction: "up" | "down",
+): Promise<CourseBuilderActionResult> {
+  const { user } = await requireCoursePermission(courseId, "edit");
+  const parsed = z
+    .object({
+      courseId: idSchema,
+      lessonId: idSchema,
+      direction: z.enum(["up", "down"]),
+    })
+    .safeParse({ courseId, lessonId, direction });
+  if (!parsed.success) return failure("course_builder.invalid_input");
+  if (
+    !(await lessonInCourse(
+      parsed.data.courseId,
+      parsed.data.lessonId,
+      user.organizationId,
+    ))
+  ) {
+    return failure("course_builder.unavailable");
+  }
+
+  const movedMutation = await runCourseBuilderMutation(() =>
+    db.transaction(async (tx) => {
+      const shared = await requireSharedModuleContentPermission(
+        tx,
+        user,
+        courseId,
+        {
+          type: "lesson",
+          id: parsed.data.lessonId,
+        },
+      );
+      const moduleLessons = await tx
+        .select({ id: lessons.id, sortOrder: lessons.sortOrder })
+        .from(lessons)
+        .where(
+          and(
+            eq(lessons.organizationId, user.organizationId),
+            eq(lessons.moduleId, shared.moduleId),
+          ),
+        )
+        .orderBy(asc(lessons.sortOrder), asc(lessons.id))
+        .for("update");
+      const currentIndex = moduleLessons.findIndex(
+        (lesson) => lesson.id === parsed.data.lessonId,
+      );
+      if (currentIndex < 0) {
+        throw new ApiError(404, "not_found", "Lektion nicht gefunden.");
+      }
+      const offset = parsed.data.direction === "up" ? -1 : 1;
+      const nextIndex = currentIndex + offset;
+      if (nextIndex < 0 || nextIndex >= moduleLessons.length) {
+        return {
+          code: "course_builder.lesson.edge_reached" as const,
+          moduleId: shared.moduleId,
+          referencedCourseIds: shared.referencedCourseIds,
+        };
+      }
+
+      const reordered = [...moduleLessons];
+      const [current] = reordered.splice(currentIndex, 1);
+      reordered.splice(nextIndex, 0, current);
+      const now = new Date();
+      for (const [sortOrder, lesson] of reordered.entries()) {
+        if (lesson.sortOrder === sortOrder) continue;
+        await tx
+          .update(lessons)
+          .set({ sortOrder, updatedAt: now })
+          .where(
+            and(
+              eq(lessons.id, lesson.id),
+              eq(lessons.organizationId, user.organizationId),
+              eq(lessons.moduleId, shared.moduleId),
+            ),
+          );
+      }
+      await tx.insert(activityEvents).values({
+        organizationId: user.organizationId,
+        userId: user.id,
+        type: "course.lesson.moved",
+        entityType: "lesson",
+        entityId: parsed.data.lessonId,
+        metadata: {
+          courseId: parsed.data.courseId,
+          moduleId: shared.moduleId,
+          direction: parsed.data.direction,
+          previousIndex: currentIndex,
+          currentIndex: nextIndex,
+        },
+      });
+      return {
+        code: "course_builder.lesson.moved" as const,
+        moduleId: shared.moduleId,
+        referencedCourseIds: shared.referencedCourseIds,
+      };
+    }),
+  );
+  if ("error" in movedMutation) return failure(movedMutation.error);
+  const moved = movedMutation.value;
+  for (const referencedCourseId of new Set(moved.referencedCourseIds)) {
+    revalidateCourse(referencedCourseId);
+  }
+  return success(moved.code, lessonId, moved.moduleId, lessonId);
+}
+
 export async function copyCourseLessonAction(
   sourceCourseId: string,
   sourceLessonId: string,
@@ -2154,14 +2137,12 @@ export async function copyCourseLessonAction(
       sourceLessonId: idSchema,
       targetCourseId: idSchema,
       targetModuleId: idSchema,
-      targetSectionId: idSchema.nullable(),
     })
     .safeParse({
       sourceCourseId,
       sourceLessonId,
       targetCourseId: value(formData, "targetCourseId"),
       targetModuleId: value(formData, "targetModuleId"),
-      targetSectionId: value(formData, "targetSectionId") || null,
     });
   if (!parsed.success) {
     return courseContentCopyFailure("course_content_copy.invalid_input");
@@ -2185,7 +2166,6 @@ export async function copyCourseLessonAction(
         targetCourseId: parsed.data.targetCourseId,
         targetCourseIds: shared.referencedCourseIds,
         targetModuleId: parsed.data.targetModuleId,
-        targetSectionId: parsed.data.targetSectionId,
       });
       await tx.insert(activityEvents).values({
         organizationId: user.organizationId,
@@ -2199,7 +2179,6 @@ export async function copyCourseLessonAction(
           targetCourseId: parsed.data.targetCourseId,
           targetCourseIds: shared.referencedCourseIds,
           targetModuleId: parsed.data.targetModuleId,
-          targetSectionId: parsed.data.targetSectionId,
           pageCount: result.pageCount,
           blockCount: result.blockCount,
         },
@@ -2217,85 +2196,6 @@ export async function copyCourseLessonAction(
       id: copied.lessonId,
       secondaryId: parsed.data.targetModuleId,
       pageId: copied.pageId,
-    };
-  } catch (error) {
-    return courseContentCopyFailureFromError(error);
-  }
-}
-
-export async function copyCourseSectionAction(
-  sourceCourseId: string,
-  sourceSectionId: string,
-  formData: FormData,
-): Promise<CourseBuilderActionResult> {
-  const { user } = await requireCoursePermission(sourceCourseId, "edit");
-  const locale = normalizeLocale(await resolveUserLocale(user));
-  const parsed = z
-    .object({
-      sourceCourseId: idSchema,
-      sourceSectionId: idSchema,
-      targetCourseId: idSchema,
-      targetModuleId: idSchema,
-    })
-    .safeParse({
-      sourceCourseId,
-      sourceSectionId,
-      targetCourseId: value(formData, "targetCourseId"),
-      targetModuleId: value(formData, "targetModuleId"),
-    });
-  if (!parsed.success) {
-    return courseContentCopyFailure("course_content_copy.invalid_input");
-  }
-
-  try {
-    const copied = await db.transaction(async (tx) => {
-      const shared = await requireSharedModuleContentPermission(
-        tx,
-        user,
-        parsed.data.targetCourseId,
-        { type: "module", id: parsed.data.targetModuleId },
-        [{ courseId: parsed.data.sourceCourseId, required: "edit" }],
-      );
-      const result = await copySectionToCourseTarget(tx, {
-        organizationId: user.organizationId,
-        attachedById: user.id,
-        locale,
-        sourceCourseId: parsed.data.sourceCourseId,
-        sourceSectionId: parsed.data.sourceSectionId,
-        targetCourseId: parsed.data.targetCourseId,
-        targetCourseIds: shared.referencedCourseIds,
-        targetModuleId: parsed.data.targetModuleId,
-      });
-      await tx.insert(activityEvents).values({
-        organizationId: user.organizationId,
-        userId: user.id,
-        type: "course.section.copied",
-        entityType: "section",
-        entityId: result.sectionId,
-        metadata: {
-          sourceCourseId: parsed.data.sourceCourseId,
-          sourceSectionId: parsed.data.sourceSectionId,
-          targetCourseId: parsed.data.targetCourseId,
-          targetCourseIds: shared.referencedCourseIds,
-          targetModuleId: parsed.data.targetModuleId,
-          lessonCount: result.lessonCount,
-          pageCount: result.pageCount,
-          blockCount: result.blockCount,
-        },
-      });
-      return { ...result, targetCourseIds: shared.referencedCourseIds };
-    });
-    revalidateCourse(parsed.data.sourceCourseId);
-    for (const targetCourseId of copied.targetCourseIds) {
-      revalidateCourse(targetCourseId);
-    }
-    const code = "course_content_copy.section_copied" as const;
-    return {
-      ok: true,
-      code,
-      id: copied.sectionId,
-      secondaryId: parsed.data.targetModuleId,
-      lessonId: copied.firstLessonId,
     };
   } catch (error) {
     return courseContentCopyFailureFromError(error);
@@ -3157,10 +3057,15 @@ export async function updateCourseContentBlockAction(
   if (!style.success) return failure("course_builder.invalid_input");
   const savedMutation = await runCourseBuilderMutation(() =>
     db.transaction(async (tx) => {
-      const shared = await requireSharedModuleContentPermission(tx, user, courseId, {
-        type: "block",
-        id: block.id,
-      });
+      const shared = await requireSharedModuleContentPermission(
+        tx,
+        user,
+        courseId,
+        {
+          type: "block",
+          id: block.id,
+        },
+      );
       const referencedCourseIds = shared.referencedCourseIds;
       const [lockedBlock] = await tx
         .select({ revision: contentBlocks.revision })
@@ -3307,8 +3212,7 @@ export async function updateCourseContentBlockAction(
           const mediaReferences = new Map<string, SharedCourseMediaKind>([
             [mediaAssetId, expectedKind],
             ...compositionAssetIds.map(
-              (compositionAssetId) =>
-                [compositionAssetId, "audio"] as const,
+              (compositionAssetId) => [compositionAssetId, "audio"] as const,
             ),
             ...(poster?.source === "upload"
               ? ([[poster.mediaAssetId, "image"]] as const)
@@ -3972,65 +3876,6 @@ export async function updateCourseModuleAccessAction(
   return success("course_builder.access.saved", updated.moduleId);
 }
 
-export async function updateModuleSectionAccessAction(
-  courseId: string,
-  sectionId: string,
-  formData: FormData,
-): Promise<CourseBuilderActionResult> {
-  const { user } = await requireCoursePermission(courseId, "edit");
-  const parsed = z
-    .object({
-      courseId: idSchema,
-      sectionId: idSchema,
-      status: contentStatusSchema,
-      visibility: z.enum(["visible", "draft", "coming_soon"]),
-      dripDays: z.coerce.number().int().min(0).max(36_500),
-      unlockAfterPrevious: z.boolean(),
-    })
-    .safeParse({
-      courseId,
-      sectionId,
-      status: value(formData, "status"),
-      visibility: value(formData, "visibility"),
-      dripDays: formData.get("dripDays"),
-      unlockAfterPrevious: formData.get("unlockAfterPrevious") === "on",
-    });
-  if (!parsed.success) return failure("course_builder.invalid_input");
-  if (
-    !(await sectionInCourse(
-      parsed.data.courseId,
-      parsed.data.sectionId,
-      user.organizationId,
-    ))
-  ) {
-    return failure("course_builder.unavailable");
-  }
-  const updatedMutation = await runCourseBuilderMutation(() =>
-    db.transaction(async (tx) => {
-      await requireSharedModuleContentPermission(tx, user, courseId, {
-        type: "section",
-        id: parsed.data.sectionId,
-      });
-      return tx
-        .update(moduleSections)
-        .set({
-          status: parsed.data.status,
-          visibility: parsed.data.visibility,
-          dripDays: parsed.data.dripDays,
-          unlockAfterPrevious: parsed.data.unlockAfterPrevious,
-          updatedAt: new Date(),
-        })
-        .where(eq(moduleSections.id, parsed.data.sectionId))
-        .returning({ id: moduleSections.id });
-    }),
-  );
-  if ("error" in updatedMutation) return failure(updatedMutation.error);
-  const [updated] = updatedMutation.value;
-  if (!updated) return failure("course_builder.failed");
-  revalidateCourse(courseId);
-  return success("course_builder.section.settings_saved", updated.id);
-}
-
 export async function updateCourseLessonAccessAction(
   courseId: string,
   lessonId: string,
@@ -4044,6 +3889,8 @@ export async function updateCourseLessonAccessAction(
       lessonId: idSchema,
       status: contentStatusSchema,
       visibility: z.enum(["visible", "draft", "coming_soon"]),
+      dripDays: z.coerce.number().int().min(0).max(36_500),
+      unlockAfterPrevious: z.boolean(),
       availableAt: z
         .string()
         .max(80)
@@ -4057,6 +3904,8 @@ export async function updateCourseLessonAccessAction(
       lessonId,
       status: value(formData, "status"),
       visibility: value(formData, "visibility"),
+      dripDays: formData.get("dripDays"),
+      unlockAfterPrevious: formData.get("unlockAfterPrevious") === "on",
       availableAt: availableAtValue,
     });
   if (!parsed.success) return failure("course_builder.invalid_input");
@@ -4072,28 +3921,40 @@ export async function updateCourseLessonAccessAction(
 
   const updatedMutation = await runCourseBuilderMutation(() =>
     db.transaction(async (tx) => {
-      await requireSharedModuleContentPermission(tx, user, courseId, {
-        type: "lesson",
-        id: parsed.data.lessonId,
-      });
+      const shared = await requireSharedModuleContentPermission(
+        tx,
+        user,
+        courseId,
+        {
+          type: "lesson",
+          id: parsed.data.lessonId,
+        },
+      );
       const lesson = await updateLessonWithTitleSync(tx, {
         organizationId: user.organizationId,
         lessonId: parsed.data.lessonId,
         lesson: {
           status: parsed.data.status,
           visibility: parsed.data.visibility,
+          dripDays: parsed.data.dripDays,
+          unlockAfterPrevious: parsed.data.unlockAfterPrevious,
           availableAt: parsed.data.availableAt
             ? new Date(parsed.data.availableAt)
             : null,
         },
       });
-      return { id: lesson.id };
+      return {
+        id: lesson.id,
+        referencedCourseIds: shared.referencedCourseIds,
+      };
     }),
   );
   if ("error" in updatedMutation) return failure(updatedMutation.error);
   const updated = updatedMutation.value;
   if (!updated) return failure("course_builder.failed");
-  revalidateCourse(courseId);
+  for (const referencedCourseId of new Set(updated.referencedCourseIds)) {
+    revalidateCourse(referencedCourseId);
+  }
   return success("course_builder.lesson.settings_saved", updated.id);
 }
 

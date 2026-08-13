@@ -99,8 +99,8 @@ test("all shared builder content mutations use the central permission", () => {
   );
   for (const action of [
     "updateCourseLinkModuleAction",
-    "createModuleSectionAction",
     "createModuleLessonAction",
+    "moveCourseLessonAction",
     "createLessonPageAction",
     "updateCourseLessonTitleAction",
     "updateLessonPageTitleAction",
@@ -109,7 +109,6 @@ test("all shared builder content mutations use the central permission", () => {
     "deleteCourseContentBlockAction",
     "duplicateCourseContentBlockAction",
     "reorderCourseContentBlocksAction",
-    "updateModuleSectionAccessAction",
     "updateCourseLessonAccessAction",
     "updateCourseLessonAssessmentAction",
   ]) {
@@ -163,11 +162,28 @@ test("link target and secondary content actions use their central guards", () =>
     "shared link updates must lock and authorize the target with all references",
   );
 
-  for (const path of [
-    "src/lib/admin/transcript-wizard-actions.ts",
-    "src/lib/section-lesson-visibility-actions.ts",
-  ]) {
+  for (const path of ["src/lib/admin/transcript-wizard-actions.ts"]) {
     const source = readFileSync(resolve(process.cwd(), path), "utf8");
     assert.match(source, /requireSharedModuleContentPermission\(/, path);
   }
+});
+
+test("shared lesson access changes invalidate every referencing course", () => {
+  const builder = readFileSync(
+    resolve(process.cwd(), "src/lib/course-builder-actions.ts"),
+    "utf8",
+  );
+  const action = actionSource(builder, "updateCourseLessonAccessAction");
+
+  assert.match(
+    action,
+    /const shared = await requireSharedModuleContentPermission\(/,
+  );
+  assert.match(action, /referencedCourseIds: shared\.referencedCourseIds/);
+  assert.match(
+    action,
+    /for \(const referencedCourseId of new Set\(updated\.referencedCourseIds\)\)/,
+  );
+  assert.match(action, /revalidateCourse\(referencedCourseId\)/);
+  assert.doesNotMatch(action, /revalidateCourse\(courseId\)/);
 });

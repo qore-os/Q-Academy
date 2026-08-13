@@ -85,16 +85,9 @@ export function publishedSnapshotReferencesVideoComposition(
   }
   for (const learningModule of snapshot.modules) {
     if (!isRecord(learningModule)) continue;
-    const lessons = [
-      ...(Array.isArray(learningModule.lessons) ? learningModule.lessons : []),
-      ...(Array.isArray(learningModule.sections)
-        ? learningModule.sections.flatMap((section) =>
-            isRecord(section) && Array.isArray(section.lessons)
-              ? section.lessons
-              : [],
-          )
-        : []),
-    ];
+    const lessons = Array.isArray(learningModule.lessons)
+      ? learningModule.lessons
+      : [];
     for (const lesson of lessons) {
       if (!isRecord(lesson)) continue;
       const blocks = [

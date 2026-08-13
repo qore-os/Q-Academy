@@ -34,7 +34,12 @@ function databaseErrorCode(error: unknown) {
 
 function permissionsMutationSql() {
   const script = readFileSync(
-    path.join(projectRoot, "scripts", "ops", "database-permissions-entrypoint.sh"),
+    path.join(
+      projectRoot,
+      "scripts",
+      "ops",
+      "database-permissions-entrypoint.sh",
+    ),
     "utf8",
   );
   const blocks = [...script.matchAll(/<<'SQL'\r?\n([\s\S]*?)\r?\nSQL/g)];
@@ -71,7 +76,9 @@ test(
     let app: ReturnType<typeof postgres> | undefined;
     let media: ReturnType<typeof postgres> | undefined;
     try {
-      await admin.unsafe(`drop database if exists "${databaseName}" with (force)`);
+      await admin.unsafe(
+        `drop database if exists "${databaseName}" with (force)`,
+      );
       for (const role of [staleRole, mediaRole, appRole, ownerRole]) {
         await admin.unsafe(`drop role if exists "${role}"`);
       }
@@ -147,7 +154,6 @@ test(
               and procedure_record.proname in (
                 'q_academy_check_exam_module_row',
                 'q_academy_check_exam_lesson_row',
-                'q_academy_check_exam_section_row',
                 'q_academy_check_exam_page_row',
                 'q_academy_check_link_module_row',
                 'q_academy_check_link_content_row',
@@ -252,7 +258,7 @@ test(
           ) as "verifiedPolicies"
       `;
       assert.equal(catalog?.hardenedFunctions, 2);
-      assert.equal(catalog?.hardenedConstraintTriggers, 8);
+      assert.equal(catalog?.hardenedConstraintTriggers, 7);
       assert.equal(catalog?.communityMediaGuardUsesRegistry, true);
       assert.equal(catalog?.mediaContractAccess, false);
       assert.equal(catalog?.mediaFunctionAccess, 2);
@@ -292,7 +298,6 @@ test(
       const organizationId = "10000000-0000-4000-8000-000000000001";
       const courseId = "11000000-0000-4000-8000-000000000001";
       const moduleId = "12000000-0000-4000-8000-000000000001";
-      const sectionId = "13000000-0000-4000-8000-000000000001";
       const assetId = "20000000-0000-4000-8000-000000000001";
       const firstJobId = "30000000-0000-4000-8000-000000000001";
       const secondJobId = "30000000-0000-4000-8000-000000000002";
@@ -353,13 +358,6 @@ test(
           )
         `);
         await transaction.unsafe(`
-          insert into module_sections (
-            id, organization_id, module_id, title, sort_order
-          ) values (
-            '${sectionId}', '${organizationId}', '${moduleId}', 'Start', 0
-          )
-        `);
-        await transaction.unsafe(`
           insert into course_modules (
             organization_id, course_id, module_id, sort_order, indent_level,
             drip_days, is_required
@@ -369,11 +367,10 @@ test(
         `);
       });
       const [moduleFixture] = await owner<
-        Array<{ modules: number; sections: number; assignments: number }>
+        Array<{ modules: number; assignments: number }>
       >`
         select
           (select count(*)::integer from modules where id = ${moduleId}) as modules,
-          (select count(*)::integer from module_sections where id = ${sectionId}) as sections,
           (
             select count(*)::integer from course_modules
             where course_id = ${courseId} and module_id = ${moduleId}
@@ -381,7 +378,6 @@ test(
       `;
       assert.deepEqual(moduleFixture, {
         modules: 1,
-        sections: 1,
         assignments: 1,
       });
 
@@ -412,7 +408,10 @@ test(
         from media_upload_sessions
         where asset_id = '${assetId}'
       `);
-      assert.equal(multipartSessions[0]?.provider_upload_id, "security-upload-id");
+      assert.equal(
+        multipartSessions[0]?.provider_upload_id,
+        "security-upload-id",
+      );
       await media.unsafe(`
         update media_upload_sessions
         set state = 'aborting', updated_at = now()
@@ -470,7 +469,9 @@ test(
       await media?.end().catch(() => undefined);
       await app?.end().catch(() => undefined);
       await owner?.end().catch(() => undefined);
-      await admin.unsafe(`drop database if exists "${databaseName}" with (force)`);
+      await admin.unsafe(
+        `drop database if exists "${databaseName}" with (force)`,
+      );
       for (const role of [staleRole, mediaRole, appRole, ownerRole]) {
         await admin.unsafe(`drop role if exists "${role}"`);
       }

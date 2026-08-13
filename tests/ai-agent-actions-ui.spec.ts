@@ -121,7 +121,10 @@ async function createPublishedCourse(
   const title = `${input.prefix} Kurszugang ${input.suffix}`;
   const capturedAt = new Date().toISOString();
   const snapshot = {
-    schemaVersion: 2,
+    schemaVersion: 6,
+    accessPolicyVersion: 2,
+    moduleKindVersion: 1,
+    courseOutlineVersion: 1,
     capturedAt,
     course: {
       id,
@@ -147,6 +150,9 @@ async function createPublishedCourse(
       updatedAt: capturedAt,
       firstPublishedAt: capturedAt,
     },
+    learningGoals: [],
+    authors: [],
+    widgets: [],
     modules: [],
   };
   await client.begin(async (tx) => {

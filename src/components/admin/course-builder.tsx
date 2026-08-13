@@ -82,14 +82,13 @@ import {
   createCourseModuleAction,
   createLessonPageAction,
   createModuleLessonAction,
-  createModuleSectionAction,
   commandLessonPageAction,
   copyCourseLessonAction,
-  copyCourseSectionAction,
   detachCourseModuleAction,
   deleteCourseContentBlockAction,
   duplicateCourseContentBlockAction,
   listCourseBuilderPublishedAiAgentsAction,
+  moveCourseLessonAction,
   reorderCourseContentBlocksAction,
   updateCourseContentBlockAction,
   updateCourseInformationAction,
@@ -100,7 +99,6 @@ import {
   updateCourseModuleOutlineAction,
   updateCourseLessonTitleAction,
   updateLessonPageTitleAction,
-  updateModuleSectionAccessAction,
   type CourseBuilderAiAgentOption,
   type CourseBuilderActionResult,
 } from "@/lib/course-builder-actions";
@@ -120,7 +118,6 @@ import { VideoTranscriptEditor } from "@/components/admin/video-transcript-edito
 import { StructuredContentBlockEditor } from "@/components/admin/structured-content-block-editor";
 import { CourseWidgetsEditor } from "@/components/admin/course-widgets-editor";
 import { CourseInformationListsEditor } from "@/components/admin/course-information-lists-editor";
-import { SectionLessonVisibilityActions } from "@/components/admin/section-lesson-visibility-actions";
 import { EditorPresenceStrip } from "@/components/admin/editor-presence-strip";
 import { RichTextContent } from "@/components/content/rich-text-content";
 import {
@@ -253,7 +250,6 @@ type LessonPage = {
 };
 type Lesson = {
   id: string;
-  sectionId: string | null;
   title: string;
   type: string;
   durationMinutes: number;
@@ -273,18 +269,10 @@ type Lesson = {
   status: string;
   visibility: "visible" | "draft" | "coming_soon";
   availableAt: Date | string | null;
-  blocks: Block[];
-  pages: LessonPage[];
-};
-type Section = {
-  id: string;
-  title: string;
-  description: string | null;
-  sortOrder: number;
-  status: string;
-  visibility: "visible" | "draft" | "coming_soon";
   dripDays: number;
   unlockAfterPrevious: boolean;
+  blocks: Block[];
+  pages: LessonPage[];
 };
 type Module = {
   id: string;
@@ -314,7 +302,6 @@ type Module = {
   requestAccessEnabled: boolean;
   isRequired: boolean;
   usageCount: number;
-  sections: Section[];
   lessons: Lesson[];
 };
 type BuilderData = {
@@ -360,7 +347,6 @@ type BuilderData = {
     modules: Array<{
       id: string;
       title: string;
-      sections: Array<{ id: string; title: string }>;
     }>;
   }>;
   access: {
@@ -452,14 +438,7 @@ type BuilderData = {
 
 type DialogState =
   | { kind: "module" }
-  | { kind: "section"; moduleId: string }
   | { kind: "lesson"; moduleId: string }
-  | {
-      kind: "copy-section";
-      sectionId: string;
-      sourceTitle: string;
-      sourceModuleId: string;
-    }
   | {
       kind: "copy-lesson";
       lessonId: string;
@@ -698,13 +677,11 @@ function FormDialog({
 
 function CopyTargetFields({
   targets,
-  kind,
   locale,
   defaultCourseId,
   defaultModuleId,
 }: {
   targets: BuilderData["copyTargets"];
-  kind: "section" | "lesson";
   locale: AppLocale;
   defaultCourseId: string;
   defaultModuleId: string;
@@ -772,23 +749,6 @@ function CopyTargetFields({
           ))}
         </select>
       </Field>
-      {kind === "lesson" ? (
-        <Field label={copy.targetSection}>
-          <select
-            key={currentModule?.id}
-            name="targetSectionId"
-            defaultValue=""
-            className={inputClass}
-          >
-            <option value="">{copy.noSection}</option>
-            {currentModule?.sections.map((section) => (
-              <option key={section.id} value={section.id}>
-                {section.title}
-              </option>
-            ))}
-          </select>
-        </Field>
-      ) : null}
     </div>
   );
 }
@@ -2343,7 +2303,8 @@ export function CourseBuilder({
     ...item,
     label: copy.palette[item.type],
   }));
-  const firstLesson = data.modules.flatMap((module) => module.lessons)[0];
+  const firstModule = data.modules[0];
+  const firstLesson = firstModule?.lessons[0];
   const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("content");
   const [selectedModuleId, setSelectedModuleId] = useState(
     data.modules[0]?.id ?? "",
@@ -2408,11 +2369,8 @@ export function CourseBuilder({
     [data.modules, selectedModuleId],
   );
   const selectedLesson = useMemo(
-    () =>
-      data.modules
-        .flatMap((module) => module.lessons)
-        .find((lesson) => lesson.id === selectedLessonId),
-    [data.modules, selectedLessonId],
+    () => selectedModule?.lessons.find((lesson) => lesson.id === selectedLessonId),
+    [selectedLessonId, selectedModule],
   );
   const selectedPage = selectedLesson?.pages.find(
     (page) => page.id === selectedPageId,
@@ -2555,10 +2513,17 @@ export function CourseBuilder({
 
   const chooseLesson = (moduleId: string, lessonId: string) => {
     const lesson = data.modules
-      .flatMap((module) => module.lessons)
-      .find((item) => item.id === lessonId);
+      .find((module) => module.id === moduleId)
+      ?.lessons.find((item) => item.id === lessonId);
     setSelectedModuleId(moduleId);
-    setSelectedLessonId(lessonId);
+    setSelectedLessonId(lesson?.id ?? "");
+    setSelectedPageId(preferredPageId(lesson));
+  };
+
+  const chooseModule = (moduleId: string) => {
+    const lesson = data.modules.find((module) => module.id === moduleId)?.lessons[0];
+    setSelectedModuleId(moduleId);
+    setSelectedLessonId(lesson?.id ?? "");
     setSelectedPageId(preferredPageId(lesson));
   };
 
@@ -2713,9 +2678,6 @@ export function CourseBuilder({
             </div>
             <div className="max-h-[660px] space-y-2 overflow-y-auto p-3">
               {data.modules.map((module, moduleIndex) => {
-                const unsectioned = module.lessons.filter(
-                  (lesson) => !lesson.sectionId,
-                );
                 return (
                   <section
                     key={module.id}
@@ -2726,7 +2688,7 @@ export function CourseBuilder({
                   >
                     <button
                       type="button"
-                      onClick={() => setSelectedModuleId(module.id)}
+                      onClick={() => chooseModule(module.id)}
                       className={cn(
                         "focus-ring flex w-full items-start gap-2 border-b border-[#edf0f2] p-3 text-left",
                         selectedModule?.id === module.id
@@ -2826,59 +2788,34 @@ export function CourseBuilder({
                       </div>
                     </div>
                     <div className="p-1.5">
-                      {module.sections.map((section) => {
-                        const sectionLessons = module.lessons.filter(
-                          (lesson) => lesson.sectionId === section.id,
-                        );
-                        return (
-                          <div key={section.id} className="mb-1.5">
-                            <div className="flex items-center gap-2 px-2.5 py-1.5 text-[9px] font-bold uppercase text-[#7b8790]">
-                              <ChevronRight className="size-3" />
-                              <span className="min-w-0 flex-1 truncate">
-                                {section.title}
-                              </span>
-                              <span>{sectionLessons.length}</span>
+                      {module.lessons.length ? (
+                        <div className="mb-1.5">
+                          {module.lessons.map((lesson, lessonIndex) => (
+                            <div
+                              key={lesson.id}
+                              className={cn(
+                                "flex items-center gap-0.5 rounded pr-1",
+                                selectedLessonId === lesson.id
+                                  ? "bg-[#e9f5f4] text-[#176f68]"
+                                  : "text-[#596671] hover:bg-[#f3f5f6]",
+                              )}
+                            >
                               <button
-                                type="button"
-                                onClick={() =>
-                                  setDialog({
-                                    kind: "copy-section",
-                                    sectionId: section.id,
-                                    sourceTitle: section.title,
-                                    sourceModuleId: module.id,
-                                  })
-                                }
-                                disabled={pending}
-                                aria-label={`${copyToCopy.copySection}: ${section.title}`}
-                                title={copyToCopy.copySection}
-                                className="focus-ring grid size-6 shrink-0 place-items-center rounded text-[#66727f] hover:bg-[#e9eef1] disabled:opacity-40"
-                              >
-                                <Copy className="size-3" />
-                              </button>
-                            </div>
-                            {sectionLessons.map((lesson) => (
-                              <button
-                                key={lesson.id}
                                 type="button"
                                 onClick={() =>
                                   chooseLesson(module.id, lesson.id)
                                 }
-                                className={cn(
-                                  "focus-ring flex w-full items-center gap-2 rounded px-2.5 py-2 text-left",
-                                  selectedLessonId === lesson.id
-                                    ? "bg-[#e9f5f4] text-[#176f68]"
-                                    : "text-[#596671] hover:bg-[#f3f5f6]",
-                                )}
+                                className="focus-ring flex min-w-0 flex-1 items-center gap-2 rounded px-2.5 py-2 text-left"
                               >
                                 <span className="grid size-6 shrink-0 place-items-center rounded bg-white shadow-sm">
                                   {lessonIcon(lesson.type)}
                                 </span>
                                 <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
-                                  {lesson.title}
+                                  {lessonIndex + 1}. {lesson.title}
                                 </span>
                                 {lesson.pages.length ? (
                                   <span
-                                    className="shrink-0 whitespace-nowrap text-[9px] text-[#596671]"
+                                    className="shrink-0 whitespace-nowrap text-[9px] text-[#71808b]"
                                     title={copy.common.pages(
                                       lesson.pages.length,
                                     )}
@@ -2887,66 +2824,61 @@ export function CourseBuilder({
                                   </span>
                                 ) : null}
                               </button>
-                            ))}
-                          </div>
-                        );
-                      })}
-                      {unsectioned.length ? (
-                        <div className="mb-1.5">
-                          <div className="px-2.5 py-1.5 text-[9px] font-bold uppercase text-[#7b8790]">
-                            {module.kind === "exam"
-                              ? copy.structure.examSection
-                              : copy.structure.noSection}
-                          </div>
-                          {unsectioned.map((lesson) => (
-                            <button
-                              key={lesson.id}
-                              type="button"
-                              onClick={() => chooseLesson(module.id, lesson.id)}
-                              className={cn(
-                                "focus-ring flex w-full items-center gap-2 rounded px-2.5 py-2 text-left",
-                                selectedLessonId === lesson.id
-                                  ? "bg-[#e9f5f4] text-[#176f68]"
-                                  : "text-[#596671] hover:bg-[#f3f5f6]",
-                              )}
-                            >
-                              <span className="grid size-6 shrink-0 place-items-center rounded bg-white shadow-sm">
-                                {lessonIcon(lesson.type)}
-                              </span>
-                              <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
-                                {lesson.title}
-                              </span>
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  runMutation(() =>
+                                    moveCourseLessonAction(
+                                      data.course.id,
+                                      lesson.id,
+                                      "up",
+                                    ),
+                                  )
+                                }
+                                disabled={pending || lessonIndex === 0}
+                                className="focus-ring grid size-6 shrink-0 place-items-center rounded text-[#71808b] hover:bg-white disabled:opacity-30"
+                                aria-label={`${lesson.title}: ${copy.structure.up}`}
+                                title={copy.structure.up}
+                              >
+                                <ArrowUp className="size-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  runMutation(() =>
+                                    moveCourseLessonAction(
+                                      data.course.id,
+                                      lesson.id,
+                                      "down",
+                                    ),
+                                  )
+                                }
+                                disabled={
+                                  pending ||
+                                  lessonIndex === module.lessons.length - 1
+                                }
+                                className="focus-ring grid size-6 shrink-0 place-items-center rounded text-[#71808b] hover:bg-white disabled:opacity-30"
+                                aria-label={`${lesson.title}: ${copy.structure.down}`}
+                                title={copy.structure.down}
+                              >
+                                <ArrowDown className="size-3.5" />
+                              </button>
+                            </div>
                           ))}
                         </div>
                       ) : null}
                       {module.kind === "learning" ? (
-                        <div className="mt-1 grid grid-cols-2 gap-1 border-t border-[#edf0f2] pt-1.5">
+                        <div className="mt-1 border-t border-[#edf0f2] pt-1.5">
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedModuleId(module.id);
-                              setDialog({
-                                kind: "section",
-                                moduleId: module.id,
-                              });
-                            }}
-                            className="focus-ring flex items-center justify-center gap-1 rounded px-2 py-2 text-[9px] font-semibold text-[#71808b] hover:bg-[#f3f5f6]"
-                            aria-label={`${copy.dialogs.createSection}: ${module.title}`}
-                          >
-                            <Plus className="size-3" />
-                            {copy.common.section}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedModuleId(module.id);
+                              chooseModule(module.id);
                               setDialog({
                                 kind: "lesson",
                                 moduleId: module.id,
                               });
                             }}
-                            className="focus-ring flex items-center justify-center gap-1 rounded px-2 py-2 text-[9px] font-semibold text-[#71808b] hover:bg-[#f3f5f6]"
+                            className="focus-ring flex w-full items-center justify-center gap-1 rounded px-2 py-2 text-[9px] font-semibold text-[#71808b] hover:bg-[#f3f5f6]"
                             aria-label={`${copy.dialogs.createLesson}: ${module.title}`}
                           >
                             <Plus className="size-3" />
@@ -3145,7 +3077,7 @@ export function CourseBuilder({
                       ),
                     );
                   }}
-                  className="mb-3 grid gap-3 rounded-md border border-[#dce1e5] bg-white p-3 sm:grid-cols-2 sm:items-end xl:grid-cols-[150px_180px_minmax(0,1fr)_auto]"
+                  className="mb-3 grid gap-3 rounded-md border border-[#dce1e5] bg-white p-3 sm:grid-cols-2 sm:items-end 2xl:grid-cols-3"
                 >
                   <Field label={copy.structure.lessonStatus}>
                     <select
@@ -3186,6 +3118,22 @@ export function CourseBuilder({
                       className={inputClass}
                     />
                   </Field>
+                  <Field label={copy.access.releaseAfterDays}>
+                    <input
+                      name="dripDays"
+                      type="number"
+                      min={0}
+                      max={36500}
+                      defaultValue={selectedLesson.dripDays}
+                      disabled={selectedModuleIsExam}
+                      className={inputClass}
+                    />
+                  </Field>
+                  <CheckField
+                    name="unlockAfterPrevious"
+                    label={copy.access.lessonsInOrder}
+                    defaultChecked={selectedLesson.unlockAfterPrevious}
+                  />
                   <Button
                     type="submit"
                     size="sm"
@@ -4307,101 +4255,6 @@ export function CourseBuilder({
                     </div>
                   </div>
                 </form>
-                {module.sections.length ? (
-                  <div className="mt-4 space-y-2 border-l-2 border-[#dbe4ea] pl-3 md:ml-4 md:pl-4">
-                    {module.sections.map((section) => (
-                      <form
-                        key={section.id}
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          runMutation(() =>
-                            updateModuleSectionAccessAction(
-                              data.course.id,
-                              section.id,
-                              new FormData(event.currentTarget),
-                            ),
-                          );
-                        }}
-                        className="grid items-center gap-3 rounded-md bg-[#f7f9fa] p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_130px_130px_120px_190px_108px_auto]"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-[9px] font-bold uppercase text-[#7d8891]">
-                            {copy.common.section}
-                          </p>
-                          <p className="mt-0.5 truncate text-xs font-semibold text-[#354555]">
-                            {section.title}
-                          </p>
-                        </div>
-                        <Field label={copy.access.status}>
-                          <select
-                            name="status"
-                            defaultValue={section.status}
-                            className={inputClass}
-                          >
-                            <option value="published">
-                              {copy.common.published}
-                            </option>
-                            <option value="draft">{copy.common.draft}</option>
-                            <option value="archived">
-                              {copy.common.archived}
-                            </option>
-                          </select>
-                        </Field>
-                        <Field label={copy.access.visibility}>
-                          <select
-                            name="visibility"
-                            defaultValue={section.visibility}
-                            className={inputClass}
-                          >
-                            <option value="visible">
-                              {copy.common.visible}
-                            </option>
-                            <option value="draft">{copy.common.hidden}</option>
-                            <option value="coming_soon">
-                              {copy.common.comingSoon}
-                            </option>
-                          </select>
-                        </Field>
-                        <Field label={copy.access.releaseAfterDays}>
-                          <input
-                            name="dripDays"
-                            type="number"
-                            min={0}
-                            defaultValue={section.dripDays}
-                            className={inputClass}
-                          />
-                        </Field>
-                        <CheckField
-                          name="unlockAfterPrevious"
-                          label={copy.access.lessonsInOrder}
-                          defaultChecked={section.unlockAfterPrevious}
-                        />
-                        <SectionLessonVisibilityActions
-                          courseId={data.course.id}
-                          sectionId={section.id}
-                          sectionTitle={section.title}
-                          lessonVisibilities={module.lessons
-                            .filter((lesson) => lesson.sectionId === section.id)
-                            .map((lesson) => lesson.visibility)}
-                          locale={locale}
-                        />
-                        <Button
-                          type="submit"
-                          size="sm"
-                          variant="secondary"
-                          disabled={pending}
-                        >
-                          {pending ? (
-                            <LoaderCircle className="size-3.5 animate-spin" />
-                          ) : (
-                            <Save className="size-3.5" />
-                          )}
-                          {copy.save}
-                        </Button>
-                      </form>
-                    ))}
-                  </div>
-                ) : null}
               </div>
             ))}
           </section>
@@ -4697,39 +4550,6 @@ export function CourseBuilder({
         </FormDialog>
       ) : null}
 
-      {dialog?.kind === "section" ? (
-        <FormDialog
-          copy={copy}
-          title={copy.dialogs.createSection}
-          eyebrow={
-            data.modules.find((module) => module.id === dialog.moduleId)
-              ?.title ?? copy.common.module
-          }
-          pending={pending}
-          onClose={() => setDialog(null)}
-          submitLabel={copy.dialogs.createSection}
-          submitIcon={<Plus className="size-4" />}
-          onSubmit={(formData) =>
-            runMutation(
-              () =>
-                createModuleSectionAction(
-                  data.course.id,
-                  dialog.moduleId,
-                  formData,
-                ),
-              () => setDialog(null),
-            )
-          }
-        >
-          <Field label={copy.dialogs.sectionTitle}>
-            <input name="title" className={inputClass} autoFocus required />
-          </Field>
-          <Field label={copy.structure.description}>
-            <textarea name="description" className={textareaClass} />
-          </Field>
-        </FormDialog>
-      ) : null}
-
       {dialog?.kind === "lesson" ? (
         <FormDialog
           copy={copy}
@@ -4762,18 +4582,6 @@ export function CourseBuilder({
           <Field label={copy.dialogs.lessonTitle}>
             <input name="title" className={inputClass} autoFocus required />
           </Field>
-          <Field label={copy.common.section}>
-            <select name="sectionId" className={inputClass}>
-              <option value="">{copy.structure.noSection}</option>
-              {data.modules
-                .find((module) => module.id === dialog.moduleId)
-                ?.sections.map((section) => (
-                  <option key={section.id} value={section.id}>
-                    {section.title}
-                  </option>
-                ))}
-            </select>
-          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={copy.dialogs.type}>
               <select name="type" defaultValue="lesson" className={inputClass}>
@@ -4796,48 +4604,6 @@ export function CourseBuilder({
           <Field label={copy.dialogs.summary}>
             <textarea name="summary" className={textareaClass} />
           </Field>
-        </FormDialog>
-      ) : null}
-
-      {dialog?.kind === "copy-section" ? (
-        <FormDialog
-          copy={copy}
-          title={copyToCopy.sectionTitle}
-          eyebrow={`${copyToCopy.source}: ${dialog.sourceTitle}`}
-          pending={pending}
-          submitDisabled={!data.copyTargets.some((target) => target.modules.length)}
-          onClose={() => setDialog(null)}
-          submitLabel={copyToCopy.submit}
-          submitIcon={<Copy className="size-4" />}
-          onSubmit={(formData) => {
-            formData.set("locale", locale);
-            const targetCourseId = String(formData.get("targetCourseId") ?? "");
-            const targetModuleId = String(formData.get("targetModuleId") ?? "");
-            runMutation(
-              () =>
-                copyCourseSectionAction(
-                  data.course.id,
-                  dialog.sectionId,
-                  formData,
-                ),
-              (result) => {
-                if (targetCourseId === data.course.id) {
-                  setSelectedModuleId(targetModuleId);
-                  if (result.lessonId) setSelectedLessonId(result.lessonId);
-                  setSelectedPageId(null);
-                }
-                setDialog(null);
-              },
-            );
-          }}
-        >
-          <CopyTargetFields
-            targets={data.copyTargets}
-            kind="section"
-            locale={locale}
-            defaultCourseId={data.course.id}
-            defaultModuleId={dialog.sourceModuleId}
-          />
         </FormDialog>
       ) : null}
 
@@ -4875,7 +4641,6 @@ export function CourseBuilder({
         >
           <CopyTargetFields
             targets={data.copyTargets}
-            kind="lesson"
             locale={locale}
             defaultCourseId={data.course.id}
             defaultModuleId={dialog.sourceModuleId}

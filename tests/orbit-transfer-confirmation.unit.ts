@@ -44,7 +44,7 @@ function tokenInput() {
       {
         courseId: sourceCourseId,
         versionId: sourceVersionId,
-        snapshot: { schemaVersion: 5, course: { title: "Source" } },
+        snapshot: { schemaVersion: 6, course: { title: "Source" } },
       },
     ],
     mediaAssets: [
@@ -133,13 +133,13 @@ test("Orbit preflight tokens bind request, actor, source state and warnings", ()
   const reorderedSnapshot = tokenInput();
   reorderedSnapshot.sourceVersions[0]!.snapshot = {
     course: { title: "Source" },
-    schemaVersion: 5,
+    schemaVersion: 6,
   };
   assert.equal(createOrbitTransferPreflightToken(reorderedSnapshot), token);
 
   const changedSnapshot = tokenInput();
   changedSnapshot.sourceVersions[0]!.snapshot = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     course: { title: "Changed" },
   };
   assert.notEqual(createOrbitTransferPreflightToken(changedSnapshot), token);

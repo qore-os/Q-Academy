@@ -1534,9 +1534,11 @@ globalen Lock `/var/lock/q-academy-release.lock`, validiert Env-Dateirechte,
 verpflichtende Image-Digests, das Sentinel-geschuetzte
 Medien-Arbeitsfilesystem und Compose, fuehrt den
 containerisierten Secret-Scan, einen rein lesenden Rollenidentitaets- und
-Legacy-Referenzcheck, den realen Medien-/S3-Preflight sowie ein verifiziertes
-Backup aus. Vor dem Backup-Gate nimmt es in fester Reihenfolge nach dem
-Release-Lock zusaetzlich `/var/lock/q-academy-backup.lock`.
+Legacy-Referenzcheck sowie den realen Medien-/S3-Preflight aus. Vor dem
+Backup-Gate nimmt es in fester Reihenfolge nach dem Release-Lock zusaetzlich
+`/var/lock/q-academy-backup.lock`, stoppt Caddy und alle Datenbank-Writer und
+erstellt erst dann das verpflichtende restore-verifizierte Backup. Damit bildet
+der Dump exakt den schreibfreien Cutover-Stand vor der Migration ab.
 Standardmaessig verlangt es `RELEASE_IMAGE_MANIFEST`, verifiziert
 dessen GitHub-/Sigstore-Bundle gegen Repository, signernden Workflow und
 Source-Commit, prueft Zielarchitektur und zieht in fester Reihenfolge
@@ -1545,12 +1547,24 @@ Medien-Preflight, App-S3-Principal-Preflight, Dispatcher und Caddy nur ueber die
 dort attestierten Registry-Digests. Vor dem ersten Containerstart erzeugt es
 `proxy` und `egress` ohne Caddy, erzwingt und verifiziert die hostseitige
 Egress-Policy und stoppt bei jedem spaeteren Fehler das exakte gesamte
-Q-Academy-Projekt. Im Mutationsfenster stoppt es zuerst Caddy und danach
-Scheduler, beide Medien-Dispatcher, App und Medienrunner. Unmittelbar vor der
-ersten moeglichen Migration schreibt es den atomaren, root-eigenen Marker
-`/var/lib/q-academy/releases/pending.env`. Erst dann folgen Rollenabgleich, der
-sessiongesperrte Migrator, der transaktionale Rechteabgleich sowie App und
-Medienrunner gemeinsam mit `--wait`.
+Q-Academy-Projekt. Im Mutationsfenster bleiben Caddy, Scheduler, beide
+Medien-Dispatcher, App, Medienrunner und der optionale STRATO-Sweeper gestoppt.
+Nach erfolgreicher Restore-Verifikation bindet der Controller Dump-Pfad,
+Dump-SHA-256 und Verifikationsstatus mit einem weiteren SHA-256 an `FROM_TAG`,
+`TO_TAG` und `CONTROLLER_COMMIT`. Diese Evidence schreibt er in den atomaren,
+root-eigenen Marker `/var/lib/q-academy/releases/pending.env`. Erst dann folgen
+Rollenabgleich, der sessiongesperrte Migrator, der transaktionale Rechteabgleich
+sowie App und Medienrunner gemeinsam mit `--wait`.
+Migration `0082_flatten_course_sections` ist eine explizite Forward-only-Grenze:
+Sie entfernt die alte Sektionsstruktur physisch. Alle Node-Runtime-Images erben
+deshalb den Image-Vertrag
+`com.q-academy.database-schema-contract=flat-course-lessons-v1`. Deploy prueft
+diesen Vertrag auf dem Ziel bereits vor der Migration. Nach dem Migrator sowie
+vor jedem Runtime-Start in Deploy, Rollback und Boot-Reconcile liest der
+Controller die Migrationstabelle direkt aus PostgreSQL. Sobald Migration
+`1786632153991` oder eine spaetere Migration eingetragen ist, wird ein Image
+ohne den exakten Vertrag geschlossen abgelehnt. Diese Sperre ist automatisch;
+`MIGRATIONS_BACKWARD_COMPATIBLE=true` kann sie nicht ueberstimmen.
 Compose injiziert den exakten `APP_IMAGE_TAG` in beide Runtimes als
 `Q_ACADEMY_APP_VERSION`; erfolgreiche Readiness gibt ihn unter `data.version`
 aus. Deploy und Rollback vergleichen diesen Wert in App und Medienrunner exakt
@@ -1563,13 +1577,14 @@ DNS-Zielhost kann das Gate damit nicht gruen machen. Erst nach
 dieser Release-Readiness schreibt das Skript `APP_IMAGE_TAG` und den
 attestierten PostgreSQL-Digest atomar in die geschuetzte
 Produktions-Env sowie State-Schema 3 mit `CONTROLLER_COMMIT`, aktuellem und
-vorherigem Runtime-Tag und der nicht geheimen, exakten Medien-Storage-Identitaet.
+vorherigem Runtime-Tag, der Backup-Evidence und der nicht geheimen, exakten
+Medien-Storage-Identitaet.
 Env- und State-Renames werden auf das Dateisystem
 synchronisiert; erst danach wird der Pending-Marker dauerhaft entfernt. Env und
 State muessen bei jedem weiteren Deploy, Rollback und Boot-Reconcile
 uebereinstimmen; Git `HEAD` muss beim Reconcile dem gespeicherten Controller-
 Commit entsprechen. Der
-Backup-Lock bleibt dabei vom Vorab-Backup ueber Writer-Stop, Migration und
+Backup-Lock bleibt dabei von Writer-Stop und Vorab-Backup ueber Migration und
 Readiness bis zur abgeschlossenen Release-Aktivierung auf dem im Deployprozess
 geoeffneten Dateideskriptor 8 gehalten. Damit kann weder ein systemd-Backup noch
 ein Restore einen Zwischenstand der Migration oder Aktivierung beobachten:
@@ -1589,12 +1604,12 @@ scripts/ops/deploy-release.sh "$release_tag"
 ### Offenen Pending-Release sicher aufloesen
 
 Vor der ersten Migration schreibt Deploy einen crash-durablen Marker mit exakt
-`FROM_TAG`, `TO_TAG`, `CONTROLLER_COMMIT`, Phase und dem konservativen Hinweis
-`MIGRATIONS_MAY_HAVE_RUN=true`. Bleibt er nach einem Fehler bestehen, koennen
-Schema und persistierter Env/State auseinanderliegen. Der Boot-Reconcile und
-jeder unbestaetigte Recovery-Lauf stoppen deshalb das gesamte, exakt
-labelgebundene Q-Academy-Projekt. Den Marker niemals manuell loeschen oder
-umschreiben.
+`FROM_TAG`, `TO_TAG`, `CONTROLLER_COMMIT`, Phase, dem konservativen Hinweis
+`MIGRATIONS_MAY_HAVE_RUN=true` und der targetgebundenen Backup-Evidence. Bleibt
+er nach einem Fehler bestehen, koennen Schema und persistierter Env/State
+auseinanderliegen. Der Boot-Reconcile und jeder unbestaetigte Recovery-Lauf
+stoppen deshalb das gesamte, exakt labelgebundene Q-Academy-Projekt. Den Marker
+oder den dort referenzierten Dump niemals manuell loeschen oder umschreiben.
 
 Fuer ein vorwaerts gerichtetes Resume muss der saubere Checkout exakt dem
 `CONTROLLER_COMMIT` entsprechen, `TO_TAG` muss `git-<CONTROLLER_COMMIT>` sein,
@@ -1617,35 +1632,34 @@ unset CONFIRM_RESUME_FAILED_RELEASE pending_to pending_controller
 
 Das Resume fuehrt die idempotenten Migrationen und alle Gates erneut aus. Es
 akzeptiert nur Env/State-Zustaende, die exakt `FROM_TAG` oder einen bereits
-teilweise persistierten `TO_TAG` des Markers darstellen. Der Marker verschwindet
-erst nach exakter interner und externer Versions-Readiness sowie dauerhaft
-geschriebenem Env/State.
+teilweise persistierten `TO_TAG` des Markers darstellen. Unter dem Backup-Lock
+prueft es Pfad, Root-Eigentum, Modus, Dump-SHA und targetgebundenen Evidence-SHA
+erneut und verwendet exakt diesen bereits restore-verifizierten Dump; es erstellt
+kein zweites Backup eines moeglichen Post-Migrationsstands. Fehlende oder
+abweichende Evidence stoppt geschlossen. Der Marker verschwindet erst nach
+exakter interner und externer Versions-Readiness sowie dauerhaft geschriebenem
+Env/State.
 
-Soll stattdessen auf einen nichtleeren `FROM_TAG` zurueckgeschaltet werden, muss
-fachlich bestaetigt sein, dass das alte Runtime-Image mit allen moeglicherweise
-bereits ausgefuehrten Migrationen kompatibel ist. Der Checkout bleibt dabei auf
-dem im Marker gebundenen aktuellen Controller; nicht auf einen alten Commit
-wechseln:
+Fuer den Release, der `0082_flatten_course_sections` erstmals anwendet, ist ein
+Pending-Runtime-Rollback auf `FROM_TAG` nach angewandter Migration unzulaessig:
+Das alte Image besitzt den Flat-Course-Vertrag nicht. Auch eine gesetzte
+Variable `MIGRATIONS_BACKWARD_COMPATIBLE=true` aendert diese automatische
+Entscheidung nicht. Es gibt genau zwei Recovery-Pfade:
 
-```bash
-cd /opt/q-academy
-pending_from="$(sudo sed -n 's/^FROM_TAG=//p' /var/lib/q-academy/releases/pending.env)"
-pending_controller="$(sudo sed -n 's/^CONTROLLER_COMMIT=//p' /var/lib/q-academy/releases/pending.env)"
-test -n "$pending_from"
-test "$(git rev-parse HEAD)" = "$pending_controller"
-export CONFIRM_ROLLBACK_TAG="$pending_from"
-export MIGRATIONS_BACKWARD_COMPATIBLE=true
-sudo --preserve-env=Q_ACADEMY_ENV_FILE,APP_DOMAIN,CONFIRM_ROLLBACK_TAG,MIGRATIONS_BACKWARD_COMPATIBLE \
-  scripts/ops/rollback-release.sh "$pending_from"
-unset CONFIRM_ROLLBACK_TAG MIGRATIONS_BACKWARD_COMPATIBLE pending_from pending_controller
-```
+1. Den oben beschriebenen, exakt an `TO_TAG` und `CONTROLLER_COMMIT` gebundenen
+   Forward-Resume ausfuehren.
+2. Das verifizierte Pre-Deployment-Backup nach dem Abschnitt `Restore`
+   kontrolliert wiederherstellen. Erst wenn die Datenbank damit nachweislich vor
+   Migration 0082 liegt, darf das alte `FROM_TAG` unter dem weiterhin aktuellen
+   Controller aktiviert werden; der DB/Image-Gate prueft diesen Zustand erneut.
+   Der exakte Dump-Pfad steht als `PREDEPLOY_BACKUP_PATH` im unveraenderten
+   Pending-Marker; vor dem Restore muss sein SHA-256 weiterhin
+   `PREDEPLOY_BACKUP_SHA256` entsprechen.
 
-Dieser Sonderpfad ist nur zulaessig, wenn Release-State `CURRENT_TAG`,
-Produktions-`APP_IMAGE_TAG`, Rollback-Ziel und Marker-`FROM_TAG` identisch sind.
-Bei einer fehlgeschlagenen Erstinstallation ist `FROM_TAG` leer; ein
-Runtime-Rollback ist dann unmoeglich. Es bleiben ausschliesslich das exakte
-Forward-Resume oder ein kontrollierter, verifizierter Restore mit anschliessendem
-Forward-Deploy. Auch nach einem Restore wird der Marker nicht per `rm` umgangen.
+Bei einer fehlgeschlagenen Erstinstallation ist `FROM_TAG` leer und damit auch
+nach einem Restore kein Runtime-Rollback moeglich; anschliessend ist erneut der
+exakte Forward-Deploy auszufuehren. Der Pending-Marker wird in keinem Recovery-
+Pfad manuell geloescht oder umgeschrieben.
 
 `RELEASE_IMAGE_MODE=local-build` erhaelt den bisherigen reproduzierbaren Build
 mit digest-gepinntem Node-Basisimage, festem Debian-Snapshot und exakter
@@ -1870,12 +1884,16 @@ und beide Healthchecks pruefen. Das verwendete Backup und die Freigabe protokoll
    Migrationen zulaessig. Die Readiness des alten Images akzeptiert zusaetzliche
    angewendete Migrationen, verlangt aber weiterhin jeden von diesem Image
    erwarteten Hash; ein fehlender erwarteter Hash ergibt 503. Diese technische
-   Teilmengenpruefung ersetzt keine fachliche Kompatibilitaetspruefung. Nach der
-   Freigabe das gesperrte Rollback-Skript mit dem bereits vorhandenen vorherigen
-   Release-Tag unter dem im aktiven State gespeicherten Controller-Checkout
-   ausfuehren. Es erzeugt zuerst die Netze ohne Start, erzwingt/verifiziert die
-   Egress-Policy, startet PostgreSQL und ClamAV aus einem vollstaendig gestoppten
-   Zustand und validiert die DB-Rollen sowie beide Provider-Preflights. Danach
+   Teilmengenpruefung ersetzt keine fachliche Kompatibilitaetspruefung. Zusaetzlich
+   liest der Controller vor jedem Ziel-Runtime- oder Provider-Start den
+   Datenbankvertrag. Ab Migration 0082 muss das Ziel-Image den Vertrag
+   `flat-course-lessons-v1` tragen; eine manuelle Freigabe kann diese Grenze nicht
+   aufheben. Nach der Freigabe das gesperrte Rollback-Skript mit dem bereits
+   vorhandenen vorherigen Release-Tag unter dem im aktiven State gespeicherten
+   Controller-Checkout ausfuehren. Es erzeugt zuerst die Netze ohne Start,
+   erzwingt/verifiziert die Egress-Policy, startet nur PostgreSQL und ClamAV und
+   prueft den DB/Image-Vertrag. Erst danach validiert es die DB-Rollen sowie beide
+   Provider-Preflights. Anschliessend
    stoppt es Caddy vor allen fuenf DB-Writern, startet `app` und
    `media-runner` gemeinsam ohne Abhaengigkeiten mit `--wait`, prueft beide
    Runtimes im Container und startet erst danach Dispatcher und Monitoring. Im
@@ -1896,8 +1914,9 @@ und beide Healthchecks pruefen. Das verwendete Backup und die Freigabe protokoll
 
 Der Runtime-Rollback ist ausschliesslich als bestaetigtes, prozessgesperrtes
 Skript verfuegbar. Es aendert weder Schema noch Datenbank und
-bricht ohne vorhandenes Image, exakte Tag-Bestaetigung oder dokumentierte
-Migrationskompatibilitaet ab. Seit der GPT-5.6-/Diarize-Migration muessen App,
+bricht ohne vorhandenes Image, exakte Tag-Bestaetigung, dokumentierte
+Migrationskompatibilitaet oder automatisch passenden DB/Image-Vertrag ab. Seit
+der GPT-5.6-/Diarize-Migration muessen App,
 Media-Runner und Media-Preflight ausserdem exakt dieselben eingebetteten
 AI-Laufzeitvertraege tragen. Ein Runtime-Rollback auf ein Image vor dieser
 Vertragsgrenze wird vor Preflight, Writer-Stop und Datenmutation geschlossen
@@ -1914,6 +1933,13 @@ export MIGRATIONS_BACKWARD_COMPATIBLE=true
 scripts/ops/rollback-release.sh "$CONFIRM_ROLLBACK_TAG"
 ```
 
+`MIGRATIONS_BACKWARD_COMPATIBLE` ist nur die zusaetzliche operative Bestaetigung
+fuer weiterhin technisch zulaessige Rollbacks. Es ist kein Override: Ist die DB
+auf oder hinter Migration 0082 und fehlt dem Ziel der eingebettete
+`flat-course-lessons-v1`-Vertrag, bricht das Skript vor dem Start des Ziel-Images
+ab. Dann bleibt nur ein exakter Forward-Fix beziehungsweise ein verifizierter
+Restore auf einen Pre-0082-Datenstand.
+
 ## Regelbetrieb
 
 - Taeglich Backup-, Scheduler- und Caddy-Fehler kontrollieren.
@@ -1924,8 +1950,10 @@ scripts/ops/rollback-release.sh "$CONFIRM_ROLLBACK_TAG"
   Q-Academy-Projekt. Die aktuelle Evidence zusaetzlich archivieren.
 - `/var/lib/q-academy/releases/pending.env` alarmieren. Solange der Marker
   existiert, bleibt der automatische Boot absichtlich gesperrt; nur das exakt
-  bestaetigte Resume, der kompatible Pending-Rollback oder ein kontrollierter
-  Restore duerfen den Zustand aufloesen. Der taegliche Standalone-Backup-Timer
+  bestaetigte Forward-Resume oder ein kontrollierter Restore duerfen den
+  Forward-only-Uebergang ueber Migration 0082 aufloesen. Ein Pending-Rollback
+  spaeterer Releases ist nur mit automatisch passendem DB/Image-Vertrag
+  zulaessig. Der taegliche Standalone-Backup-Timer
   bricht ebenfalls ab, damit kein uneindeutiger Zwischenstand als regulaere
   Restore-Evidence archiviert wird. Nur das vom Deploy unter dem geerbten
   Backup-Lock ausgefuehrte, exakt an `TO_TAG` gebundene Vorab-Backup ist erlaubt.

@@ -135,8 +135,8 @@ test("course module release email is eligible, opt-out aware, tenant-bound and d
       const snapshot = (
         accessMode: "coming_soon" | "visible",
       ): CourseVersionSnapshot => ({
-        schemaVersion: 4,
-        accessPolicyVersion: 1,
+        schemaVersion: 6,
+        accessPolicyVersion: 2,
         moduleKindVersion: 1,
         courseOutlineVersion: 1,
         capturedAt: releasedAt.toISOString(),
@@ -175,7 +175,6 @@ test("course module release email is eligible, opt-out aware, tenant-bound and d
             requestAccessEnabled: false,
             isRequired: true,
             lessons: [],
-            sections: [],
           },
         ],
       });

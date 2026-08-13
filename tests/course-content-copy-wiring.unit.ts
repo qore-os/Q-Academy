@@ -22,7 +22,7 @@ const descriptionJobs = readFileSync(
 );
 
 test("copy actions recheck both courses in one transaction and write audit events", () => {
-  for (const action of ["copyCourseLessonAction", "copyCourseSectionAction"]) {
+  for (const action of ["copyCourseLessonAction"]) {
     const start = actions.indexOf(`export async function ${action}`);
     assert.notEqual(start, -1, `${action} is missing`);
     const body = actions.slice(
@@ -36,7 +36,6 @@ test("copy actions recheck both courses in one transaction and write audit event
     assert.match(body, /tx\.insert\(activityEvents\)/);
   }
   assert.match(actions, /type: "course\.lesson\.copied"/);
-  assert.match(actions, /type: "course\.section\.copied"/);
 });
 
 test("copy service enforces tenant, target status, media source binding and ordering locks", () => {
@@ -55,7 +54,8 @@ test("copy service enforces tenant, target status, media source binding and orde
   assert.match(service, /insert\(courseMediaAssets\)/);
   assert.match(service, /targetCourseIds\.flatMap\(\(courseId\)/);
   assert.match(service, /pg_advisory_xact_lock/);
-  assert.match(service, /initialLessonSortOrder \+ index/);
+  assert.match(service, /orderBy\(desc\(lessons\.sortOrder\), desc\(lessons\.id\)\)/);
+  assert.match(service, /\(last\?\.sortOrder \?\? -1\) \+ 1/);
 });
 
 test("copy service rejects dangling page and assessment references", () => {
@@ -67,7 +67,7 @@ test("copy service rejects dangling page and assessment references", () => {
   assert.match(service, /reference_invalid/);
 });
 
-test("course clone and lesson or section copy strip source-course render jobs", () => {
+test("course clone and lesson copy strip source-course render jobs", () => {
   assert.match(
     service,
     /data: courseContentDataForCopy\(block\.type, block\.data\)/,
@@ -150,10 +150,6 @@ test("course clone keeps explicit tenant predicates below the course boundary", 
   assert.match(
     cloneRoute,
     /eq\(courseModules\.organizationId, context\.organizationId\)/,
-  );
-  assert.match(
-    cloneRoute,
-    /eq\(moduleSections\.organizationId, context\.organizationId\)/,
   );
   assert.match(
     cloneRoute,

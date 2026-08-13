@@ -6,6 +6,8 @@ import {
   inferCourseModuleAccessMode,
   nextPreviousListedModuleCompleted,
   resolveCourseLearningAccessAnchor,
+  resolveCourseLessonAccess,
+  resolveCourseLessonAccessSequence,
   resolveCourseModuleAccess,
 } from "../src/lib/course-module-access-policy";
 
@@ -59,6 +61,162 @@ test("delay_days uses the stable access anchor", () => {
   });
   assert.equal(available.state, "available");
   assert.equal(available.canInteract, true);
+});
+
+test("lesson drip and explicit schedule use the latest release date", () => {
+  const access = resolveCourseLessonAccess({
+    configuration: {
+      visibility: "visible",
+      dripDays: 2,
+      availableAt: "2027-01-05T09:00:00.000Z",
+      unlockAfterPrevious: false,
+    },
+    accessAnchor: anchor,
+    previousLessonCompleted: true,
+    now: new Date("2027-01-02T09:00:00.000Z"),
+  });
+  assert.equal(access.state, "locked");
+  assert.equal(access.availableAt, "2027-01-05T09:00:00.000Z");
+  assert.deepEqual(
+    new Set(access.reasons),
+    new Set(["lesson_drip", "lesson_schedule"]),
+  );
+});
+
+test("lesson sequence locking follows the immediately previous direct lesson", () => {
+  const locked = resolveCourseLessonAccess({
+    configuration: {
+      visibility: "visible",
+      dripDays: 0,
+      unlockAfterPrevious: true,
+    },
+    accessAnchor: anchor,
+    previousLessonCompleted: false,
+    now: anchor,
+  });
+  assert.equal(locked.state, "locked");
+  assert.deepEqual(locked.reasons, ["previous_lesson"]);
+
+  const available = resolveCourseLessonAccess({
+    configuration: {
+      visibility: "visible",
+      dripDays: 0,
+      unlockAfterPrevious: true,
+    },
+    accessAnchor: anchor,
+    previousLessonCompleted: true,
+    now: anchor,
+  });
+  assert.equal(available.state, "available");
+});
+
+test("lesson sequence state carries across a module boundary", () => {
+  const groups = resolveCourseLessonAccessSequence({
+    lessonGroups: [
+      {
+        lessons: [
+          {
+            id: "module-one-lesson",
+            visibility: "visible",
+            dripDays: 0,
+            unlockAfterPrevious: false,
+          },
+        ],
+        participates: true,
+      },
+      {
+        lessons: [
+          {
+            id: "module-two-lesson",
+            visibility: "visible",
+            dripDays: 0,
+            unlockAfterPrevious: true,
+          },
+        ],
+        participates: true,
+      },
+    ],
+    accessAnchor: anchor,
+    completedLessonIds: new Set(),
+    now: anchor,
+  });
+  assert.equal(groups[0][0].access.state, "available");
+  assert.equal(groups[1][0].access.state, "locked");
+  assert.deepEqual(groups[1][0].access.reasons, ["previous_lesson"]);
+
+  const completedGroups = resolveCourseLessonAccessSequence({
+    lessonGroups: groups.map((group) => ({
+      lessons: group.map(({ lesson }) => lesson),
+      participates: true,
+    })),
+    accessAnchor: anchor,
+    completedLessonIds: new Set(["module-one-lesson"]),
+    now: anchor,
+  });
+  assert.equal(completedGroups[1][0].access.state, "available");
+});
+
+test("unlisted and empty module groups do not alter the global lesson sequence", () => {
+  const lesson = (id: string, unlockAfterPrevious = false) => ({
+    id,
+    visibility: "visible" as const,
+    dripDays: 0,
+    unlockAfterPrevious,
+  });
+  const lessonGroups = [
+    { lessons: [lesson("first")], participates: true },
+    { lessons: [lesson("hidden")], participates: false },
+    { lessons: [], participates: false },
+    { lessons: [lesson("last", true)], participates: true },
+  ];
+
+  const completedPredecessor = resolveCourseLessonAccessSequence({
+    lessonGroups,
+    accessAnchor: anchor,
+    completedLessonIds: new Set(["first"]),
+    now: anchor,
+  });
+  assert.equal(completedPredecessor[3][0].access.state, "available");
+
+  const incompletePredecessor = resolveCourseLessonAccessSequence({
+    lessonGroups,
+    accessAnchor: anchor,
+    completedLessonIds: new Set(["hidden"]),
+    now: anchor,
+  });
+  assert.equal(incompletePredecessor[3][0].access.state, "locked");
+  assert.deepEqual(incompletePredecessor[3][0].access.reasons, [
+    "previous_lesson",
+  ]);
+});
+
+test("lesson visibility and invalid release configuration fail closed", () => {
+  const comingSoon = resolveCourseLessonAccess({
+    configuration: { visibility: "coming_soon", dripDays: 0 },
+    accessAnchor: anchor,
+    previousLessonCompleted: true,
+    now: anchor,
+  });
+  assert.equal(comingSoon.state, "coming_soon");
+
+  for (const configuration of [
+    { visibility: "draft" as const, dripDays: 0 },
+    { visibility: "visible" as const, dripDays: -1 },
+    {
+      visibility: "visible" as const,
+      dripDays: 0,
+      availableAt: "invalid",
+    },
+  ]) {
+    const access = resolveCourseLessonAccess({
+      configuration,
+      accessAnchor: anchor,
+      previousLessonCompleted: true,
+      now: anchor,
+    });
+    assert.equal(access.state, "hidden");
+    assert.deepEqual(access.reasons, ["invalid_configuration"]);
+  }
 });
 
 test("after_previous waits for every published lesson in the prior listed module", () => {

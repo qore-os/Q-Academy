@@ -12,7 +12,6 @@ import {
   lessonPages,
   lessons,
   mediaAssets,
-  moduleSections,
   modules,
 } from "@/db/schema";
 import { ApiError } from "@/lib/api/errors";
@@ -226,34 +225,6 @@ export async function POST(
               ),
             );
           if (!shouldCloneModuleContent(sourceModule.kind)) continue;
-          const sourceSections = await tx
-            .select()
-            .from(moduleSections)
-            .where(
-              and(
-                eq(moduleSections.moduleId, sourceModule.id),
-                eq(moduleSections.organizationId, context.organizationId),
-              ),
-            )
-            .orderBy(asc(moduleSections.sortOrder));
-          const sectionIds = new Map<string, string>();
-          for (const sourceSection of sourceSections) {
-            const [sectionClone] = await tx
-              .insert(moduleSections)
-              .values({
-                organizationId: context.organizationId,
-                moduleId: moduleClone.id,
-                title: sourceSection.title,
-                description: sourceSection.description,
-                sortOrder: sourceSection.sortOrder,
-                status: sourceSection.status,
-                visibility: sourceSection.visibility,
-                unlockAfterPrevious: sourceSection.unlockAfterPrevious,
-                dripDays: sourceSection.dripDays,
-              })
-              .returning();
-            sectionIds.set(sourceSection.id, sectionClone.id);
-          }
           const sourceLessons = await tx
             .select()
             .from(lessons)
@@ -325,9 +296,6 @@ export async function POST(
               .values({
                 organizationId: context.organizationId,
                 moduleId: moduleClone.id,
-                sectionId: sourceLesson.sectionId
-                  ? (sectionIds.get(sourceLesson.sectionId) ?? null)
-                  : null,
                 title: sourceLesson.title,
                 slug: sourceLesson.slug,
                 summary: sourceLesson.summary,
@@ -345,6 +313,8 @@ export async function POST(
                 status: sourceLesson.status,
                 visibility: sourceLesson.visibility,
                 availableAt: sourceLesson.availableAt,
+                dripDays: sourceLesson.dripDays,
+                unlockAfterPrevious: sourceLesson.unlockAfterPrevious,
               })
               .returning();
             if (sourcePages.length) {
@@ -365,19 +335,23 @@ export async function POST(
             }
             if (blocks.length) {
               const copiedBlocks = blocks.map((block) => ({
-                  id: blockIds.get(block.id)!,
-                  lessonId: lessonClone.id,
-                  pageId: block.pageId ? pageIds.get(block.pageId)! : null,
-                  type: block.type,
-                  title: block.title,
-                  sortOrder: block.sortOrder,
-                  required: block.required,
-                  data: copiedBlockData.get(block.id)!,
-                  style: block.style,
-                }));
+                id: blockIds.get(block.id)!,
+                lessonId: lessonClone.id,
+                pageId: block.pageId ? pageIds.get(block.pageId)! : null,
+                type: block.type,
+                title: block.title,
+                sortOrder: block.sortOrder,
+                required: block.required,
+                data: copiedBlockData.get(block.id)!,
+                style: block.style,
+              }));
               await tx.insert(contentBlocks).values(copiedBlocks);
               copiedDescriptionBlocks.push(
-                ...copiedBlocks.map(({ id, type, data }) => ({ id, type, data })),
+                ...copiedBlocks.map(({ id, type, data }) => ({
+                  id,
+                  type,
+                  data,
+                })),
               );
             }
           }

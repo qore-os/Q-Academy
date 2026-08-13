@@ -108,18 +108,10 @@ test("rich text is authored structurally and rendered safely for learners", asyn
       )
       values (${fixture.organization_id}, ${courseId}, ${moduleId}, 0, true)
     `;
-    const [section] = await client<Array<{ id: string }>>`
-      insert into module_sections (
-        organization_id, module_id, title, sort_order, status
-      )
-      values (${fixture.organization_id}, ${moduleId}, 'Start', 0, 'published')
-      returning id
-    `;
     const [lesson] = await client<Array<{ id: string }>>`
       insert into lessons (
         organization_id,
         module_id,
-        section_id,
         title,
         slug,
         summary,
@@ -130,7 +122,6 @@ test("rich text is authored structurally and rendered safely for learners", asyn
       ) values (
         ${fixture.organization_id},
         ${moduleId},
-        ${section.id},
         ${lessonTitle},
         'strukturierte-lektion',
         'Rich-Text wird als JSON-Dokument publiziert.',

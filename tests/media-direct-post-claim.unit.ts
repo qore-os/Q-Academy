@@ -9,13 +9,13 @@ function actionSource(source: string, name: string) {
   return source.slice(start, end);
 }
 
-function latestMigrationSource() {
+function directPostClaimMigrationSource() {
   const journal = JSON.parse(
     readFileSync("drizzle/meta/_journal.json", "utf8"),
   ) as { entries: Array<{ idx: number; tag: string }> };
-  const latest = journal.entries.at(-1);
-  assert.equal(latest?.idx, 81);
-  return readFileSync(`drizzle/${latest.tag}.sql`, "utf8");
+  const migration = journal.entries.find((entry) => entry.idx === 81);
+  assert.equal(migration?.tag, "0081_great_lila_cheney");
+  return readFileSync(`drizzle/${migration.tag}.sql`, "utf8");
 }
 
 test("direct POST claims are persisted immediately before the one permitted send", () => {
@@ -29,7 +29,7 @@ test("direct POST claims are persisted immediately before the one permitted send
     "utf8",
   );
   const schema = readFileSync("src/db/schema.ts", "utf8");
-  const migration = latestMigrationSource();
+  const migration = directPostClaimMigrationSource();
   const claim = actionSource(service, "claimSessionDirectPostUpload");
 
   assert.match(schema, /directUploadClaimToken: uuid\("direct_upload_claim_token"/);

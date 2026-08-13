@@ -10,8 +10,6 @@ type CourseDraftFallbackCopy = {
     lessons: readonly [string, string, string];
   }>;
   topicFocus: (topic: string) => string;
-  sectionTitles: readonly [string, string];
-  sectionDescription: (tone: string, audience: string) => string;
   lessonBody: (audience: string, topic: string, goal: string) => string;
   info: { title: string; text: string };
   checklist: { title: string; items: readonly [string, string, string] };
@@ -61,8 +59,6 @@ const de: CourseDraftFallbackCopy = {
     { title: "Vertiefung und Umsetzung", description: "Fuehrt die Erkenntnisse zu einem belastbaren Umsetzungsplan mit messbaren naechsten Schritten zusammen.", lessons: ["Komplexe Situationen bearbeiten", "Zusammenarbeit und Standards gestalten", "Einen persoenlichen Aktionsplan erstellen"] },
   ],
   topicFocus: (topic) => `Der Fokus liegt auf ${topic}.`,
-  sectionTitles: ["Gemeinsamer Einstieg", "Gefuehrte Umsetzung"],
-  sectionDescription: (tone, audience) => `Die Lernschritte sind ${tone} fuer ${audience} aufgebaut.`,
   lessonBody: (audience, topic, goal) => `${audience} erarbeiten in dieser Lektion ${topic} anhand einer klaren Ausgangssituation. Das Lernziel bleibt dabei verbindlich: ${goal}`,
   info: { title: "Praxisfokus", text: "Uebertrage den Inhalt auf eine reale Aufgabe. Halte Annahmen, erwartete Wirkung und ein pruefbares Ergebnis fest, bevor du den naechsten Schritt gehst." },
   checklist: { title: "Naechste Schritte", items: ["Ausgangslage und Ziel in eigenen Worten festhalten", "Methode an einem konkreten Beispiel anwenden", "Ergebnis anhand eines klaren Kriteriums reflektieren"] },
@@ -92,8 +88,6 @@ const en: CourseDraftFallbackCopy = {
     { title: "Deepening and implementation", description: "Combines the insights into a robust implementation plan with measurable next steps.", lessons: ["Handle complex situations", "Shape collaboration and standards", "Create a personal action plan"] },
   ],
   topicFocus: (topic) => `The focus is on ${topic}.`,
-  sectionTitles: ["Shared introduction", "Guided implementation"],
-  sectionDescription: (tone, audience) => `The learning steps are ${tone} for ${audience}.`,
   lessonBody: (audience, topic, goal) => `In this lesson, ${audience} explore ${topic} through a clear starting scenario. The learning goal remains binding: ${goal}`,
   info: { title: "Practical focus", text: "Apply the content to a real task. Record assumptions, the expected impact and a verifiable result before moving to the next step." },
   checklist: { title: "Next steps", items: ["State the starting point and goal in your own words", "Apply the method to a concrete example", "Review the result against a clear criterion"] },
@@ -123,8 +117,6 @@ const it: CourseDraftFallbackCopy = {
     { title: "Approfondimento e attuazione", description: "Riunisce le conoscenze in un piano di attuazione solido con prossimi passi misurabili.", lessons: ["Gestire situazioni complesse", "Definire collaborazione e standard", "Creare un piano d'azione personale"] },
   ],
   topicFocus: (topic) => `L'attenzione e rivolta a ${topic}.`,
-  sectionTitles: ["Introduzione comune", "Attuazione guidata"],
-  sectionDescription: (tone, audience) => `I passaggi didattici sono ${tone} per ${audience}.`,
   lessonBody: (audience, topic, goal) => `In questa lezione, ${audience} esplora ${topic} a partire da una situazione chiara. L'obiettivo didattico resta vincolante: ${goal}`,
   info: { title: "Focus pratico", text: "Applica il contenuto a un compito reale. Registra ipotesi, impatto atteso e un risultato verificabile prima di passare alla fase successiva." },
   checklist: { title: "Prossimi passi", items: ["Descrivere con parole proprie la situazione iniziale e l'obiettivo", "Applicare il metodo a un esempio concreto", "Valutare il risultato rispetto a un criterio chiaro"] },
@@ -154,8 +146,6 @@ const es: CourseDraftFallbackCopy = {
     { title: "Profundizacion e implementacion", description: "Reune los conocimientos en un plan de implementacion solido con proximos pasos medibles.", lessons: ["Abordar situaciones complejas", "Definir colaboracion y estandares", "Crear un plan de accion personal"] },
   ],
   topicFocus: (topic) => `El foco esta en ${topic}.`,
-  sectionTitles: ["Introduccion compartida", "Implementacion guiada"],
-  sectionDescription: (tone, audience) => `Los pasos de aprendizaje son ${tone} para ${audience}.`,
   lessonBody: (audience, topic, goal) => `En esta leccion, ${audience} trabaja ${topic} a partir de una situacion inicial clara. El objetivo de aprendizaje sigue siendo vinculante: ${goal}`,
   info: { title: "Enfoque practico", text: "Aplica el contenido a una tarea real. Registra los supuestos, el impacto esperado y un resultado verificable antes de pasar al siguiente paso." },
   checklist: { title: "Proximos pasos", items: ["Expresar con palabras propias el punto de partida y el objetivo", "Aplicar el metodo a un ejemplo concreto", "Evaluar el resultado con un criterio claro"] },
@@ -185,8 +175,6 @@ const fr: CourseDraftFallbackCopy = {
     { title: "Approfondissement et mise en oeuvre", description: "Reunit les acquis dans un plan de mise en oeuvre solide avec des prochaines etapes mesurables.", lessons: ["Traiter des situations complexes", "Definir la collaboration et les standards", "Creer un plan d'action personnel"] },
   ],
   topicFocus: (topic) => `L'accent est mis sur ${topic}.`,
-  sectionTitles: ["Introduction commune", "Mise en oeuvre guidee"],
-  sectionDescription: (tone, audience) => `Les etapes d'apprentissage sont ${tone} pour ${audience}.`,
   lessonBody: (audience, topic, goal) => `Dans cette lecon, ${audience} explore ${topic} a partir d'une situation initiale claire. L'objectif d'apprentissage reste contraignant : ${goal}`,
   info: { title: "Focus pratique", text: "Appliquez le contenu a une tache reelle. Notez les hypotheses, l'impact attendu et un resultat verifiable avant de passer a l'etape suivante." },
   checklist: { title: "Prochaines etapes", items: ["Formuler la situation initiale et l'objectif avec vos propres mots", "Appliquer la methode a un exemple concret", "Evaluer le resultat selon un critere clair"] },
