@@ -1767,7 +1767,7 @@ test("CI packages, scans, publishes, and attests the exact smoke-tested images",
   assert.match(continuousIntegration, /CI_MESA_VERSION: 22\.3\.6-1\+deb12u2/);
   assert.match(
     continuousIntegration,
-    /CI_CADDY_BUILDER_IMAGE: golang:1[.]26[.]5-bookworm@sha256:[a-f0-9]{64}/,
+    /CI_CADDY_BUILDER_IMAGE: golang:1[.]26[.]6-bookworm@sha256:[a-f0-9]{64}/,
   );
   assert.match(continuousIntegration, /CI_CADDY_VERSION: "2[.]11[.]4"/);
   assert.match(

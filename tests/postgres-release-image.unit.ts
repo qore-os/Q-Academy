@@ -23,7 +23,7 @@ const productionEnvironmentExample = readFileSync(
 const postgresBase =
   "postgres:16.14-alpine3.23@sha256:42b8b8b29c8a4e933d88943e5b03001a78794905cf786e6e7634e9f2abd5a0d3";
 const golangBuilder =
-  "golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc";
+  "golang:1.26.6-alpine3.23@sha256:5978cc992ad5ef96a7469713c8af849c1433824761ce3be2c56381403cd8d9a3";
 const gosuCommit = "6456aaa0f3c854d199d0f037f068eb97515b7513";
 const gosuSourceSha256 =
   "33d7537d588ea49458b9509bcf4554bdf5ceacc66da71e5caa1058ea3b689c3b";
@@ -44,7 +44,11 @@ test("PostgreSQL replaces gosu from immutable reproducible source inputs", () =>
   assert.match(postgresDockerfile, /ARG GOSU_VERSION=1\.19/);
   assert.match(
     postgresDockerfile,
-    /test "\$GOLANG_BUILDER_IMAGE" = "golang:1\.26\.5-alpine3\.23@sha256:[a-f0-9]{64}"/,
+    /test "\$GOLANG_BUILDER_IMAGE" = "golang:1\.26\.6-alpine3\.23@sha256:[a-f0-9]{64}"/,
+  );
+  assert.match(
+    postgresDockerfile,
+    /test "\$\(go env GOVERSION\)" = "go1\.26\.6"/,
   );
   assert.match(
     postgresDockerfile,

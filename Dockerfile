@@ -1,6 +1,6 @@
 ARG NODE_IMAGE=node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
 ARG NPM_CACHE_SEED_SOURCE=scratch
-ARG CADDY_BUILDER_IMAGE=golang:1.26.5-bookworm@sha256:3f6236bd765f898a2a3c2946112b04097814c4529d44534674700cd07b9c6b4c
+ARG CADDY_BUILDER_IMAGE=golang:1.26.6-bookworm@sha256:433f9dc4f8ea3a1ce4e28f9f15d0f7c056b10475307f886d6f1ac1ccc4abd976
 ARG CADDY_VERSION=2.11.4
 ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187
 ARG CADDY_SOURCE_DATE_EPOCH=1780342502
@@ -76,7 +76,7 @@ COPY scripts/ops/caddy-runtime-entrypoint.go /tmp/q-academy-caddy-entrypoint.go
 RUN --mount=type=cache,id=q-academy-caddy-go-mod,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,id=q-academy-caddy-go-build,target=/root/.cache/go-build,sharing=locked \
     set -eux; \
-    test "$(go env GOVERSION)" = "go1.26.5"; \
+    test "$(go env GOVERSION)" = "go1.26.6"; \
     test "$CADDY_VERSION" = "2.11.4"; \
     test "$CADDY_BUILDABLE_ARTIFACT_SHA256" = "33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187"; \
     test "$CADDY_SOURCE_DATE_EPOCH" = "1780342502"; \

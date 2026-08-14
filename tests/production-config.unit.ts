@@ -43,6 +43,8 @@ const caddyModulePatchLock = readFileSync(
   new URL("../scripts/ops/caddy-module-patch.lock", import.meta.url),
   "utf8",
 );
+const caddyBuilderImage =
+  "golang:1.26.6-bookworm@sha256:433f9dc4f8ea3a1ce4e28f9f15d0f7c056b10475307f886d6f1ac1ccc4abd976";
 const dispatcherHttpPost = readFileSync(
   new URL("../scripts/ops/dispatcher-http-post.mjs", import.meta.url),
   "utf8",
@@ -637,10 +639,13 @@ test("production uses release-bound hardened dispatcher and Caddy runtimes", () 
   );
   assert.doesNotMatch(caddyfile, /reverse_proxy(?:\s+@[a-z_]+)?\s+app:3000/);
   assert.match(caddyfile, /^import \/etc\/caddy\/sites\/\*[.]caddy$/m);
-  assert.match(
-    dockerfile,
-    /ARG CADDY_BUILDER_IMAGE=golang:1[.]26[.]5-bookworm@sha256:[a-f0-9]{64}/,
+  assert.ok(dockerfile.includes(`ARG CADDY_BUILDER_IMAGE=${caddyBuilderImage}`));
+  assert.ok(
+    continuousIntegration.includes(
+      `CI_CADDY_BUILDER_IMAGE: ${caddyBuilderImage}`,
+    ),
   );
+  assert.match(dockerfile, /test "\$\(go env GOVERSION\)" = "go1[.]26[.]6"/);
   assert.match(
     dockerfile,
     /ARG CADDY_BUILDABLE_ARTIFACT_SHA256=33777097f666d60d78bfb74df06978c933f32aa5a0d4ce0b0c5d028489984187/,
