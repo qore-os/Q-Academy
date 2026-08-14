@@ -1,11 +1,10 @@
 import "server-only";
 
-import { and, asc, eq, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 
 import { db } from "@/db";
 import {
   mediaAssets,
-  orbitAuditEvents,
   orbitTransferItems,
   orbitTransferJobs,
 } from "@/db/schema";
@@ -16,7 +15,14 @@ export async function reconcileStaleOrbitTransfers(
 ) {
   return db.transaction(async (transaction) => {
     const candidates = await transaction
-      .select()
+      .select({
+        id: orbitTransferJobs.id,
+        workspaceId: orbitTransferJobs.workspaceId,
+        sourceOrganizationId: orbitTransferJobs.sourceOrganizationId,
+        targetOrganizationId: orbitTransferJobs.targetOrganizationId,
+        requestedByAccountId: orbitTransferJobs.requestedByAccountId,
+        claimToken: orbitTransferJobs.claimToken,
+      })
       .from(orbitTransferJobs)
       .where(
         and(
@@ -24,10 +30,7 @@ export async function reconcileStaleOrbitTransfers(
           lte(orbitTransferJobs.leaseExpiresAt, now),
         ),
       )
-      .orderBy(
-        asc(orbitTransferJobs.leaseExpiresAt),
-        asc(orbitTransferJobs.id),
-      )
+      .orderBy(asc(orbitTransferJobs.leaseExpiresAt), asc(orbitTransferJobs.id))
       .limit(Math.max(1, Math.min(batchSize, 100)))
       .for("update", { skipLocked: true });
     let reconciled = 0;
@@ -102,17 +105,20 @@ export async function reconcileStaleOrbitTransfers(
         )
         .returning({ id: orbitTransferJobs.id });
       if (!failed) continue;
-      await transaction.insert(orbitAuditEvents).values({
-        workspaceId: candidate.workspaceId,
-        actorAccountId: candidate.requestedByAccountId,
-        action: "transfer.failed",
-        resourceType: "transfer_job",
-        resourceId: candidate.id,
-        sourceOrganizationId: candidate.sourceOrganizationId,
-        targetOrganizationId: candidate.targetOrganizationId,
-        outcome: "failed",
-        metadata: { failureCode: "transfer_reservation_expired" },
-      });
+      // Keep the insert list aligned with the media worker's column-level grant.
+      await transaction.execute(sql`
+        insert into orbit_audit_events (
+          workspace_id, actor_account_id, action, resource_type, resource_id,
+          source_organization_id, target_organization_id, outcome, metadata
+        ) values (
+          ${candidate.workspaceId}, ${candidate.requestedByAccountId},
+          'transfer.failed', 'transfer_job', ${candidate.id},
+          ${candidate.sourceOrganizationId}, ${candidate.targetOrganizationId},
+          'failed', jsonb_build_object(
+            'failureCode', 'transfer_reservation_expired'
+          )
+        )
+      `);
       reconciled += 1;
     }
     return reconciled;

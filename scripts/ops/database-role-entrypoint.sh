@@ -260,8 +260,11 @@ where rolname in (:'owner_user', :'app_user', :'media_user')
 \gset
 \if :roles_are_hardened
 \else
-  \echo 'Database role hardening verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Database role hardening verification failed.';
+  end
+  $verification$;
 \endif
 
 select count(*) = 0 as memberships_are_empty
@@ -273,8 +276,11 @@ where granted_role.rolname in (:'bootstrap_user', :'owner_user', :'app_user', :'
 \gset
 \if :memberships_are_empty
 \else
-  \echo 'Database role membership verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Database role membership verification failed.';
+  end
+  $verification$;
 \endif
 
 select
@@ -291,8 +297,11 @@ where database_record.datname = :'db_name'
 \gset
 \if :ownership_and_identity_are_valid
 \else
-  \echo 'Database ownership or immutable role identity verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Database ownership or immutable role identity verification failed.';
+  end
+  $verification$;
 \endif
 SQL
 

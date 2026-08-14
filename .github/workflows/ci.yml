@@ -676,79 +676,105 @@ jobs:
           await admin.unsafe(
             "create role q_academy_ci_media login password '8e7f6a5b4c3d22110099887766554433ccddeeff00112233445566778899aabb' nosuperuser nocreatedb nocreaterole noreplication nobypassrls noinherit",
           );
-          await admin.unsafe("revoke all on database q_academy from public, q_academy_ci_app, q_academy_ci_media");
-          await admin.unsafe("grant connect on database q_academy to q_academy_ci_app");
-          await admin.unsafe("revoke all on schema public, drizzle from public, q_academy_ci_app, q_academy_ci_media");
-          await admin.unsafe("grant usage on schema public, drizzle to q_academy_ci_app");
-          await admin.unsafe("revoke all on all tables in schema public, drizzle from public");
-          await admin.unsafe("revoke all on all sequences in schema public, drizzle from public");
-          await admin.unsafe("revoke all on all functions in schema public, drizzle from public, q_academy_ci_app, q_academy_ci_media");
-          await admin.unsafe("grant select, insert, update, delete on all tables in schema public to q_academy_ci_app");
-          await admin.unsafe("grant usage, select, update on all sequences in schema public to q_academy_ci_app");
-          await admin.unsafe("grant select on all tables in schema drizzle to q_academy_ci_app");
-          await admin.unsafe("grant execute on function public.q_academy_lock_course_link_graph(uuid) to q_academy_ci_app");
-          await admin.unsafe("grant connect on database q_academy to q_academy_ci_media");
-          await admin.unsafe("grant usage on schema public, drizzle to q_academy_ci_media");
-          await admin.unsafe("revoke all on all tables in schema public from q_academy_ci_media");
-          await admin.unsafe("revoke all on all sequences in schema public from q_academy_ci_media");
-          await admin.unsafe("alter table public.custom_field_values enable row level security");
-          await admin.unsafe("create policy q_academy_ci_app_full_access on public.custom_field_values to q_academy_ci_app using (true) with check (true)");
-          await admin.unsafe("drop policy if exists q_academy_ci_media_bindings_only on public.custom_field_values");
-          await admin.unsafe("create policy q_academy_ci_media_bindings_only on public.custom_field_values to q_academy_ci_media using (exists (select 1 from public.custom_field_definitions definition where definition.id = custom_field_values.field_id and definition.organization_id = custom_field_values.organization_id and definition.type = 'media'))");
-          await admin.unsafe("alter table public.data_profile_values enable row level security");
-          await admin.unsafe("create policy q_academy_ci_app_full_access on public.data_profile_values to q_academy_ci_app using (true) with check (true)");
-          await admin.unsafe("drop policy if exists q_academy_ci_media_bindings_only on public.data_profile_values");
-          await admin.unsafe("create policy q_academy_ci_media_bindings_only on public.data_profile_values to q_academy_ci_media using (exists (select 1 from public.custom_field_definitions definition where definition.id = data_profile_values.field_id and definition.organization_id = data_profile_values.organization_id and definition.type = 'media'))");
-          await admin.unsafe("alter table public.platform_settings enable row level security");
-          await admin.unsafe("create policy q_academy_ci_app_full_access on public.platform_settings to q_academy_ci_app using (true) with check (true)");
-          await admin.unsafe("drop policy if exists q_academy_ci_media_design_only on public.platform_settings");
-          await admin.unsafe("create policy q_academy_ci_media_design_only on public.platform_settings to q_academy_ci_media using (key = 'design')");
-          await admin.unsafe("grant select, update, delete on table public.media_assets to q_academy_ci_media");
-          await admin.unsafe("grant select, delete on table public.media_upload_sessions to q_academy_ci_media");
-          await admin.unsafe("grant update (state, updated_at) on table public.media_upload_sessions to q_academy_ci_media");
-          await admin.unsafe("grant select, insert, update, delete on table public.media_processing_jobs to q_academy_ci_media");
-          await admin.unsafe("grant select, insert, update, delete on table public.media_asset_derivatives to q_academy_ci_media");
-          await admin.unsafe("grant select, insert, update, delete on table public.media_asset_transcripts to q_academy_ci_media");
-          await admin.unsafe("grant select (id, default_locale) on table public.organizations to q_academy_ci_media");
-          await admin.unsafe("grant select (id, organization_id, avatar_url) on table public.users to q_academy_ci_media");
-          await admin.unsafe("grant select (id, organization_id, type) on table public.custom_field_definitions to q_academy_ci_media");
-          await admin.unsafe("grant select (id, organization_id, user_id, field_id, value) on table public.custom_field_values to q_academy_ci_media");
-          await admin.unsafe("grant select (id, organization_id, user_id, field_id, value) on table public.data_profile_values to q_academy_ci_media");
-          await admin.unsafe("grant select (id, organization_id, key, value) on table public.platform_settings to q_academy_ci_media");
-          await admin.unsafe("grant select (id, organization_id, media_asset_id) on table public.submission_attachments to q_academy_ci_media");
-          await admin.unsafe("grant select (course_id, organization_id, media_asset_id) on table public.course_media_assets to q_academy_ci_media");
-          await admin.unsafe("grant select (media_asset_id, organization_id) on table public.community_asset_bindings to q_academy_ci_media");
-          await admin.unsafe("grant select on all tables in schema drizzle to q_academy_ci_media");
-          for (const functionName of [
-            "q_academy_enforce_media_asset_storage_limit",
-            "q_academy_enforce_media_derivative_storage_limit",
-          ]) {
-            await admin.unsafe(`alter function public.${functionName}() owner to q_academy_ci`);
-            await admin.unsafe(`alter function public.${functionName}() security definer`);
-            await admin.unsafe(`alter function public.${functionName}() set search_path to pg_catalog, public`);
-            await admin.unsafe(`revoke all on function public.${functionName}() from public`);
-            await admin.unsafe(`grant execute on function public.${functionName}() to q_academy_ci_app, q_academy_ci_media`);
-          }
-          const [catalog] = await admin.unsafe(`
-            select
-              count(*) filter (
-                where procedure_record.prosecdef
-                  and pg_get_userbyid(procedure_record.proowner) = 'q_academy_ci'
-                  and procedure_record.proconfig = array['search_path=pg_catalog, public']
-              )::integer as hardened_functions,
-              count(*)::integer as storage_functions
-            from pg_proc procedure_record
-            join pg_namespace namespace_record on namespace_record.oid = procedure_record.pronamespace
-            where namespace_record.nspname = 'public'
-              and procedure_record.proname in (
-                'q_academy_enforce_media_asset_storage_limit',
-                'q_academy_enforce_media_derivative_storage_limit'
-              )
-          `);
-          if (catalog.hardened_functions !== 2 || catalog.storage_functions !== 2) {
-            throw new Error("Production storage trigger catalog hardening failed.");
-          }
           await admin.end();
+          NODE
+
+          run_database_permissions() {
+            docker run --rm --network host --read-only \
+              --add-host ci-postgres.internal:127.0.0.1 \
+              --cap-drop ALL --security-opt no-new-privileges=true \
+              --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+              --mount "type=bind,source=$PWD/scripts/ops/database-permissions-entrypoint.sh,target=/opt/q-academy/database-permissions-entrypoint.sh,readonly" \
+              -e PGHOST=ci-postgres.internal \
+              -e PGPORT=54329 \
+              -e PGDATABASE=q_academy \
+              -e PGUSER=q_academy_ci \
+              -e PGPASSWORD=CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV \
+              -e OWNER_DATABASE_USER=q_academy_ci \
+              -e APP_DATABASE_USER=q_academy_ci_app \
+              -e MEDIA_DATABASE_USER=q_academy_ci_media \
+              --entrypoint /bin/sh \
+              "$postgres_image" /opt/q-academy/database-permissions-entrypoint.sh
+          }
+          run_database_permissions
+
+          permissions_verifier="$RUNNER_TEMP/q-academy-database-permissions-verifier.sql"
+          PERMISSIONS_VERIFIER_PATH="$permissions_verifier" \
+            node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+
+          const script = readFileSync(
+            "scripts/ops/database-permissions-entrypoint.sh",
+            "utf8",
+          );
+          const blocks = [...script.matchAll(/<<'SQL'\r?\n([\s\S]*?)\r?\nSQL/g)];
+          if (blocks.length !== 2 || !blocks[1]?.[1]) {
+            throw new Error("The database permissions verifier block is missing.");
+          }
+          writeFileSync(
+            process.env.PERMISSIONS_VERIFIER_PATH,
+            `${blocks[1][1]}\n`,
+            { mode: 0o600 },
+          );
+          NODE
+
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
+
+          const admin = postgres(process.env.RUNTIME_ADMIN_DATABASE_URL, { max: 1 });
+          try {
+            await admin.unsafe(
+              "alter table orbit_transfer_jobs owner to q_academy_ci_media",
+            );
+          } finally {
+            await admin.end();
+          }
+          NODE
+
+          permissions_negative_log="$RUNNER_TEMP/q-academy-database-permissions-negative.log"
+          if docker run --rm -i --network host --read-only \
+            --add-host ci-postgres.internal:127.0.0.1 \
+            --cap-drop ALL --security-opt no-new-privileges=true \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=16m \
+            -e PGHOST=ci-postgres.internal \
+            -e PGPORT=54329 \
+            -e PGDATABASE=q_academy \
+            -e PGUSER=q_academy_ci \
+            -e PGPASSWORD=CiDb-9QwE2rT8yU4iO6pA1sD5fG7hJ3kLzXcV \
+            --entrypoint psql \
+            "$postgres_image" \
+            --no-password --no-psqlrc --set=ON_ERROR_STOP=1 \
+            --set=db_name=q_academy \
+            --set=owner_user=q_academy_ci \
+            --set=app_user=q_academy_ci_app \
+            --set=media_user=q_academy_ci_media \
+            <"$permissions_verifier" >"$permissions_negative_log" 2>&1; then
+            echo "Database permissions verifier accepted Orbit ownership drift." >&2
+            exit 1
+          fi
+          grep -Fq 'Orbit reconciliation privilege verification failed.' \
+            "$permissions_negative_log" || {
+              cat "$permissions_negative_log" >&2
+              exit 1
+            }
+
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
+
+          const admin = postgres(process.env.RUNTIME_ADMIN_DATABASE_URL, { max: 1 });
+          try {
+            await admin.unsafe(
+              "alter table orbit_transfer_jobs owner to q_academy_ci",
+            );
+          } finally {
+            await admin.end();
+          }
+          NODE
+          run_database_permissions
+          rm -f -- "$permissions_verifier" "$permissions_negative_log"
+
+          node --input-type=module <<'NODE'
+          import postgres from "postgres";
 
           const media = postgres(process.env.RUNTIME_MEDIA_DATABASE_URL, { max: 1 });
           await media.unsafe("select id, organization_id, avatar_url from public.users limit 1");

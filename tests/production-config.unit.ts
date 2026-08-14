@@ -239,14 +239,11 @@ test("production accepts only the fixed file-backed AI credential contract", () 
       }),
     /AI_MODEL must be 'gpt-5\.6-terra' in production/,
   );
-  assert.throws(
-    () => {
-      const missingModel: EnvironmentSource = { ...configured };
-      delete missingModel.AI_MODEL;
-      validateProductionServerEnvironment(missingModel);
-    },
-    /AI_MODEL must be 'gpt-5\.6-terra' in production/,
-  );
+  assert.throws(() => {
+    const missingModel: EnvironmentSource = { ...configured };
+    delete missingModel.AI_MODEL;
+    validateProductionServerEnvironment(missingModel);
+  }, /AI_MODEL must be 'gpt-5\.6-terra' in production/);
 });
 
 test("every production release path validates the file-backed AI credential", () => {
@@ -258,10 +255,7 @@ test("every production release path validates the file-backed AI credential", ()
   }
 
   assert.match(releaseCommon, /-f "\$configured" && ! -L "\$configured"/);
-  assert.match(
-    releaseCommon,
-    /\[\[ "\$model" == "gpt-5\.6-terra" \]\]/,
-  );
+  assert.match(releaseCommon, /\[\[ "\$model" == "gpt-5\.6-terra" \]\]/);
   assert.match(releaseCommon, /"\$owner" == "1001:1001" && "\$mode" == "400"/);
   assert.match(releaseCommon, /size <= 16384/);
   assert.match(releaseCommon, /AI_API_KEY must be removed from production/);
@@ -275,18 +269,12 @@ test("production validates the dedicated transcription credential before use", (
     );
   }
 
-  assert.match(
-    releaseCommon,
-    /verify_openai_transcription_api_key_file\(\)/,
-  );
+  assert.match(releaseCommon, /verify_openai_transcription_api_key_file\(\)/);
   assert.match(
     releaseCommon,
     /OPENAI_TRANSCRIPTION_API_KEY_SOURCE_FILE must be an existing regular non-symlink file/,
   );
-  assert.match(
-    releaseCommon,
-    /"\$owner" == "1001:1001" && "\$mode" == "400"/,
-  );
+  assert.match(releaseCommon, /"\$owner" == "1001:1001" && "\$mode" == "400"/);
   assert.match(releaseCommon, /size <= 1024/);
   assert.match(releaseCommon, /enabled" == "true"[\s\S]*size >= 8/);
   assert.match(releaseCommon, /size == 0/);
@@ -297,10 +285,7 @@ test("production validates the dedicated transcription credential before use", (
 });
 
 test("enabled external AI runs a bounded Terra canary before runtime activation", () => {
-  assert.match(
-    releaseCommon,
-    /AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS=90/,
-  );
+  assert.match(releaseCommon, /AI_PROVIDER_PREFLIGHT_TIMEOUT_SECONDS=90/);
   assert.match(releaseCommon, /ai_api_key_file_is_configured\(\)/);
   for (const operation of productionReleasePaths) {
     assert.match(operation, /ai_api_key_file_is_configured "\$env_file"/);
@@ -996,6 +981,11 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(databaseRoleEntrypoint, /q_academy\.bootstrap_role/);
   assert.match(databaseRoleEntrypoint, /role names are immutable/);
   assert.match(databaseRoleEntrypoint, /pg_auth_members/);
+  assert.doesNotMatch(databaseRoleEntrypoint, /\\quit(?:\s|$)/);
+  assert.match(
+    databaseRoleEntrypoint,
+    /raise exception 'Database role hardening verification failed\.'/,
+  );
   assert.match(databaseConfigPreflight, /exactly 64 hexadecimal characters/);
   assert.match(
     databaseConfigPreflight,
@@ -1012,6 +1002,15 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(databasePermissions, /PGPASSWORD: \$\{OWNER_POSTGRES_PASSWORD:/);
   assert.match(databasePermissions, /database-permissions-entrypoint\.sh/);
   assert.match(databasePermissionsEntrypoint, /begin;[\s\S]*commit;/);
+  assert.doesNotMatch(databasePermissionsEntrypoint, /\\quit(?:\s|$)/);
+  assert.match(
+    databasePermissionsEntrypoint,
+    /select count\(\*\) = 7 as constraint_trigger_functions_are_hardened/,
+  );
+  assert.doesNotMatch(
+    databasePermissionsEntrypoint,
+    /q_academy_check_exam_section_row/,
+  );
   assert.match(
     databasePermissionsEntrypoint,
     /grant select, update, delete on table public\.media_assets/,
@@ -1023,6 +1022,51 @@ test("production isolates media scans from the public app runtime", () => {
   assert.match(
     databasePermissionsEntrypoint,
     /grant update \(state, updated_at\) on table public\.media_upload_sessions/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant select \([\s\S]*requested_by_account_id, status, claim_token, lease_expires_at[\s\S]*\) on table public\.orbit_transfer_jobs/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant update \([\s\S]*failure_code, claim_token, lease_expires_at, completed_at, updated_at[\s\S]*\) on table public\.orbit_transfer_jobs/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant select \(job_id, kind, target_id\)[\s\S]*public\.orbit_transfer_items/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /grant insert \([\s\S]*actor_account_id, action, resource_type, resource_id[\s\S]*outcome, metadata[\s\S]*public\.orbit_audit_events/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /count\(\*\) from orbit_column_privileges\) = 26/,
+  );
+  assert.match(databasePermissionsEntrypoint, /where is_grantable/);
+  assert.match(
+    databasePermissionsEntrypoint,
+    /pg_get_userbyid\(relowner\) = :'owner_user'/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /orbit_effective_column_privileges[\s\S]*has_column_privilege\(/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /orbit_effective_table_privileges[\s\S]*has_table_privilege\(/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /not exists \(select 1 from orbit_effective_table_privileges\)/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /count\(\*\) from orbit_effective_column_privileges\) = 26/,
+  );
+  assert.match(
+    databasePermissionsEntrypoint,
+    /raise exception 'Orbit reconciliation privilege verification failed\.'/,
   );
   assert.match(
     databasePermissionsEntrypoint,
@@ -1115,6 +1159,34 @@ test("production isolates media scans from the public app runtime", () => {
     databasePermissionsEntrypoint,
     /grant select, insert, update, delete on all tables in schema public\s+to :"media_user"/,
   );
+  assert.match(
+    continuousIntegration,
+    /database-permissions-entrypoint\.sh,target=\/opt\/q-academy\/database-permissions-entrypoint\.sh,readonly/,
+  );
+  assert.match(
+    continuousIntegration,
+    /"\$postgres_image" \/opt\/q-academy\/database-permissions-entrypoint\.sh/,
+  );
+  assert.match(
+    continuousIntegration,
+    /alter table orbit_transfer_jobs owner to q_academy_ci_media/,
+  );
+  assert.match(
+    continuousIntegration,
+    /--entrypoint psql[\s\S]*--set=ON_ERROR_STOP=1/,
+  );
+  assert.match(
+    continuousIntegration,
+    /grep -Fq 'Orbit reconciliation privilege verification failed\.'/,
+  );
+  assert.match(
+    continuousIntegration,
+    /alter table orbit_transfer_jobs owner to q_academy_ci/,
+  );
+  assert.doesNotMatch(
+    continuousIntegration,
+    /grant select[^\r\n]*q_academy_ci_media/,
+  );
   assert.match(continuousIntegration, /^          MEDIA_POSTGRES_PASSWORD:/m);
   assert.match(continuousIntegration, /^          POSTGRES_BOOTSTRAP_USER:/m);
   assert.match(
@@ -1175,61 +1247,6 @@ test("production isolates media scans from the public app runtime", () => {
     /-e DATABASE_URL="\$RUNTIME_OWNER_DATABASE_URL" \\[^]*"q-academy-migrator:\$Q_ACADEMY_CI_RELEASE_TAG"/,
   );
   assert.match(continuousIntegration, /q_academy_ci_app/);
-  assert.match(continuousIntegration, /security definer/);
-  assert.match(
-    continuousIntegration,
-    /grant select, update, delete on table public\.media_assets to q_academy_ci_media/,
-  );
-  assert.match(
-    continuousIntegration,
-    /grant select, delete on table public\.media_upload_sessions to q_academy_ci_media/,
-  );
-  assert.match(
-    continuousIntegration,
-    /grant update \(state, updated_at\) on table public\.media_upload_sessions to q_academy_ci_media/,
-  );
-  for (const table of [
-    "media_processing_jobs",
-    "media_asset_derivatives",
-    "media_asset_transcripts",
-  ]) {
-    assert.match(
-      continuousIntegration,
-      new RegExp(
-        `grant select, insert, update, delete on table public\\.${table} to q_academy_ci_media`,
-      ),
-    );
-  }
-  for (const table of [
-    "organizations",
-    "users",
-    "custom_field_definitions",
-    "custom_field_values",
-    "data_profile_values",
-    "platform_settings",
-  ]) {
-    assert.match(continuousIntegration, new RegExp(`public\\.${table}`));
-  }
-  assert.match(
-    continuousIntegration,
-    /revoke all on all sequences in schema public from q_academy_ci_media/,
-  );
-  assert.match(
-    continuousIntegration,
-    /grant select \(course_id, organization_id, media_asset_id\) on table public\.course_media_assets to q_academy_ci_media/,
-  );
-  assert.doesNotMatch(
-    continuousIntegration,
-    /grant select .*public\.community_post_attachments to q_academy_ci_media/,
-  );
-  assert.doesNotMatch(
-    continuousIntegration,
-    /grant select .*public\.community_comment_attachments to q_academy_ci_media/,
-  );
-  assert.match(
-    continuousIntegration,
-    /grant select \(media_asset_id, organization_id\) on table public\.community_asset_bindings to q_academy_ci_media/,
-  );
   assert.match(
     continuousIntegration,
     /api\/internal\/jobs\/media\/dispatch\?limit=1/,

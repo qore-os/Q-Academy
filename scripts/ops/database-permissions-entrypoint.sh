@@ -96,6 +96,19 @@ grant select (course_id, organization_id, media_asset_id)
   on table public.course_media_assets to :"media_user";
 grant select (media_asset_id, organization_id)
   on table public.community_asset_bindings to :"media_user";
+grant select (
+  id, workspace_id, source_organization_id, target_organization_id,
+  requested_by_account_id, status, claim_token, lease_expires_at
+) on table public.orbit_transfer_jobs to :"media_user";
+grant update (
+  status, failure_code, claim_token, lease_expires_at, completed_at, updated_at
+) on table public.orbit_transfer_jobs to :"media_user";
+grant select (job_id, kind, target_id)
+  on table public.orbit_transfer_items to :"media_user";
+grant insert (
+  workspace_id, actor_account_id, action, resource_type, resource_id,
+  source_organization_id, target_organization_id, outcome, metadata
+) on table public.orbit_audit_events to :"media_user";
 grant select on all tables in schema drizzle to :"media_user";
 
 alter function public.q_academy_enforce_media_asset_storage_limit() owner to :"owner_user";
@@ -154,11 +167,14 @@ where namespace_record.nspname = 'public'
 \gset
 \if :storage_functions_are_hardened
 \else
-  \echo 'Storage trigger function hardening verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Storage trigger function hardening verification failed.';
+  end
+  $verification$;
 \endif
 
-select count(*) = 8 as constraint_trigger_functions_are_hardened
+select count(*) = 7 as constraint_trigger_functions_are_hardened
 from pg_proc procedure_record
 join pg_namespace namespace_record on namespace_record.oid = procedure_record.pronamespace
 join pg_roles owner_role on owner_role.oid = procedure_record.proowner
@@ -166,7 +182,6 @@ where namespace_record.nspname = 'public'
   and procedure_record.proname in (
     'q_academy_check_exam_module_row',
     'q_academy_check_exam_lesson_row',
-    'q_academy_check_exam_section_row',
     'q_academy_check_exam_page_row',
     'q_academy_check_link_module_row',
     'q_academy_check_link_content_row',
@@ -181,8 +196,11 @@ where namespace_record.nspname = 'public'
 \gset
 \if :constraint_trigger_functions_are_hardened
 \else
-  \echo 'Constraint trigger function hardening verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Constraint trigger function hardening verification failed.';
+  end
+  $verification$;
 \endif
 
 select count(*) = 1 as community_media_guard_uses_runtime_registry
@@ -202,8 +220,11 @@ where namespace_record.nspname = 'public'
 \gset
 \if :community_media_guard_uses_runtime_registry
 \else
-  \echo 'Community media guard runtime registry verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Community media guard runtime registry verification failed.';
+  end
+  $verification$;
 \endif
 
 select
@@ -226,8 +247,11 @@ select
 \gset
 \if :tenant_erasure_privileges_are_operator_only
 \else
-  \echo 'Tenant erasure privilege verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Tenant erasure privilege verification failed.';
+  end
+  $verification$;
 \endif
 
 select
@@ -281,8 +305,11 @@ select
 \gset
 \if :public_access_is_revoked
 \else
-  \echo 'PUBLIC database privilege reconciliation failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'PUBLIC database privilege reconciliation failed.';
+  end
+  $verification$;
 \endif
 
 select
@@ -300,8 +327,11 @@ select
 \gset
 \if :runtime_database_privileges_are_minimal
 \else
-  \echo 'Runtime database or schema privilege verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Runtime database or schema privilege verification failed.';
+  end
+  $verification$;
 \endif
 
 select
@@ -335,8 +365,11 @@ where namespace_record.nspname = 'public'
 \gset
 \if :runtime_function_execution_is_minimal
 \else
-  \echo 'Runtime function EXECUTE privilege verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Runtime function EXECUTE privilege verification failed.';
+  end
+  $verification$;
 \endif
 
 select count(*) = 3 as row_security_is_enabled
@@ -348,8 +381,11 @@ where namespace_record.nspname = 'public'
 \gset
 \if :row_security_is_enabled
 \else
-  \echo 'Row-level security verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Row-level security verification failed.';
+  end
+  $verification$;
 \endif
 
 select
@@ -372,8 +408,152 @@ select
 \gset
 \if :media_columns_are_restricted
 \else
-  \echo 'Media database column restriction verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Media database column restriction verification failed.';
+  end
+  $verification$;
+\endif
+
+with expected_orbit_column_privileges (
+  table_name, column_name, privilege_type
+) as (
+  values
+    ('orbit_transfer_jobs', 'id', 'SELECT'),
+    ('orbit_transfer_jobs', 'workspace_id', 'SELECT'),
+    ('orbit_transfer_jobs', 'source_organization_id', 'SELECT'),
+    ('orbit_transfer_jobs', 'target_organization_id', 'SELECT'),
+    ('orbit_transfer_jobs', 'requested_by_account_id', 'SELECT'),
+    ('orbit_transfer_jobs', 'status', 'SELECT'),
+    ('orbit_transfer_jobs', 'claim_token', 'SELECT'),
+    ('orbit_transfer_jobs', 'lease_expires_at', 'SELECT'),
+    ('orbit_transfer_jobs', 'status', 'UPDATE'),
+    ('orbit_transfer_jobs', 'failure_code', 'UPDATE'),
+    ('orbit_transfer_jobs', 'claim_token', 'UPDATE'),
+    ('orbit_transfer_jobs', 'lease_expires_at', 'UPDATE'),
+    ('orbit_transfer_jobs', 'completed_at', 'UPDATE'),
+    ('orbit_transfer_jobs', 'updated_at', 'UPDATE'),
+    ('orbit_transfer_items', 'job_id', 'SELECT'),
+    ('orbit_transfer_items', 'kind', 'SELECT'),
+    ('orbit_transfer_items', 'target_id', 'SELECT'),
+    ('orbit_audit_events', 'workspace_id', 'INSERT'),
+    ('orbit_audit_events', 'actor_account_id', 'INSERT'),
+    ('orbit_audit_events', 'action', 'INSERT'),
+    ('orbit_audit_events', 'resource_type', 'INSERT'),
+    ('orbit_audit_events', 'resource_id', 'INSERT'),
+    ('orbit_audit_events', 'source_organization_id', 'INSERT'),
+    ('orbit_audit_events', 'target_organization_id', 'INSERT'),
+    ('orbit_audit_events', 'outcome', 'INSERT'),
+    ('orbit_audit_events', 'metadata', 'INSERT')
+), orbit_relations as (
+  select
+    relation_record.oid,
+    relation_record.relname as table_name,
+    relation_record.relowner,
+    relation_record.relkind,
+    relation_record.relacl
+  from pg_class relation_record
+  join pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+  where namespace_record.nspname = 'public'
+    and relation_record.relname in (
+      'orbit_transfer_jobs', 'orbit_transfer_items', 'orbit_audit_events'
+    )
+), orbit_column_privileges as (
+  select
+    relation_record.table_name,
+    column_record.attname as column_name,
+    column_acl.privilege_type,
+    column_acl.is_grantable
+  from pg_attribute column_record
+  join orbit_relations relation_record on relation_record.oid = column_record.attrelid
+  cross join lateral aclexplode(column_record.attacl) column_acl
+  join pg_roles acl_role on acl_role.oid = column_acl.grantee
+  where acl_role.rolname = :'media_user'
+), orbit_table_privileges as (
+  select 1
+  from orbit_relations relation_record
+  cross join lateral aclexplode(relation_record.relacl) relation_acl
+  join pg_roles acl_role on acl_role.oid = relation_acl.grantee
+  where acl_role.rolname = :'media_user'
+), orbit_effective_column_privileges as (
+  select
+    relation_record.table_name,
+    column_record.attname as column_name,
+    privilege.privilege_type
+  from orbit_relations relation_record
+  join pg_attribute column_record on column_record.attrelid = relation_record.oid
+  cross join (
+    values ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')
+  ) privilege (privilege_type)
+  where column_record.attnum > 0
+    and not column_record.attisdropped
+    and has_column_privilege(
+      :'media_user', relation_record.oid, column_record.attnum,
+      privilege.privilege_type
+    )
+), orbit_effective_table_privileges as (
+  select 1
+  from orbit_relations relation_record
+  cross join (
+    values
+      ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'),
+      ('REFERENCES'), ('TRIGGER')
+  ) privilege (privilege_type)
+  where has_table_privilege(
+    :'media_user', relation_record.oid, privilege.privilege_type
+  )
+)
+select
+  (select count(*) from orbit_relations) = 3
+  and (
+    select count(*)
+    from orbit_relations
+    where relkind = 'r'
+      and pg_get_userbyid(relowner) = :'owner_user'
+  ) = 3
+  and not exists (select 1 from orbit_table_privileges)
+  and (select count(*) from orbit_column_privileges) = 26
+  and not exists (
+    select 1 from orbit_column_privileges where is_grantable
+  )
+  and not exists (
+    select table_name, column_name, privilege_type
+    from orbit_column_privileges
+    except
+    select table_name, column_name, privilege_type
+    from expected_orbit_column_privileges
+  )
+  and not exists (
+    select table_name, column_name, privilege_type
+    from expected_orbit_column_privileges
+    except
+    select table_name, column_name, privilege_type
+    from orbit_column_privileges
+  )
+  and not exists (select 1 from orbit_effective_table_privileges)
+  and (select count(*) from orbit_effective_column_privileges) = 26
+  and not exists (
+    select table_name, column_name, privilege_type
+    from orbit_effective_column_privileges
+    except
+    select table_name, column_name, privilege_type
+    from expected_orbit_column_privileges
+  )
+  and not exists (
+    select table_name, column_name, privilege_type
+    from expected_orbit_column_privileges
+    except
+    select table_name, column_name, privilege_type
+    from orbit_effective_column_privileges
+  ) as orbit_reconciliation_privileges_are_minimal
+\gset
+\if :orbit_reconciliation_privileges_are_minimal
+\else
+  do $verification$
+  begin
+    raise exception 'Orbit reconciliation privilege verification failed.';
+  end
+  $verification$;
 \endif
 
 select count(*) = 6 as expected_policies_exist
@@ -405,8 +585,11 @@ where namespace_record.nspname = 'public'
 \gset
 \if :expected_policies_exist
 \else
-  \echo 'Database policy verification failed.'
-  \quit 1
+  do $verification$
+  begin
+    raise exception 'Database policy verification failed.';
+  end
+  $verification$;
 \endif
 SQL
 

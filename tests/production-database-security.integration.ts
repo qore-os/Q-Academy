@@ -52,6 +52,29 @@ function permissionsMutationSql() {
     .replaceAll(':"media_user"', `"${mediaRole}"`);
 }
 
+function orbitReconciliationVerificationSql() {
+  const script = readFileSync(
+    path.join(
+      projectRoot,
+      "scripts",
+      "ops",
+      "database-permissions-entrypoint.sh",
+    ),
+    "utf8",
+  );
+  const blocks = [...script.matchAll(/<<'SQL'\r?\n([\s\S]*?)\r?\nSQL/g)];
+  const verification = blocks[1]?.[1];
+  assert.ok(verification, "permissions verification SQL block is missing");
+  const query =
+    /with expected_orbit_column_privileges[\s\S]*?as orbit_reconciliation_privileges_are_minimal/.exec(
+      verification,
+    )?.[0];
+  assert.ok(query, "Orbit permissions verification query is missing");
+  return query
+    .replaceAll(":'owner_user'", `'${ownerRole}'`)
+    .replaceAll(":'media_user'", `'${mediaRole}'`);
+}
+
 function roleIdentityQuery() {
   const script = readFileSync(
     path.join(projectRoot, "scripts", "ops", "database-role-entrypoint.sh"),
@@ -72,9 +95,11 @@ test(
   { timeout: 120_000 },
   async () => {
     const admin = postgres(adminUrl, { max: 1 });
+    let databaseAdmin: ReturnType<typeof postgres> | undefined;
     let owner: ReturnType<typeof postgres> | undefined;
     let app: ReturnType<typeof postgres> | undefined;
     let media: ReturnType<typeof postgres> | undefined;
+    let mediaReconciliationClient: ReturnType<typeof postgres> | undefined;
     try {
       await admin.unsafe(
         `drop database if exists "${databaseName}" with (force)`,
@@ -90,6 +115,9 @@ test(
       await admin.unsafe(
         `create database "${databaseName}" with owner "${ownerRole}" template template0 encoding 'UTF8' lc_collate 'C' lc_ctype 'C'`,
       );
+      const databaseAdminUrl = new URL(adminUrl);
+      databaseAdminUrl.pathname = `/${databaseName}`;
+      databaseAdmin = postgres(databaseAdminUrl.toString(), { max: 1 });
       await admin.begin(async (transaction) => {
         await transaction.unsafe(
           `alter database "${databaseName}" set q_academy.bootstrap_role to 'postgres'`,
@@ -110,6 +138,34 @@ test(
         migrationsFolder: path.join(projectRoot, "drizzle"),
       });
       await owner.unsafe(permissionsMutationSql());
+      const [verifiedOrbitPrivileges] = await owner.unsafe(
+        orbitReconciliationVerificationSql(),
+      );
+      assert.equal(
+        verifiedOrbitPrivileges.orbit_reconciliation_privileges_are_minimal,
+        true,
+      );
+      await databaseAdmin.unsafe(
+        `alter table orbit_transfer_jobs owner to "${mediaRole}"`,
+      );
+      const [ownershipDrift] = await owner.unsafe(
+        orbitReconciliationVerificationSql(),
+      );
+      assert.equal(
+        ownershipDrift.orbit_reconciliation_privileges_are_minimal,
+        false,
+      );
+      await databaseAdmin.unsafe(
+        `alter table orbit_transfer_jobs owner to "${ownerRole}"`,
+      );
+      await owner.unsafe(permissionsMutationSql());
+      const [restoredOrbitPrivileges] = await owner.unsafe(
+        orbitReconciliationVerificationSql(),
+      );
+      assert.equal(
+        restoredOrbitPrivileges.orbit_reconciliation_privileges_are_minimal,
+        true,
+      );
 
       const [catalog] = await owner<
         Array<{
@@ -283,6 +339,88 @@ test(
         appRole,
         mediaRole,
       ]);
+      const orbitColumnPrivileges = await owner<
+        Array<{
+          tableName: string;
+          columnName: string;
+          privilegeType: string;
+          isGrantable: boolean;
+        }>
+      >`
+        select relation_record.relname as "tableName",
+               column_record.attname as "columnName",
+               column_acl.privilege_type as "privilegeType",
+               column_acl.is_grantable as "isGrantable"
+        from pg_attribute column_record
+        join pg_class relation_record on relation_record.oid = column_record.attrelid
+        join pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+        cross join lateral aclexplode(column_record.attacl) column_acl
+        join pg_roles acl_role on acl_role.oid = column_acl.grantee
+        where namespace_record.nspname = 'public'
+          and relation_record.relname in (
+            'orbit_transfer_jobs', 'orbit_transfer_items', 'orbit_audit_events'
+          )
+          and acl_role.rolname = ${mediaRole}
+      `;
+      const expectedOrbitColumnPrivileges = [
+        ...[
+          "id",
+          "workspace_id",
+          "source_organization_id",
+          "target_organization_id",
+          "requested_by_account_id",
+          "status",
+          "claim_token",
+          "lease_expires_at",
+        ].map((column) => `orbit_transfer_jobs.${column}.SELECT`),
+        ...[
+          "status",
+          "failure_code",
+          "claim_token",
+          "lease_expires_at",
+          "completed_at",
+          "updated_at",
+        ].map((column) => `orbit_transfer_jobs.${column}.UPDATE`),
+        ...["job_id", "kind", "target_id"].map(
+          (column) => `orbit_transfer_items.${column}.SELECT`,
+        ),
+        ...[
+          "workspace_id",
+          "actor_account_id",
+          "action",
+          "resource_type",
+          "resource_id",
+          "source_organization_id",
+          "target_organization_id",
+          "outcome",
+          "metadata",
+        ].map((column) => `orbit_audit_events.${column}.INSERT`),
+      ].sort();
+      assert.deepEqual(
+        orbitColumnPrivileges
+          .map(
+            (entry) =>
+              `${entry.tableName}.${entry.columnName}.${entry.privilegeType}`,
+          )
+          .sort(),
+        expectedOrbitColumnPrivileges,
+      );
+      assert.ok(orbitColumnPrivileges.every((entry) => !entry.isGrantable));
+      const [orbitTablePrivileges] = await owner<
+        Array<{ privilegeCount: number }>
+      >`
+        select count(*)::integer as "privilegeCount"
+        from pg_class relation_record
+        join pg_namespace namespace_record on namespace_record.oid = relation_record.relnamespace
+        cross join lateral aclexplode(relation_record.relacl) relation_acl
+        join pg_roles acl_role on acl_role.oid = relation_acl.grantee
+        where namespace_record.nspname = 'public'
+          and relation_record.relname in (
+            'orbit_transfer_jobs', 'orbit_transfer_items', 'orbit_audit_events'
+          )
+          and acl_role.rolname = ${mediaRole}
+      `;
+      assert.equal(orbitTablePrivileges.privilegeCount, 0);
       const [reconciledIdentity] = await owner.unsafe(roleIdentityQuery());
       assert.equal(reconciledIdentity.legacy_role_count, 0);
       assert.equal(reconciledIdentity.stored_owner, ownerRole);
@@ -301,6 +439,11 @@ test(
       const assetId = "20000000-0000-4000-8000-000000000001";
       const firstJobId = "30000000-0000-4000-8000-000000000001";
       const secondJobId = "30000000-0000-4000-8000-000000000002";
+      const sourceOrganizationId = "10000000-0000-4000-8000-000000000002";
+      const workspaceId = "40000000-0000-4000-8000-000000000001";
+      const transferJobId = "50000000-0000-4000-8000-000000000001";
+      const transferClaimToken = "50000000-0000-4000-8000-000000000002";
+      const transferAssetId = "20000000-0000-4000-8000-000000000002";
       await owner.unsafe(`
         insert into organizations (id, name, slug)
         values ('${organizationId}', 'Security test', 'security-test');
@@ -340,6 +483,61 @@ test(
            'security-test-first', repeat('a', 64), 'security-test'),
           ('${secondJobId}', '${organizationId}', '${assetId}', 'thumbnail',
            'security-test-second', repeat('b', 64), 'security-test');
+        insert into organizations (id, name, slug)
+        values (
+          '${sourceOrganizationId}', 'Orbit security source',
+          'orbit-security-source'
+        );
+        insert into orbit_workspaces (id, name, slug, instance_slot_limit)
+        values (
+          '${workspaceId}', 'Orbit security workspace',
+          'orbit-security-workspace', 2
+        );
+        insert into orbit_instances (
+          workspace_id, organization_id, status, seat_limit, course_limit,
+          entitlements
+        ) values
+          (
+            '${workspaceId}', '${sourceOrganizationId}', 'active', 100, 100,
+            array['content_transfer']::text[]
+          ),
+          (
+            '${workspaceId}', '${organizationId}', 'active', 100, 100,
+            array['content_transfer']::text[]
+          );
+        insert into media_assets (
+          id, organization_id, purpose, kind, status, storage_driver,
+          storage_key, staging_storage_key, original_file_name, safe_file_name,
+          declared_mime_type, declared_size_bytes, quota_bytes,
+          upload_expires_at
+        ) values (
+          '${transferAssetId}', '${organizationId}', 'course_content', 'video',
+          'pending', 'filesystem',
+          'tenants/${organizationId}/assets/${transferAssetId}/video.mp4',
+          'incoming/tenants/${organizationId}/assets/${transferAssetId}/video.mp4',
+          'video.mp4', 'video.mp4', 'video/mp4', 100, 100,
+          now() - interval '1 hour'
+        );
+        insert into orbit_transfer_jobs (
+          id, workspace_id, source_organization_id, target_organization_id,
+          source_course_ids, target_course_ids, idempotency_key, request_hash,
+          status, preflight, started_at, claim_token, lease_expires_at,
+          created_at, updated_at
+        ) values (
+          '${transferJobId}', '${workspaceId}', '${sourceOrganizationId}',
+          '${organizationId}', array['${courseId}'::uuid], array[]::uuid[],
+          'security-reconciliation', repeat('e', 64), 'processing',
+          '{"sourceCourseCount":1,"targetCourseCount":0,"targetCourseLimit":100,"mediaAssetCount":1,"mediaBytes":100,"warnings":[]}'::jsonb,
+          now() - interval '1 hour', '${transferClaimToken}',
+          now() - interval '5 minutes', now() - interval '1 hour', now()
+        );
+        insert into orbit_transfer_items (
+          job_id, kind, source_id, target_id, checksum
+        ) values (
+          '${transferJobId}', 'media_asset',
+          '60000000-0000-4000-8000-000000000001', '${transferAssetId}',
+          repeat('f', 64)
+        );
       `);
 
       app = postgres(roleUrl(appRole), { max: 1 });
@@ -382,6 +580,126 @@ test(
       });
 
       media = postgres(roleUrl(mediaRole), { max: 1 });
+      const selectedTransferJobs = await media.unsafe(`
+        select id, workspace_id, source_organization_id,
+               target_organization_id, requested_by_account_id, status,
+               claim_token, lease_expires_at
+        from orbit_transfer_jobs
+        where id = '${transferJobId}'
+      `);
+      assert.equal(selectedTransferJobs.length, 1);
+      const selectedTransferItems = await media.unsafe(`
+        select job_id, kind, target_id
+        from orbit_transfer_items
+        where job_id = '${transferJobId}' and kind = 'media_asset'
+      `);
+      assert.equal(selectedTransferItems.length, 1);
+      await media.unsafe(`
+        update orbit_transfer_jobs
+        set status = 'failed', failure_code = 'permission_probe',
+            claim_token = null, lease_expires_at = null,
+            completed_at = now(), updated_at = now()
+        where false
+      `);
+      await assert.rejects(
+        media.unsafe(
+          `select source_course_ids from orbit_transfer_jobs where id = '${transferJobId}'`,
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await assert.rejects(
+        media.unsafe(
+          `select source_id from orbit_transfer_items where job_id = '${transferJobId}'`,
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await assert.rejects(
+        media.unsafe(
+          `update orbit_transfer_jobs set started_at = now() where id = '${transferJobId}'`,
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await assert.rejects(
+        media.unsafe(
+          `select action from orbit_audit_events where workspace_id = '${workspaceId}'`,
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+      await assert.rejects(
+        media.unsafe(
+          `insert into orbit_audit_events (
+             id, workspace_id, action, resource_type, resource_id, outcome,
+             metadata
+           ) values (
+             '70000000-0000-4000-8000-000000000001', '${workspaceId}',
+             'forbidden', 'transfer_job', '${transferJobId}', 'failed',
+             '{}'::jsonb
+           )`,
+        ),
+        (error) => databaseErrorCode(error) === "42501",
+      );
+
+      const previousDatabaseUrl = process.env.DATABASE_URL;
+      process.env.DATABASE_URL = roleUrl(mediaRole);
+      try {
+        const [{ reconcileStaleOrbitTransfers }, databaseModule] =
+          await Promise.all([
+            import("../src/lib/orbit/transfer-reconciliation"),
+            import("../src/db/index"),
+          ]);
+        mediaReconciliationClient = databaseModule.postgresClient;
+        const [runtimeIdentity] = await databaseModule.postgresClient.unsafe(
+          "select current_user",
+        );
+        assert.equal(runtimeIdentity.current_user, mediaRole);
+        const reconciliationTime = new Date(Date.now() + 60_000);
+        assert.equal(
+          await reconcileStaleOrbitTransfers(10, reconciliationTime),
+          1,
+        );
+        const [reconciledTransfer] = await owner<
+          Array<{
+            status: string;
+            failureCode: string | null;
+            claimToken: string | null;
+            leaseExpiresAt: string | null;
+            completedAt: string | null;
+            auditEvents: number;
+          }>
+        >`
+          select job.status, job.failure_code as "failureCode",
+                 job.claim_token as "claimToken",
+                 job.lease_expires_at as "leaseExpiresAt",
+                 job.completed_at as "completedAt",
+                 (
+                   select count(*)::integer
+                   from orbit_audit_events audit_event
+                   where audit_event.workspace_id = ${workspaceId}
+                     and audit_event.resource_id = ${transferJobId}
+                     and audit_event.action = 'transfer.failed'
+                 ) as "auditEvents"
+          from orbit_transfer_jobs job
+          where job.id = ${transferJobId}
+        `;
+        assert.deepEqual(
+          { ...reconciledTransfer, completedAt: undefined },
+          {
+            status: "failed",
+            failureCode: "transfer_reservation_expired",
+            claimToken: null,
+            leaseExpiresAt: null,
+            completedAt: undefined,
+            auditEvents: 1,
+          },
+        );
+        assert.equal(
+          new Date(reconciledTransfer.completedAt!).toISOString(),
+          reconciliationTime.toISOString(),
+        );
+      } finally {
+        if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+        else process.env.DATABASE_URL = previousDatabaseUrl;
+      }
       await assert.rejects(
         media.unsafe("select storage_limit_bytes from organization_contracts"),
         (error) => databaseErrorCode(error) === "42501",
@@ -466,6 +784,10 @@ test(
         (error) => databaseErrorCode(error) === "23514",
       );
     } finally {
+      await mediaReconciliationClient
+        ?.end({ timeout: 5 })
+        .catch(() => undefined);
+      await databaseAdmin?.end().catch(() => undefined);
       await media?.end().catch(() => undefined);
       await app?.end().catch(() => undefined);
       await owner?.end().catch(() => undefined);
